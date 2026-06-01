@@ -341,6 +341,15 @@ def list_cameras() -> None:
 
 
 @app.command()
+def gui() -> None:
+    """Launch the desktop window (Scan / Add / camera list)."""
+    configure_logging()
+    from sentry_agent_pc.gui.app import run
+
+    run()
+
+
+@app.command()
 def status() -> None:
     """Backend connectivity + camera count."""
     configure_logging()
