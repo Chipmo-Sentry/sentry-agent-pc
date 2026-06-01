@@ -84,3 +84,19 @@ class BackendClient:
                 f"camera register failed: {r.status_code} {r.text[:300]}",
             )
         return r.json()  # type: ignore[no-any-return]
+
+    def delete_camera(self, camera_uuid: str) -> None:
+        """DELETE /api/v1/cameras/{uuid}. Backend also removes the MediaMTX path.
+
+        Raises BackendError on any non-success/non-404 status (404 = already
+        gone, treated as success).
+        """
+        with httpx.Client(timeout=self.timeout) as client:
+            r = client.delete(
+                f"{self.base_url}/api/v1/cameras/{camera_uuid}",
+                headers=self._headers(),
+            )
+        if r.status_code not in (200, 204, 404):
+            raise BackendError(
+                f"camera delete failed: {r.status_code} {r.text[:200]}",
+            )

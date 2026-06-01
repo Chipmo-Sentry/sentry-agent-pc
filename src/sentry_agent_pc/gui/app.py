@@ -188,25 +188,26 @@ class AgentApp(ctk.CTk):
             return
 
         def work() -> dict[str, Any]:
-            client = BackendClient()
+            # Backend delete FIRST — if it fails we keep the local record so the
+            # list stays consistent with the server (no orphaned local rows).
             if cam.uuid:
-                # Backend DELETE also removes the MediaMTX path (AG8)
-                import httpx
-
-                with httpx.Client(timeout=15) as c:
-                    c.delete(
-                        f"{client.base_url}/api/v1/cameras/{cam.uuid}",
-                        headers=client._headers(),  # noqa: SLF001
-                    )
-            # Remove from local state
-            state = load_state()
-            state.cameras = [x for x in state.cameras if x.uuid != cam.uuid]
+                BackendClient().delete_camera(cam.uuid)  # raises on real failure
+            # Backend ok (or no uuid) → drop from local state
             from sentry_agent_pc.state import save_state
 
+            state = load_state()
+            state.cameras = [x for x in state.cameras if x.uuid != cam.uuid]
             save_state(state)
             return {"ok": True}
 
-        self._run_bg(work, lambda _r: self.refresh_cameras(), status="Устгаж байна…")
+        def done(result: Any) -> None:
+            if isinstance(result, dict) and not result.get("ok", True):
+                self.set_status(f"⚠ Устгаж чадсангүй: {result.get('error', '')[:60]}")
+            else:
+                self.set_status("Камер устгагдлаа")
+            self.refresh_cameras()
+
+        self._run_bg(work, done, status="Устгаж байна…")
 
     # === Dialogs ===
 
