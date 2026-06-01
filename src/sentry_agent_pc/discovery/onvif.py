@@ -68,10 +68,17 @@ def _probe_envelope() -> bytes:
     return envelope.encode("utf-8")
 
 
-# Match http(s)://host[:port]/path to extract XAddrs from response XML
-_XADDR_RE = re.compile(
+# Match http(s)://host[:port]/path to extract URLs from XAddrs content
+_URL_RE = re.compile(
     r"https?://[\w.-]+(?::\d+)?(?:/[\w.\-/?=&%]*)?",
     re.IGNORECASE,
+)
+# Find the <...XAddrs>...</...XAddrs> element content (namespace prefix agnostic).
+# Only URLs inside this element are real device service addresses — extracting
+# from the whole document picks up SOAP/namespace URIs (www.w3.org, xmlsoap).
+_XADDRS_ELEM_RE = re.compile(
+    r"<(?:\w+:)?XAddrs>(.*?)</(?:\w+:)?XAddrs>",
+    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -146,27 +153,21 @@ def discover(timeout_sec: float = 5.0) -> list[OnvifDevice]:
 
 
 def _extract_xaddrs(xml: str) -> list[str]:
-    """Crude regex-based XAddr extraction.
+    """Extract device service URLs from the <XAddrs> element(s) only.
 
-    ONVIF ProbeMatch includes <XAddrs>http://... http://...</XAddrs>.
-    We just grab every URL; for typical replies there's one or two.
+    ONVIF ProbeMatch carries device addresses in <XAddrs>http://... http://...
+    </XAddrs>. Extracting URLs from the whole document would wrongly pick up
+    the SOAP envelope + WS-Discovery namespace URIs (www.w3.org, xmlsoap.org).
     """
-    matches = _XADDR_RE.findall(xml)
-    # Keep only ones that look like ONVIF device service URLs (port 80 or 8000
-    # are common; many cameras include /onvif/device_service in the path).
-    filtered: list[str] = []
     seen: set[str] = set()
-    for m in matches:
-        if m in seen:
-            continue
-        # Skip XML namespace URIs and meta URLs
-        if "schemas" in m or "xmlsoap" in m or "onvif.org/ver10" in m:
-            continue
-        if "onvif.org/ver20" in m:
-            continue
-        seen.add(m)
-        filtered.append(m)
-    return filtered
+    out: list[str] = []
+    for block in _XADDRS_ELEM_RE.findall(xml):
+        for url in _URL_RE.findall(block):
+            if url in seen:
+                continue
+            seen.add(url)
+            out.append(url)
+    return out
 
 
 def _host_from_url(url: str) -> str | None:
