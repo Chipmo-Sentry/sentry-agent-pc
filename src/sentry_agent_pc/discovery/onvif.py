@@ -12,13 +12,31 @@ from __future__ import annotations
 
 import re
 import socket
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from sentry_agent_pc.logging_setup import get_logger
 
 log = get_logger("sentry_agent_pc.discovery.onvif")
+
+
+def _resolve_wsdl_dir() -> str | None:
+    """Return the WSDL directory, accounting for the frozen PyInstaller bundle.
+
+    Dev: onvif-zeep installs WSDLs at site-packages/wsdl → use library default
+         (return None so ONVIFCamera uses its own default).
+    Frozen: PyInstaller --add-data bundles them to <_MEIPASS>/wsdl.
+    """
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            wsdl = Path(meipass) / "wsdl"
+            if wsdl.is_dir():
+                return str(wsdl)
+    return None
 
 WS_DISCOVERY_ADDR = "239.255.255.250"
 WS_DISCOVERY_PORT = 3702
@@ -181,7 +199,11 @@ def fetch_profiles(
         return device
 
     try:
-        cam = ONVIFCamera(host, port, username, password)
+        wsdl_dir = _resolve_wsdl_dir()
+        if wsdl_dir is not None:
+            cam = ONVIFCamera(host, port, username, password, wsdl_dir)
+        else:
+            cam = ONVIFCamera(host, port, username, password)
         info = cam.devicemgmt.GetDeviceInformation()
         device.manufacturer = getattr(info, "Manufacturer", None)
         device.model = getattr(info, "Model", None)

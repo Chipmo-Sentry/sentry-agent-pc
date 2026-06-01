@@ -24,5 +24,6 @@ build/
 .DS_Store
 Thumbs.db
 
-# Build artifacts (PyInstaller — M2)
+# Build artifacts (PyInstaller)
 *.spec
+*.exe
