@@ -1,0 +1,28 @@
+__pycache__/
+*.py[cod]
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+.venv/
+.uv_cache/
+
+# Local dev state — never commit (contains JWT + RTSP creds)
+*.bin
+*.tmp
+
+# IDE
+.vscode/
+.idea/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts (PyInstaller — M2)
+*.spec
