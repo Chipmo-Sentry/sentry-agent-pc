@@ -96,7 +96,6 @@ class ScanDialog(ctk.CTkToplevel):
         self.grab_set()
 
         self.rows: list[_DeviceRow] = []
-        self._store_id: str | None = None  # resolved once before batch register
 
         ctk.CTkLabel(
             self, text="Сүлжээнд холбогдсон камеруудыг хайж байна…",
@@ -179,15 +178,6 @@ class ScanDialog(ctk.CTkToplevel):
             return
         self.register_btn.configure(state="disabled")
         self.rescan_btn.configure(state="disabled")
-        # Resolve store once for the whole batch (avoids N stores fetches)
-        self._store_id = svc.resolve_default_store_id()
-        if not self._store_id:
-            self.info_lbl.configure(
-                text="Backend дээр store байхгүй — бүртгэх боломжгүй.", text_color="#FF6B6B",
-            )
-            self.register_btn.configure(state="normal")
-            self.rescan_btn.configure(state="normal")
-            return
         self._register_next(selected, 0)
 
     def _register_next(self, rows: list[_DeviceRow], idx: int) -> None:
@@ -212,7 +202,7 @@ class ScanDialog(ctk.CTkToplevel):
             rtsp_url = svc.embed_credentials(profile.rtsp_uri, user, pwd)
             name = f"{cand.manufacturer or 'Камер'} — {cand.ip}"
             result = svc.register_camera(
-                name=name, ip=cand.ip, rtsp_url=rtsp_url, store_id=self._store_id,
+                name=name, ip=cand.ip, rtsp_url=rtsp_url,
             )
             return {
                 "ok": result.ok,

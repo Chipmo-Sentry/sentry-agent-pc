@@ -7,6 +7,7 @@ thread via `self.after(...)` to avoid freezing the window.
 
 from __future__ import annotations
 
+import platform
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -14,11 +15,11 @@ from typing import Any
 import customtkinter as ctk
 
 from sentry_agent_pc.backend_client import BackendClient, BackendError
-from sentry_agent_pc.config_file import read_config, write_config
+from sentry_agent_pc.config_file import DEFAULT_BACKEND_URL, read_config, write_config
 from sentry_agent_pc.gui.add_dialog import AddCameraDialog
 from sentry_agent_pc.gui.scan_dialog import ScanDialog
 from sentry_agent_pc.logging_setup import get_logger
-from sentry_agent_pc.state import CameraRecord, load_state
+from sentry_agent_pc.state import CameraRecord, load_state, save_state
 
 log = get_logger("sentry_agent_pc.gui.app")
 
@@ -42,6 +43,9 @@ class AgentApp(ctk.CTk):
 
         self.refresh_cameras()
         self._check_backend_async()
+        # First run / unpaired → guide the user straight to the pairing screen.
+        if not load_state().is_paired:
+            self.after(400, self.open_pairing)
 
     # === Layout ===
 
@@ -67,9 +71,9 @@ class AgentApp(ctk.CTk):
 
         ctk.CTkButton(
             header,
-            text="⚙ Тохиргоо",
+            text="🔗 Холболт",
             width=110,
-            command=self.open_settings,
+            command=self.open_pairing,
         ).pack(side="right", padx=16)
 
     def _build_toolbar(self) -> None:
@@ -212,49 +216,56 @@ class AgentApp(ctk.CTk):
     # === Dialogs ===
 
     def open_scan(self) -> None:
-        if not self._require_backend():
+        if not self._require_paired():
             return
         ScanDialog(self, on_done=self.refresh_cameras)
 
     def open_add(self) -> None:
-        if not self._require_backend():
+        if not self._require_paired():
             return
         AddCameraDialog(self, on_done=self.refresh_cameras)
 
-    def open_settings(self) -> None:
-        SettingsDialog(self, on_saved=self._on_settings_saved)
+    def open_pairing(self) -> None:
+        PairingDialog(self, on_saved=self._on_pairing_saved)
 
-    def _on_settings_saved(self) -> None:
-        self.set_status("Тохиргоо хадгалагдсан")
+    def _on_pairing_saved(self) -> None:
+        self.set_status("Холболт шинэчлэгдсэн")
         self._check_backend_async()
         self.refresh_cameras()
 
     # === Backend status ===
 
-    def _require_backend(self) -> bool:
-        cfg = read_config()
-        if not cfg.get("DEV_TOKEN"):
-            self.set_status("⚠ Эхлээд Тохиргоо хэсэгт backend холболтоо оруулна уу")
-            self.open_settings()
+    def _require_paired(self) -> bool:
+        if not load_state().is_paired:
+            self.set_status("⚠ Эхлээд дэлгүүртэйгээ холбоно уу ('🔗 Холболт')")
+            self.open_pairing()
             return False
         return True
 
     def _check_backend_async(self) -> None:
+        state = load_state()
+        if not state.is_paired:
+            self.backend_label.configure(
+                text="Холбогдоогүй — '🔗 Холболт' дарна уу", text_color="#FBBF24",
+            )
+            return
+        store = state.store_name or "дэлгүүр"
+
         def work() -> dict[str, Any]:
             try:
-                me = BackendClient().me()
-                return {"ok": True, "email": me.get("email")}
+                BackendClient().heartbeat()
+                return {"ok": True}
             except BackendError as e:
                 return {"ok": False, "error": str(e)}
 
         def done(result: dict[str, Any]) -> None:
             if result.get("ok"):
                 self.backend_label.configure(
-                    text=f"Backend ✅ {result.get('email')}", text_color="#4ADE80",
+                    text=f"✅ {store}", text_color="#4ADE80",
                 )
             else:
                 self.backend_label.configure(
-                    text="Backend ❌ холбогдсонгүй", text_color="#FF6B6B",
+                    text=f"⚠ {store} — холбогдсонгүй", text_color="#FF6B6B",
                 )
 
         self._run_bg(work, done)
@@ -285,51 +296,129 @@ class AgentApp(ctk.CTk):
         self.status_label.configure(text=text)
 
 
-class SettingsDialog(ctk.CTkToplevel):
+class PairingDialog(ctk.CTkToplevel):
+    """Connect this PC to a store using a 6-digit code from the web app.
+
+    The admin opens app.sentry.chipmo.mn → Дэлгүүр → 'Компьютер холбох',
+    generates a code, and types it here. On success we store the returned
+    agent JWT (+ store name) in the encrypted state file.
+    """
+
     def __init__(self, master: AgentApp, on_saved: Callable[[], None]) -> None:
         super().__init__(master)
         self.on_saved = on_saved
-        self.title("Тохиргоо")
-        self.geometry("520x320")
+        self.title("Дэлгүүртэй холбох")
+        self.geometry("520x420")
         self.transient(master)
         self.grab_set()
 
+        state = load_state()
         cfg = read_config()
 
         ctk.CTkLabel(
-            self, text="Backend холболт",
-            font=ctk.CTkFont(size=16, weight="bold"),
-        ).pack(pady=(20, 4), padx=20, anchor="w")
+            self, text="Дэлгүүртэй холбох",
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).pack(pady=(20, 2), padx=20, anchor="w")
 
-        ctk.CTkLabel(self, text="Backend URL:", anchor="w").pack(
-            fill="x", padx=20, pady=(8, 0),
-        )
-        self.url_entry = ctk.CTkEntry(self, placeholder_text="http://localhost:8000")
-        self.url_entry.pack(fill="x", padx=20)
-        self.url_entry.insert(0, cfg.get("BACKEND_URL", "http://localhost:8000"))
-
-        ctk.CTkLabel(self, text="Нэвтрэх токен (JWT):", anchor="w").pack(
-            fill="x", padx=20, pady=(12, 0),
-        )
-        self.token_entry = ctk.CTkEntry(self, show="•")
-        self.token_entry.pack(fill="x", padx=20)
-        self.token_entry.insert(0, cfg.get("DEV_TOKEN", ""))
+        if state.is_paired:
+            ctk.CTkLabel(
+                self,
+                text=f"✅ Одоо холбогдсон дэлгүүр: {state.store_name or '—'}",
+                font=ctk.CTkFont(size=13), text_color="#4ADE80", anchor="w",
+            ).pack(fill="x", padx=20, pady=(2, 8))
 
         ctk.CTkLabel(
             self,
-            text="Токен авах: app.sentry.chipmo.mn-д нэвтэрч 'Агент холбох' хэсгээс.",
-            font=ctk.CTkFont(size=11), text_color="gray60", anchor="w", wraplength=460,
-        ).pack(fill="x", padx=20, pady=(6, 0))
+            text="Веб апп → Дэлгүүр → 'Компьютер холбох' дарж 6 оронтой код аваад "
+            "доор оруулна уу.",
+            font=ctk.CTkFont(size=12), text_color="gray70", anchor="w", wraplength=470,
+            justify="left",
+        ).pack(fill="x", padx=20, pady=(0, 10))
+
+        ctk.CTkLabel(self, text="6 оронтой код:", anchor="w").pack(fill="x", padx=20)
+        self.code_entry = ctk.CTkEntry(
+            self, placeholder_text="123456",
+            font=ctk.CTkFont(size=22, weight="bold"), justify="center",
+        )
+        self.code_entry.pack(fill="x", padx=20, pady=(2, 12))
+
+        ctk.CTkLabel(self, text="Backend URL (default-ыг хэвээр үлдээж болно):",
+                     anchor="w", font=ctk.CTkFont(size=11), text_color="gray60").pack(
+            fill="x", padx=20,
+        )
+        self.url_entry = ctk.CTkEntry(self, placeholder_text=DEFAULT_BACKEND_URL)
+        self.url_entry.pack(fill="x", padx=20, pady=(2, 4))
+        self.url_entry.insert(0, cfg.get("BACKEND_URL") or DEFAULT_BACKEND_URL)
+
+        self.status_lbl = ctk.CTkLabel(
+            self, text="", font=ctk.CTkFont(size=12), text_color="gray60",
+            wraplength=470, anchor="w",
+        )
+        self.status_lbl.pack(fill="x", padx=20, pady=(6, 0))
 
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.pack(fill="x", padx=20, pady=20, side="bottom")
-        ctk.CTkButton(btn_row, text="Болих", fg_color="transparent", border_width=1,
+        btn_row.pack(fill="x", padx=20, pady=18, side="bottom")
+        ctk.CTkButton(btn_row, text="Хаах", fg_color="transparent", border_width=1,
                       command=self.destroy).pack(side="right", padx=(8, 0))
-        ctk.CTkButton(btn_row, text="Хадгалах", fg_color=CHIPMO_ORANGE,
-                      hover_color="#E57A12", command=self._save).pack(side="right")
+        self.connect_btn = ctk.CTkButton(
+            btn_row, text="Холбох", fg_color=CHIPMO_ORANGE,
+            hover_color="#E57A12", command=self._pair,
+        )
+        self.connect_btn.pack(side="right")
+        if state.is_paired:
+            ctk.CTkButton(
+                btn_row, text="Салгах", fg_color="transparent", border_width=1,
+                text_color="#FF6B6B", border_color="#FF6B6B", command=self._unpair,
+            ).pack(side="left")
 
-    def _save(self) -> None:
-        write_config(self.url_entry.get(), self.token_entry.get())
+    def _pair(self) -> None:
+        code = self.code_entry.get().strip()
+        url = self.url_entry.get().strip() or DEFAULT_BACKEND_URL
+        if not code.isdigit() or len(code) != 6:
+            self.status_lbl.configure(
+                text="Код 6 оронтой тоо байх ёстой.", text_color="#FF6B6B",
+            )
+            return
+        self.connect_btn.configure(state="disabled")
+        self.status_lbl.configure(text="Холбож байна…", text_color="gray60")
+        write_config(url)
+
+        def runner() -> None:
+            try:
+                result = BackendClient(base_url=url).pair(code, name=platform.node())
+                state = load_state()
+                state.agent_jwt = result["agent_token"]
+                state.paired_org_id = result.get("organization_id")
+                state.default_store_id = result.get("store_id")
+                state.store_name = result.get("store_name")
+                save_state(state)
+                out: dict[str, Any] = {"ok": True, "store": result.get("store_name")}
+            except (BackendError, KeyError) as e:
+                out = {"ok": False, "error": str(e)}
+            self.after(0, lambda: self._pair_done(out))
+
+        threading.Thread(target=runner, daemon=True).start()
+
+    def _pair_done(self, result: dict[str, Any]) -> None:
+        self.connect_btn.configure(state="normal")
+        if result.get("ok"):
+            self.status_lbl.configure(
+                text=f"✅ '{result.get('store')}' дэлгүүртэй холбогдлоо!",
+                text_color="#4ADE80",
+            )
+            self.on_saved()
+            self.after(1200, self.destroy)
+        else:
+            self.status_lbl.configure(
+                text=f"❌ {result.get('error', 'алдаа')[:120]}", text_color="#FF6B6B",
+            )
+
+    def _unpair(self) -> None:
+        state = load_state()
+        state.agent_jwt = None
+        state.paired_org_id = None
+        state.store_name = None
+        save_state(state)
         self.on_saved()
         self.destroy()
 

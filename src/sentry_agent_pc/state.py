@@ -41,7 +41,7 @@ from sentry_agent_pc.settings import get_settings
 
 log = get_logger("sentry_agent_pc.state")
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class CameraRecord(BaseModel):
@@ -60,8 +60,13 @@ class AgentState(BaseModel):
     agent_jwt: str | None = None
     paired_org_id: str | None = None
     default_store_id: str | None = None
+    store_name: str | None = None
     cameras: list[CameraRecord] = Field(default_factory=list)
     ignored_devices: list[str] = Field(default_factory=list)
+
+    @property
+    def is_paired(self) -> bool:
+        return bool(self.agent_jwt)
 
 
 def _machine_key() -> bytes:

@@ -10,7 +10,7 @@ import re
 import urllib.parse
 from dataclasses import dataclass, field
 
-from sentry_agent_pc.backend_client import BackendClient, BackendError, CameraRegistration
+from sentry_agent_pc.backend_client import BackendClient, BackendError
 from sentry_agent_pc.discovery import manual as manual_mod
 from sentry_agent_pc.discovery import onvif as onvif_mod
 from sentry_agent_pc.discovery import rtsp_probe
@@ -102,28 +102,17 @@ def embed_credentials(rtsp_uri: str, username: str, password: str) -> str:
     return f"{m.group(1)}{user_enc}:{pass_enc}@{m.group(2)}"
 
 
-def resolve_default_store_id(backend: BackendClient | None = None) -> str | None:
-    """Fetch the first store id once (callers cache it across multiple registers)."""
-    client = backend or BackendClient()
-    try:
-        stores = client.list_stores()
-    except BackendError:
-        return None
-    return stores[0]["id"] if stores else None
-
-
 def register_camera(
     *,
     name: str,
     ip: str,
     rtsp_url: str,
-    store_id: str | None = None,
     backend: BackendClient | None = None,
 ) -> RegisterResult:
-    """Probe RTSP, register with backend, persist locally. Pure data in/out.
+    """Probe RTSP, register with the backend (agent-scoped), persist locally.
 
-    `store_id` may be passed to avoid an extra stores fetch per camera; if None
-    we resolve the first store. Backend is created from settings if not supplied.
+    The target store is determined by the agent's paired token, so no store_id
+    is needed here. Backend is created from settings if not supplied.
     """
     probe = rtsp_probe.probe(rtsp_url)
     if not probe.ok:
@@ -135,19 +124,8 @@ def register_camera(
         )
 
     client = backend or BackendClient()
-    if store_id is None:
-        store_id = resolve_default_store_id(client)
-    if not store_id:
-        return RegisterResult(ok=False, error="Backend дээр store байхгүй.")
-
     try:
-        reg = CameraRegistration(
-            store_id=store_id,
-            name=name,
-            rtsp_url=rtsp_url,
-            mediamtx_path=None,  # backend auto-allocates unique slug
-        )
-        created = client.register_camera(reg)
+        created = client.agent_register_camera(name=name, rtsp_url=rtsp_url)
     except BackendError as e:
         return RegisterResult(ok=False, error=str(e))
 

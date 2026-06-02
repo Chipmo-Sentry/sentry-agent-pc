@@ -1,7 +1,8 @@
-"""Read/write the agent .env file from the GUI settings panel.
+"""Read/write the agent .env file from the GUI.
 
-The .env lives next to the encrypted state file in the per-user config dir.
-GUI writes BACKEND_URL + DEV_TOKEN here; settings.get_settings() reads them.
+The .env lives next to the encrypted state file in the per-user config dir and
+holds only BACKEND_URL. The agent JWT is NOT stored here — it lives in the
+encrypted state file after pairing.
 """
 
 from __future__ import annotations
@@ -9,6 +10,9 @@ from __future__ import annotations
 from sentry_agent_pc.settings import DEFAULT_CONFIG_DIR
 
 ENV_PATH = DEFAULT_CONFIG_DIR / ".env"
+
+# Default backend for the packaged agent (customers don't edit this normally).
+DEFAULT_BACKEND_URL = "https://sentry-backend-production-4a8f.up.railway.app"
 
 
 def read_config() -> dict[str, str]:
@@ -25,12 +29,9 @@ def read_config() -> dict[str, str]:
     return out
 
 
-def write_config(backend_url: str, dev_token: str) -> None:
-    """Write BACKEND_URL + DEV_TOKEN to the .env (overwrites whole file)."""
+def write_config(backend_url: str) -> None:
+    """Write BACKEND_URL to the .env (overwrites whole file)."""
     DEFAULT_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    lines = [
-        f"BACKEND_URL={backend_url.strip()}",
-        f"DEV_TOKEN={dev_token.strip()}",
-        "",
-    ]
-    ENV_PATH.write_text("\n".join(lines), encoding="utf-8")
+    ENV_PATH.write_text(
+        f"BACKEND_URL={backend_url.strip()}\n", encoding="utf-8"
+    )

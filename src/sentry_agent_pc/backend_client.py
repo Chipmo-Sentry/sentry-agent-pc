@@ -1,7 +1,12 @@
 """Thin httpx wrapper for sentry-backend calls.
 
-M1.5 mode: use `--dev-token` (super-admin JWT) supplied via settings.
-M2 will swap this for paired agent JWT after the pairing flow lands.
+Two auth modes:
+  • Agent (default): long-lived agent JWT obtained via the pairing flow and
+    stored in the encrypted state file. Used for `/api/v1/agent/*` endpoints.
+  • Dev/CLI: super-admin JWT in settings.dev_token, for the legacy user-scoped
+    `/api/v1/cameras` endpoints (power users only).
+
+`pair()` needs no token; everything else sends the agent JWT (or dev token).
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ log = get_logger("sentry_agent_pc.backend_client")
 
 
 class CameraRegistration(BaseModel):
-    """Payload posted to backend `/api/v1/cameras`."""
+    """Payload posted to the legacy user-scoped `/api/v1/cameras` (CLI)."""
 
     store_id: str
     name: str
@@ -31,6 +36,13 @@ class BackendError(RuntimeError):
     pass
 
 
+def _agent_jwt_from_state() -> str | None:
+    """Read the stored agent JWT without importing state at module load."""
+    from sentry_agent_pc.state import load_state
+
+    return load_state().agent_jwt
+
+
 class BackendClient:
     def __init__(
         self,
@@ -40,63 +52,105 @@ class BackendClient:
     ) -> None:
         s = get_settings()
         self.base_url = (base_url or s.backend_url).rstrip("/")
-        self.token = token or s.dev_token
+        # Prefer the paired agent JWT; fall back to the dev token for the CLI.
+        self.token = token or _agent_jwt_from_state() or s.dev_token
         self.timeout = timeout_sec
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, *, auth: bool = True) -> dict[str, str]:
         h = {"Content-Type": "application/json"}
-        if self.token:
+        if auth and self.token:
             h["Authorization"] = f"Bearer {self.token}"
         return h
 
-    def me(self) -> dict[str, Any]:
-        """GET /api/v1/auth/me — validates the token + returns user info."""
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        auth: bool = True,
+        json_body: dict[str, Any] | None = None,
+        ok_codes: tuple[int, ...] = (200, 201, 204),
+    ) -> httpx.Response:
         with httpx.Client(timeout=self.timeout) as client:
-            r = client.get(f"{self.base_url}/api/v1/auth/me", headers=self._headers())
-        if r.status_code != 200:
-            raise BackendError(f"auth/me failed: {r.status_code} {r.text[:200]}")
+            r = client.request(
+                method,
+                f"{self.base_url}{path}",
+                headers=self._headers(auth=auth),
+                json=json_body,
+            )
+        if r.status_code not in ok_codes:
+            raise BackendError(f"{method} {path} → {r.status_code} {r.text[:300]}")
+        return r
+
+    # ── Pairing (no auth) ───────────────────────────────────────────────
+    def pair(self, code: str, name: str | None = None) -> dict[str, Any]:
+        """POST /api/v1/agents/pair → {agent_token, store_id, store_name, ...}."""
+        r = self._request(
+            "POST",
+            "/api/v1/agents/pair",
+            auth=False,
+            json_body={"code": code, "name": name},
+            ok_codes=(200,),
+        )
+        return r.json()  # type: ignore[no-any-return]
+
+    # ── Agent-scoped (agent JWT) ────────────────────────────────────────
+    def heartbeat(self) -> None:
+        self._request("POST", "/api/v1/agent/heartbeat", ok_codes=(204,))
+
+    def agent_list_cameras(self) -> list[dict[str, Any]]:
+        r = self._request("GET", "/api/v1/agent/cameras", ok_codes=(200,))
+        return r.json()  # type: ignore[no-any-return]
+
+    def agent_register_camera(
+        self,
+        *,
+        name: str,
+        rtsp_url: str,
+        mediamtx_path: str | None = None,
+        risk_threshold: float = 70.0,
+    ) -> dict[str, Any]:
+        """POST /api/v1/agent/cameras — store comes from the agent token."""
+        r = self._request(
+            "POST",
+            "/api/v1/agent/cameras",
+            json_body={
+                "name": name,
+                "rtsp_url": rtsp_url,
+                "mediamtx_path": mediamtx_path,
+                "risk_threshold": risk_threshold,
+            },
+            ok_codes=(200, 201),
+        )
+        return r.json()  # type: ignore[no-any-return]
+
+    def agent_delete_camera(self, camera_uuid: str) -> None:
+        self._request(
+            "DELETE",
+            f"/api/v1/agent/cameras/{camera_uuid}",
+            ok_codes=(200, 204, 404),
+        )
+
+    # ── Legacy user-scoped (dev token, CLI only) ────────────────────────
+    def me(self) -> dict[str, Any]:
+        r = self._request("GET", "/api/v1/auth/me", ok_codes=(200,))
         return r.json()  # type: ignore[no-any-return]
 
     def list_stores(self) -> list[dict[str, Any]]:
-        with httpx.Client(timeout=self.timeout) as client:
-            r = client.get(f"{self.base_url}/api/v1/stores", headers=self._headers())
-        if r.status_code != 200:
-            raise BackendError(f"stores list failed: {r.status_code} {r.text[:200]}")
+        r = self._request("GET", "/api/v1/stores", ok_codes=(200,))
         return r.json()  # type: ignore[no-any-return]
 
     def list_cameras(self) -> list[dict[str, Any]]:
-        with httpx.Client(timeout=self.timeout) as client:
-            r = client.get(f"{self.base_url}/api/v1/cameras", headers=self._headers())
-        if r.status_code != 200:
-            raise BackendError(f"cameras list failed: {r.status_code} {r.text[:200]}")
+        r = self._request("GET", "/api/v1/cameras", ok_codes=(200,))
         return r.json()  # type: ignore[no-any-return]
 
     def register_camera(self, reg: CameraRegistration) -> dict[str, Any]:
-        """POST /api/v1/cameras → returns CameraPublic dict including uuid."""
-        with httpx.Client(timeout=self.timeout) as client:
-            r = client.post(
-                f"{self.base_url}/api/v1/cameras",
-                headers=self._headers(),
-                json=reg.model_dump(),
-            )
-        if r.status_code not in (200, 201):
-            raise BackendError(
-                f"camera register failed: {r.status_code} {r.text[:300]}",
-            )
+        r = self._request(
+            "POST", "/api/v1/cameras", json_body=reg.model_dump(), ok_codes=(200, 201)
+        )
         return r.json()  # type: ignore[no-any-return]
 
     def delete_camera(self, camera_uuid: str) -> None:
-        """DELETE /api/v1/cameras/{uuid}. Backend also removes the MediaMTX path.
-
-        Raises BackendError on any non-success/non-404 status (404 = already
-        gone, treated as success).
-        """
-        with httpx.Client(timeout=self.timeout) as client:
-            r = client.delete(
-                f"{self.base_url}/api/v1/cameras/{camera_uuid}",
-                headers=self._headers(),
-            )
-        if r.status_code not in (200, 204, 404):
-            raise BackendError(
-                f"camera delete failed: {r.status_code} {r.text[:200]}",
-            )
+        self._request(
+            "DELETE", f"/api/v1/cameras/{camera_uuid}", ok_codes=(200, 204, 404)
+        )
