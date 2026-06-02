@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import subprocess
 import threading
+import time
 import urllib.parse
 from dataclasses import dataclass, field
 
@@ -25,6 +26,9 @@ log = get_logger("sentry_agent_pc.streaming.pusher")
 
 _RESTART_MIN_SEC = 2.0
 _RESTART_MAX_SEC = 30.0
+# If ffmpeg ran at least this long it counts as "healthy" — reset the backoff
+# so an occasional blip after hours of uptime doesn't permanently slow restarts.
+_HEALTHY_RUN_SEC = 30.0
 # Windows: hide the ffmpeg console window when launched from the GUI .exe.
 _CREATE_NO_WINDOW = 0x08000000
 
@@ -166,11 +170,16 @@ class StreamPusher:
                 )
                 st.proc = proc
                 st.running = True
+                started_at = time.monotonic()
                 log.info("pusher.ffmpeg_up", path=st.target.mediamtx_path)
                 _, err = proc.communicate()
                 st.running = False
                 if st.stop.is_set():
                     break
+                # A healthy long run means the next failure is a fresh blip —
+                # reset the backoff so we reconnect fast, not at the 30s cap.
+                if time.monotonic() - started_at >= _HEALTHY_RUN_SEC:
+                    backoff = _RESTART_MIN_SEC
                 tail = (err or b"").decode("utf-8", "replace").strip().splitlines()[-3:]
                 st.last_error = " | ".join(tail) if tail else f"exit {proc.returncode}"
                 log.warning("pusher.ffmpeg_exit", path=st.target.mediamtx_path,
