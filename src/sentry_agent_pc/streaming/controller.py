@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import threading
 
-from sentry_agent_pc.backend_client import BackendClient, BackendError
+from sentry_agent_pc.backend_client import BackendClient
 from sentry_agent_pc.logging_setup import get_logger
 from sentry_agent_pc.state import load_state
 from sentry_agent_pc.streaming.pusher import PushTarget, StreamPusher
@@ -38,7 +38,10 @@ class StreamController:
         with self._lock:
             try:
                 self._refresh_locked()
-            except BackendError as e:
+            except Exception as e:  # noqa: BLE001 — bg refresh must never crash the thread
+                # Covers BackendError AND httpx connection/timeout errors (a
+                # flaky store uplink is exactly when this fires) — relays keep
+                # running on the last good config; next refresh retries.
                 log.warning("stream_controller.refresh_failed", error=str(e))
 
     def _refresh_locked(self) -> None:
