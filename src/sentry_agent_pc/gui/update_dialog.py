@@ -1,0 +1,195 @@
+"""Update dialog — show available version, download with progress, apply.
+
+Opened either from the header "Шинэчлэл" button (manual check) or automatically
+on startup when a background check finds a newer release.
+"""
+
+from __future__ import annotations
+
+import threading
+import webbrowser
+from collections.abc import Callable
+from typing import Any
+
+import customtkinter as ctk
+
+from sentry_agent_pc import __version__, updater
+from sentry_agent_pc.logging_setup import get_logger
+
+log = get_logger("sentry_agent_pc.gui.update")
+
+CHIPMO_ORANGE = "#FF8A1F"
+
+
+class UpdateDialog(ctk.CTkToplevel):
+    """Present an available update and drive download → apply → restart.
+
+    Pass `info` when the caller already checked (startup auto-check). Pass
+    None to make the dialog run the check itself (manual "Шинэчлэл" button).
+    """
+
+    def __init__(
+        self,
+        master: ctk.CTk,
+        info: updater.UpdateInfo | None = None,
+    ) -> None:
+        super().__init__(master)
+        self.title("Шинэчлэл")
+        self.geometry("520x440")
+        self.transient(master)
+        self.grab_set()
+
+        self.info = info
+
+        ctk.CTkLabel(
+            self, text="Программын шинэчлэл",
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).pack(pady=(20, 2), padx=20, anchor="w")
+
+        self.version_lbl = ctk.CTkLabel(
+            self, text=f"Одоогийн хувилбар: v{__version__}",
+            font=ctk.CTkFont(size=12), text_color="gray70", anchor="w",
+        )
+        self.version_lbl.pack(fill="x", padx=20, pady=(0, 8))
+
+        self.notes_box = ctk.CTkTextbox(self, height=200, wrap="word")
+        self.notes_box.pack(fill="both", expand=True, padx=20, pady=(0, 8))
+        self.notes_box.configure(state="disabled")
+
+        self.progress = ctk.CTkProgressBar(self)
+        self.progress.set(0)
+        self.progress.pack(fill="x", padx=20, pady=(0, 4))
+        self.progress.pack_forget()  # hidden until download starts
+
+        self.status_lbl = ctk.CTkLabel(
+            self, text="", font=ctk.CTkFont(size=12),
+            text_color="gray60", anchor="w", wraplength=470,
+        )
+        self.status_lbl.pack(fill="x", padx=20, pady=(0, 4))
+
+        btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        btn_row.pack(fill="x", padx=20, pady=(4, 16), side="bottom")
+        self.close_btn = ctk.CTkButton(
+            btn_row, text="Хаах", fg_color="transparent", border_width=1,
+            command=self.destroy,
+        )
+        self.close_btn.pack(side="right", padx=(8, 0))
+        self.action_btn = ctk.CTkButton(
+            btn_row, text="Шинэчлэх", fg_color=CHIPMO_ORANGE,
+            hover_color="#E57A12", command=self._on_action,
+        )
+        self.action_btn.pack(side="right")
+
+        if self.info is not None:
+            self._show_available(self.info)
+        else:
+            self._start_check()
+
+    # === Check ===
+
+    def _start_check(self) -> None:
+        self.action_btn.configure(state="disabled")
+        self._set_notes("Шалгаж байна…")
+        self.status_lbl.configure(text="GitHub-аас хамгийн сүүлийн хувилбарыг шалгаж байна…")
+
+        def runner() -> None:
+            info = updater.check_for_update()
+            self.after(0, lambda: self._check_done(info))
+
+        threading.Thread(target=runner, daemon=True).start()
+
+    def _check_done(self, info: updater.UpdateInfo | None) -> None:
+        if info is None:
+            self.status_lbl.configure(
+                text="✅ Та хамгийн сүүлийн хувилбарыг ашиглаж байна.",
+                text_color="#4ADE80",
+            )
+            self._set_notes("Шинэчлэл алга.")
+            self.action_btn.configure(text="Хаах", state="normal", command=self.destroy)
+            return
+        self.info = info
+        self._show_available(info)
+
+    def _show_available(self, info: updater.UpdateInfo) -> None:
+        self.version_lbl.configure(
+            text=f"Одоогийн: v{__version__}   →   Шинэ: v{info.version}",
+            text_color="#FBBF24",
+        )
+        self._set_notes(info.notes or "(Тэмдэглэл байхгүй)")
+        self.status_lbl.configure(text="Шинэ хувилбар бэлэн боллоо.", text_color="gray70")
+        self.action_btn.configure(text="Шинэчлэх", state="normal", command=self._on_action)
+
+    # === Download + apply ===
+
+    def _on_action(self) -> None:
+        if self.info is None:
+            return
+        if not updater.is_frozen():
+            # Dev / non-frozen: can't self-replace — open the releases page.
+            self.status_lbl.configure(
+                text="Dev горим: GitHub releases хуудсыг нээж байна…",
+                text_color="#FBBF24",
+            )
+            webbrowser.open(self.info.html_url)
+            return
+
+        self.action_btn.configure(state="disabled")
+        self.close_btn.configure(state="disabled")
+        self.progress.pack(fill="x", padx=20, pady=(0, 4))
+        self.progress.set(0)
+        self.status_lbl.configure(text="Татаж байна… 0%", text_color="gray70")
+
+        def on_progress(done: int, total: int) -> None:
+            frac = (done / total) if total else 0.0
+            self.after(0, lambda: self._update_progress(frac))
+
+        def runner() -> None:
+            try:
+                path = updater.download_asset(self.info, progress=on_progress)  # type: ignore[arg-type]
+                self.after(0, lambda: self._download_done(path))
+            except Exception as e:  # noqa: BLE001
+                log.exception("update_download_failed")
+                err = str(e)
+                self.after(0, lambda: self._download_failed(err))
+
+        threading.Thread(target=runner, daemon=True).start()
+
+    def _update_progress(self, frac: float) -> None:
+        self.progress.set(frac)
+        self.status_lbl.configure(text=f"Татаж байна… {int(frac * 100)}%")
+
+    def _download_done(self, path: Any) -> None:
+        self.status_lbl.configure(
+            text="Татаж дууслаа. Програм хаагдаж, шинэчлэгдээд дахин нээгдэнэ…",
+            text_color="#4ADE80",
+        )
+        # Give the label a beat to render, then swap + relaunch.
+        self.after(800, lambda: updater.apply_update_and_restart(path))
+
+    def _download_failed(self, err: str) -> None:
+        self.progress.pack_forget()
+        self.action_btn.configure(state="normal")
+        self.close_btn.configure(state="normal")
+        self.status_lbl.configure(
+            text=f"❌ Татаж чадсангүй: {err[:120]}", text_color="#FF6B6B",
+        )
+
+    # === helpers ===
+
+    def _set_notes(self, text: str) -> None:
+        self.notes_box.configure(state="normal")
+        self.notes_box.delete("1.0", "end")
+        self.notes_box.insert("1.0", text)
+        self.notes_box.configure(state="disabled")
+
+
+def check_in_background(master: ctk.CTk, on_available: Callable[[updater.UpdateInfo], None]) -> None:
+    """Silently check for an update; call `on_available(info)` on the UI thread
+    only if a newer release exists. Used for the startup auto-check."""
+
+    def runner() -> None:
+        info = updater.check_for_update()
+        if info is not None:
+            master.after(0, lambda: on_available(info))
+
+    threading.Thread(target=runner, daemon=True).start()

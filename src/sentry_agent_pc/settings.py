@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     )
 
     backend_url: str = "http://localhost:8000"
+    # Web app base — the embedded live view loads `{frontend_url}/live`.
+    frontend_url: str = "https://app.sentry.chipmo.mn"
     # Dev path: super-admin JWT (M1.5 mode). M2 replaces with paired agent JWT.
     dev_token: str | None = None
     # Backing store for camera list + JWT + pairing state. Encrypted at rest.

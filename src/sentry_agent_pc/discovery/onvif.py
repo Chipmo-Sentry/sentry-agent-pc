@@ -11,6 +11,7 @@ the response XML is tiny and shape-stable. The second step uses onvif-zeep.
 from __future__ import annotations
 
 import re
+import select
 import socket
 import sys
 import time
@@ -42,18 +43,20 @@ WS_DISCOVERY_ADDR = "239.255.255.250"
 WS_DISCOVERY_PORT = 3702
 
 
-def _probe_envelope() -> bytes:
-    """Build a WS-Discovery Probe envelope for `tds:Device` type devices.
+def _probe_envelope(types: str = "dn:NetworkVideoTransmitter") -> bytes:
+    """Build a WS-Discovery Probe envelope for the given device `types`.
 
-    ONVIF cameras subscribe to either `dn:NetworkVideoTransmitter` or
-    `tds:Device` — we ask for the latter which is the most common.
+    ONVIF cameras subscribe to either `dn:NetworkVideoTransmitter` (the most
+    common) or `tds:Device`. We send one Probe per type so cameras that only
+    answer the latter still surface — see `_probe_payloads`.
     """
     message_id = f"uuid:{uuid.uuid4()}"
     envelope = f"""<?xml version="1.0" encoding="UTF-8"?>
 <e:Envelope xmlns:e="http://www.w3.org/2003/05/soap-envelope"
             xmlns:w="http://schemas.xmlsoap.org/ws/2004/08/addressing"
             xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery"
-            xmlns:dn="http://www.onvif.org/ver10/network/wsdl">
+            xmlns:dn="http://www.onvif.org/ver10/network/wsdl"
+            xmlns:tds="http://www.onvif.org/ver10/device/wsdl">
   <e:Header>
     <w:MessageID>{message_id}</w:MessageID>
     <w:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</w:To>
@@ -61,11 +64,125 @@ def _probe_envelope() -> bytes:
   </e:Header>
   <e:Body>
     <d:Probe>
-      <d:Types>dn:NetworkVideoTransmitter</d:Types>
+      <d:Types>{types}</d:Types>
     </d:Probe>
   </e:Body>
 </e:Envelope>"""
     return envelope.encode("utf-8")
+
+
+def _probe_payloads() -> list[bytes]:
+    """Probe envelopes to send on every interface (both common ONVIF types)."""
+    return [
+        _probe_envelope("dn:NetworkVideoTransmitter"),
+        _probe_envelope("tds:Device"),
+    ]
+
+
+def _local_ipv4_addresses() -> list[str]:
+    """Best-effort list of this host's IPv4 interface addresses.
+
+    WS-Discovery multicast is per-interface: a Probe sent on the OS default
+    interface never reaches a camera on a different subnet. On multi-homed
+    Windows boxes (Wi-Fi + Ethernet + VPN/virtual adapters) the default is
+    often the *wrong* NIC, so we enumerate every local IPv4 and Probe each.
+
+    `getaddrinfo(gethostname())` covers the common cases; we add a UDP-connect
+    trick for the primary route and always dedup. Loopback is dropped.
+    """
+    addrs: set[str] = set()
+    try:
+        for res in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = str(res[4][0])
+            if ip and not ip.startswith("127."):
+                addrs.add(ip)
+    except OSError as e:
+        log.debug("onvif.getaddrinfo_failed", error=str(e))
+
+    # UDP-connect trick: reveals the IP of the primary outbound interface even
+    # when getaddrinfo under-reports (no packets are actually sent).
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            ip = str(s.getsockname()[0])
+            if ip and not ip.startswith("127."):
+                addrs.add(ip)
+    except OSError:
+        pass
+
+    return sorted(addrs)
+
+
+def discover(timeout_sec: float = 5.0) -> list[OnvifDevice]:
+    """Send WS-Discovery Probes on every local interface, collect responses.
+
+    Returns one OnvifDevice per unique XAddr (deduped by XAddr URL). Probes
+    both `NetworkVideoTransmitter` and `Device` types on each interface so
+    cameras on any reachable subnet — and either ONVIF profile — show up.
+    """
+    seen: dict[str, OnvifDevice] = {}
+    payloads = _probe_payloads()
+    interfaces = _local_ipv4_addresses()
+    log.info("onvif.interfaces", addresses=interfaces or ["<default>"])
+
+    socks: list[socket.socket] = []
+    # One socket per interface (bound + IP_MULTICAST_IF pinned), plus a default
+    # 0.0.0.0 socket as a belt-and-braces fallback for odd routing setups.
+    bind_targets: list[str | None] = [*interfaces, None]
+    for local_ip in bind_targets:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+        try:
+            sock.bind((local_ip or "", 0))
+            if local_ip:
+                sock.setsockopt(
+                    socket.IPPROTO_IP,
+                    socket.IP_MULTICAST_IF,
+                    socket.inet_aton(local_ip),
+                )
+        except OSError as e:
+            log.debug("onvif.iface_bind_failed", iface=local_ip, error=str(e))
+            sock.close()
+            continue
+        for payload in payloads:
+            try:
+                sock.sendto(payload, (WS_DISCOVERY_ADDR, WS_DISCOVERY_PORT))
+            except OSError as e:
+                log.debug("onvif.send_failed", iface=local_ip, error=str(e))
+        socks.append(sock)
+
+    if not socks:
+        log.warning("onvif.no_usable_sockets")
+        return []
+
+    log.info("onvif.probe_sent", sockets=len(socks), timeout=timeout_sec)
+
+    deadline = time.monotonic() + timeout_sec
+    try:
+        while time.monotonic() < deadline:
+            wait = max(0.05, deadline - time.monotonic())
+            ready, _, _ = select.select(socks, [], [], wait)
+            if not ready:
+                break
+            for sock in ready:
+                try:
+                    data, addr = sock.recvfrom(8192)
+                except OSError as e:
+                    log.debug("onvif.recv_err", error=str(e))
+                    continue
+                xml = data.decode("utf-8", errors="replace")
+                for xa in _extract_xaddrs(xml):
+                    if xa in seen:
+                        continue
+                    ip = _host_from_url(xa) or addr[0]
+                    seen[xa] = OnvifDevice(xaddr=xa, ip=ip, raw_xml=xml)
+    finally:
+        for sock in socks:
+            sock.close()
+
+    log.info("onvif.probe_complete", devices_found=len(seen))
+    return list(seen.values())
 
 
 # Match http(s)://host[:port]/path to extract URLs from XAddrs content
@@ -104,52 +221,6 @@ class OnvifProfile:
     height: int | None = None
     encoding: str | None = None   # "H264", "H265", etc
     rtsp_uri: str | None = None   # auth not yet embedded; agent embeds creds
-
-
-def discover(timeout_sec: float = 5.0) -> list[OnvifDevice]:
-    """Send a single Probe and collect responses for `timeout_sec`.
-
-    Returns one OnvifDevice per unique XAddr. Dedups by XAddr URL.
-    """
-    seen: dict[str, OnvifDevice] = {}
-
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.settimeout(timeout_sec)
-        try:
-            sock.bind(("", 0))
-        except OSError as e:
-            log.warning("onvif.bind_failed", error=str(e))
-            return []
-
-        sock.sendto(_probe_envelope(), (WS_DISCOVERY_ADDR, WS_DISCOVERY_PORT))
-        log.info("onvif.probe_sent", multicast=WS_DISCOVERY_ADDR, timeout=timeout_sec)
-
-        deadline = time.monotonic() + timeout_sec
-        while time.monotonic() < deadline:
-            try:
-                sock.settimeout(max(0.1, deadline - time.monotonic()))
-                data, addr = sock.recvfrom(8192)
-            except TimeoutError:
-                break
-            except OSError as e:
-                log.debug("onvif.recv_err", error=str(e))
-                continue
-
-            try:
-                xml = data.decode("utf-8", errors="replace")
-            except UnicodeDecodeError:
-                continue
-            xaddrs = _extract_xaddrs(xml)
-            for xa in xaddrs:
-                if xa in seen:
-                    continue
-                ip = _host_from_url(xa) or addr[0]
-                seen[xa] = OnvifDevice(xaddr=xa, ip=ip, raw_xml=xml)
-
-    log.info("onvif.probe_complete", devices_found=len(seen))
-    return list(seen.values())
 
 
 def _extract_xaddrs(xml: str) -> list[str]:

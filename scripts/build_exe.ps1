@@ -37,6 +37,8 @@ uv run pyinstaller `
     --add-data "$ctkPath;customtkinter" `
     --add-data "$onvifPath;wsdl" `
     --collect-submodules customtkinter `
+    --collect-all webview `
+    --collect-all clr_loader `
     --hidden-import PIL._tkinter_finder `
     src\sentry_agent_pc\gui_main.py
 

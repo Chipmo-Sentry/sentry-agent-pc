@@ -14,12 +14,15 @@ from typing import Any
 
 import customtkinter as ctk
 
+from sentry_agent_pc import __version__, updater
 from sentry_agent_pc.backend_client import BackendClient, BackendError
 from sentry_agent_pc.config_file import DEFAULT_BACKEND_URL, read_config, write_config
 from sentry_agent_pc.gui.add_dialog import AddCameraDialog
 from sentry_agent_pc.gui.scan_dialog import ScanDialog
+from sentry_agent_pc.gui.update_dialog import UpdateDialog, check_in_background
 from sentry_agent_pc.logging_setup import get_logger
 from sentry_agent_pc.state import CameraRecord, load_state, save_state
+from sentry_agent_pc.streaming.controller import get_stream_controller
 
 log = get_logger("sentry_agent_pc.gui.app")
 
@@ -46,6 +49,8 @@ class AgentApp(ctk.CTk):
         # First run / unpaired → guide the user straight to the pairing screen.
         if not load_state().is_paired:
             self.after(400, self.open_pairing)
+        # Silent update check shortly after launch; prompt only if newer exists.
+        self.after(2500, self._auto_check_update)
 
     # === Layout ===
 
@@ -74,7 +79,23 @@ class AgentApp(ctk.CTk):
             text="🔗 Холболт",
             width=110,
             command=self.open_pairing,
-        ).pack(side="right", padx=16)
+        ).pack(side="right", padx=(8, 16))
+
+        ctk.CTkButton(
+            header,
+            text="⬆ Шинэчлэл",
+            width=110,
+            fg_color="transparent",
+            border_width=1,
+            command=self.open_update,
+        ).pack(side="right", padx=4)
+
+        ctk.CTkLabel(
+            header,
+            text=f"v{__version__}",
+            font=ctk.CTkFont(size=11),
+            text_color="gray50",
+        ).pack(side="right", padx=4)
 
     def _build_toolbar(self) -> None:
         bar = ctk.CTkFrame(self, height=56, corner_radius=0, fg_color="transparent")
@@ -109,6 +130,17 @@ class AgentApp(ctk.CTk):
             border_width=1,
             command=self.refresh_cameras,
         ).pack(side="right")
+
+        ctk.CTkButton(
+            bar,
+            text="📺  Шууд харах",
+            width=160,
+            height=40,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="transparent",
+            border_width=1,
+            command=self.open_live_view,
+        ).pack(side="left", padx=(10, 0))
 
     def _build_camera_list(self) -> None:
         # Column headers
@@ -155,6 +187,20 @@ class AgentApp(ctk.CTk):
         for cam in state.cameras:
             self._render_camera_row(cam)
         self.set_status(f"{len(state.cameras)} камер бүртгэлтэй")
+        self._refresh_streaming()
+
+    def _refresh_streaming(self) -> None:
+        """Reconcile cloud stream-push relays with the current camera list.
+
+        Runs on a background thread (network + ffmpeg supervision). No-op when
+        unpaired or when the backend reports pull/on-LAN topology."""
+        if not load_state().is_paired:
+            return
+        threading.Thread(
+            target=get_stream_controller().refresh,
+            name="stream-refresh",
+            daemon=True,
+        ).start()
 
     def _render_camera_row(self, cam: CameraRecord) -> None:
         row = ctk.CTkFrame(self.list_frame, fg_color="gray17", corner_radius=8)
@@ -227,6 +273,27 @@ class AgentApp(ctk.CTk):
 
     def open_pairing(self) -> None:
         PairingDialog(self, on_saved=self._on_pairing_saved)
+
+    def open_update(self) -> None:
+        """Manual update check from the header button (dialog runs the check)."""
+        UpdateDialog(self, info=None)
+
+    def open_live_view(self) -> None:
+        """Open the embedded live view (same WebRTC + AI overlay as the web app)."""
+        if not self._require_paired():
+            return
+        from sentry_agent_pc.gui.live_view import open_live_view
+
+        open_live_view()
+        self.set_status("Шууд харах цонх нээгдэж байна…")
+
+    def _auto_check_update(self) -> None:
+        """Silent startup check — only opens the dialog if a newer release exists."""
+        def on_available(info: updater.UpdateInfo) -> None:
+            self.set_status(f"Шинэ хувилбар бэлэн: v{info.version}")
+            UpdateDialog(self, info=info)
+
+        check_in_background(self, on_available)
 
     def _on_pairing_saved(self) -> None:
         self.set_status("Холболт шинэчлэгдсэн")

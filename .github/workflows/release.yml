@@ -1,0 +1,64 @@
+name: release
+
+# Build the Windows .exe and publish it to a GitHub Release whenever a
+# version tag is pushed. The agent's in-app updater reads /releases/latest,
+# so the asset MUST be named ChipmoSentryAgent.exe (see updater.ASSET_NAME).
+#
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# The tag's version must match src/sentry_agent_pc/__init__.py __version__,
+# otherwise the build fails fast (prevents shipping a mislabeled binary).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # needed to create the release + upload assets
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Verify tag matches __version__
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $code = uv run python -c "from sentry_agent_pc import __version__; print(__version__)"
+          $code = $code.Trim()
+          Write-Host "tag=$tag  __version__=$code"
+          if ($tag -ne $code) {
+            Write-Error "Tag '$tag' does not match __version__ '$code'. Bump src/sentry_agent_pc/__init__.py first."
+            exit 1
+          }
+
+      - name: Build .exe
+        shell: pwsh
+        run: .\scripts\build_exe.ps1
+
+      - name: Verify artifact exists
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist\ChipmoSentryAgent.exe")) {
+            Write-Error "Build produced no dist\ChipmoSentryAgent.exe"
+            exit 1
+          }
+          Get-Item "dist\ChipmoSentryAgent.exe" | Select-Object Name, Length
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ChipmoSentryAgent.exe
+          generate_release_notes: true
+          fail_on_unmatched_files: true

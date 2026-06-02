@@ -102,6 +102,11 @@ class BackendClient:
         r = self._request("GET", "/api/v1/agent/cameras", ok_codes=(200,))
         return r.json()  # type: ignore[no-any-return]
 
+    def agent_stream_config(self) -> dict[str, Any]:
+        """GET /api/v1/agent/stream-config → where/whether to push streams."""
+        r = self._request("GET", "/api/v1/agent/stream-config", ok_codes=(200,))
+        return r.json()  # type: ignore[no-any-return]
+
     def agent_register_camera(
         self,
         *,
