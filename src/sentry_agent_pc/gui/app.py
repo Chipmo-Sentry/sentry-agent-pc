@@ -39,6 +39,10 @@ class AgentApp(ctk.CTk):
         self.geometry("960x640")
         self.minsize(820, 520)
 
+        # Per-camera push-status labels, keyed by mediamtx_path (rebuilt each
+        # refresh). Updated by the periodic _tick_push_status loop.
+        self._push_labels: dict[str, ctk.CTkLabel] = {}
+
         self._build_header()
         self._build_toolbar()
         self._build_camera_list()
@@ -51,6 +55,9 @@ class AgentApp(ctk.CTk):
             self.after(400, self.open_pairing)
         # Silent update check shortly after launch; prompt only if newer exists.
         self.after(2500, self._auto_check_update)
+        # Live push status indicators (5s) + periodic stream-config reconcile (30s).
+        self.after(5000, self._tick_push_status)
+        self.after(30000, self._tick_periodic_refresh)
 
     # === Layout ===
 
@@ -147,7 +154,10 @@ class AgentApp(ctk.CTk):
         head = ctk.CTkFrame(self, fg_color="gray20", height=34)
         head.pack(fill="x", padx=16, pady=(8, 0))
         head.pack_propagate(False)
-        cols = [("Нэр", 260), ("IP", 130), ("Path", 120), ("Codec", 90), ("Чанар", 120), ("", 100)]
+        cols = [
+            ("Нэр", 240), ("IP", 120), ("Path", 110), ("Codec", 80),
+            ("Чанар", 100), ("Push", 90), ("", 90),
+        ]
         for text, width in cols:
             ctk.CTkLabel(
                 head, text=text, width=width, anchor="w",
@@ -171,6 +181,7 @@ class AgentApp(ctk.CTk):
     def refresh_cameras(self) -> None:
         for w in self.list_frame.winfo_children():
             w.destroy()
+        self._push_labels = {}  # rows (and their labels) are being recreated
         state = load_state()
         if not state.cameras:
             ctk.CTkLabel(
@@ -202,23 +213,65 @@ class AgentApp(ctk.CTk):
             daemon=True,
         ).start()
 
+    def _tick_push_status(self) -> None:
+        """Refresh the per-camera push indicators from the StreamPusher state."""
+        try:
+            self._update_push_indicators()
+        finally:
+            self.after(5000, self._tick_push_status)
+
+    def _tick_periodic_refresh(self) -> None:
+        """Periodically reconcile relays so backend stream-config changes
+        (push toggled, creds rotated) propagate without a manual refresh."""
+        try:
+            self._refresh_streaming()
+        finally:
+            self.after(30000, self._tick_periodic_refresh)
+
+    def _update_push_indicators(self) -> None:
+        ctrl = get_stream_controller()
+        status_by_path = {s["path"]: s for s in ctrl.status()}
+        for path, lbl in self._push_labels.items():
+            try:
+                if not ctrl.push_enabled:
+                    lbl.configure(text="—", text_color="gray50")
+                    continue
+                st = status_by_path.get(path)
+                if st is None:
+                    lbl.configure(text="⏳ хүлээж", text_color="gray60")
+                elif st.get("running"):
+                    lbl.configure(text="🟢 дамжуулж", text_color="#4ADE80")
+                else:
+                    lbl.configure(text="🔴 тасарсан", text_color="#FF6B6B")
+            except Exception:  # noqa: BLE001 — label may have been destroyed mid-refresh
+                continue
+
     def _render_camera_row(self, cam: CameraRecord) -> None:
         row = ctk.CTkFrame(self.list_frame, fg_color="gray17", corner_radius=8)
         row.pack(fill="x", pady=3)
 
         res = f"{cam.resolution[0]}×{cam.resolution[1]}" if cam.resolution else "—"
         cells = [
-            (cam.name, 260),
-            (cam.ip, 130),
-            (cam.mediamtx_path or "—", 120),
-            ((cam.codec or "—").upper(), 90),
-            (res, 120),
+            (cam.name, 240),
+            (cam.ip, 120),
+            (cam.mediamtx_path or "—", 110),
+            ((cam.codec or "—").upper(), 80),
+            (res, 100),
         ]
         for text, width in cells:
             ctk.CTkLabel(
                 row, text=text, width=width, anchor="w",
                 font=ctk.CTkFont(size=12),
             ).pack(side="left", padx=4, pady=8)
+
+        # Push status (cloud topology) — updated live by _tick_push_status.
+        push_lbl = ctk.CTkLabel(
+            row, text="—", width=90, anchor="w",
+            font=ctk.CTkFont(size=12), text_color="gray50",
+        )
+        push_lbl.pack(side="left", padx=4, pady=8)
+        if cam.mediamtx_path:
+            self._push_labels[cam.mediamtx_path] = push_lbl
 
         ctk.CTkButton(
             row, text="Устгах", width=80, height=26,

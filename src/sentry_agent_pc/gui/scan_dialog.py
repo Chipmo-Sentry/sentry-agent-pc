@@ -157,7 +157,17 @@ class ScanDialog(ctk.CTkToplevel):
                 return
             if not candidates:
                 self.info_lbl.configure(
-                    text="Нэг ч ONVIF камер олдсонгүй. 'Камер нэмэх'-ээр гараар оруулна уу.",
+                    text=(
+                        "Нэг ч ONVIF камер олдсонгүй.\n\n"
+                        "Боломжит шалтгаан:\n"
+                        "• Камер ONVIF-г дэмждэггүй эсвэл идэвхгүй (тохиргооноос асаана уу)\n"
+                        "• P2P/cloud-only хэрэглээний камер (ж: Skyworth ZHCSDB6, Tuya/iCSee) — "
+                        "RTSP байхгүй тул дэмжигдэхгүй\n"
+                        "• Камер өөр дэд сүлжээнд эсвэл firewall хаасан\n\n"
+                        "Дэмжигддэг: Hikvision, Dahua, UNV (Uniview), Imou болон бусад "
+                        "стандарт ONVIF/RTSP камер. 'Камер нэмэх'-ээр IP+нууцаар гараар оруулж "
+                        "болно."
+                    ),
                     text_color="#FBBF24",
                 )
                 return
