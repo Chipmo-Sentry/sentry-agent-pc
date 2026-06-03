@@ -49,7 +49,9 @@ Name: "desktopicon"; Description: "Desktop дээр товчлол үүсгэх"
 Name: "autostart"; Description: "Компьютер асахад автоматаар эхлүүлэх (tray-д)"; GroupDescription: "Автостарт:"
 
 [Files]
-Source: "..\dist\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+; PyInstaller --onedir output: the exe + _internal\* tree.
+Source: "..\dist\ChipmoSentryAgent\*"; DestDir: "{app}"; \
+  Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\src\sentry_agent_pc\assets\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

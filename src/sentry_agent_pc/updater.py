@@ -2,12 +2,11 @@
 
 Flow:
   1. `check_for_update()` — GET the repo's latest release, compare its tag
-     (e.g. ``v0.2.0``) against the running ``__version__``.
-  2. `download_asset()` — stream the ``ChipmoSentryAgent.exe`` asset to a temp
-     file, with an optional progress callback.
-  3. `apply_update_and_restart()` — on Windows we can't overwrite a running
-     .exe, so we spawn a tiny detached .bat that waits for this process to
-     exit, swaps the file, and relaunches. Then we quit.
+     (e.g. ``v0.4.0``) against the running ``__version__``.
+  2. `download_asset()` — stream the onedir zip asset to a temp file.
+  3. `apply_update_and_restart()` — extract the zip and spawn a windowless .bat
+     that robocopies it over the install folder once this process exits
+     (releasing the locked .exe/DLLs) and relaunches. Then we quit.
 
 Only the frozen (PyInstaller) build can self-replace. In dev (running from
 source) `apply_update_and_restart` raises — the GUI surfaces a "download
@@ -20,6 +19,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,7 +35,10 @@ log = get_logger("sentry_agent_pc.updater")
 GITHUB_REPO = "Chipmo-Sentry/sentry-agent-pc"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
-ASSET_NAME = "ChipmoSentryAgent.exe"
+# The app is a PyInstaller --onedir folder, published as a zip. Self-update
+# downloads the zip and copies it over the install folder (see
+# apply_update_and_restart). The installer (Setup.exe) is for fresh installs.
+ASSET_NAME = "ChipmoSentryAgent-windows.zip"
 
 
 @dataclass(slots=True)
@@ -112,9 +115,9 @@ def check_for_update(
         log.debug("updater.up_to_date", current=current, latest=tag)
         return None
 
-    asset = _pick_exe_asset(rel.get("assets") or [])
+    asset = _pick_asset(rel.get("assets") or [])
     if asset is None:
-        log.info("updater.no_exe_asset", tag=tag)
+        log.info("updater.no_zip_asset", tag=tag)
         return None
 
     return UpdateInfo(
@@ -127,13 +130,16 @@ def check_for_update(
     )
 
 
-def _pick_exe_asset(assets: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Pick the .exe release asset. Prefer the exact name, else first .exe."""
+def _pick_asset(assets: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Pick the onedir zip asset. Prefer the exact name, else first .zip.
+
+    Never the Setup.exe (that's for fresh installs, not in-place self-update).
+    """
     for a in assets:
         if a.get("name") == ASSET_NAME:
             return a
     for a in assets:
-        if str(a.get("name", "")).lower().endswith(".exe"):
+        if str(a.get("name", "")).lower().endswith(".zip"):
             return a
     return None
 
@@ -150,7 +156,7 @@ def download_asset(
     (total is `info.size`, or 0 if the server omits Content-Length).
     """
     tmp_dir = Path(tempfile.gettempdir())
-    dest = tmp_dir / f"ChipmoSentryAgent-{info.version}.exe"
+    dest = tmp_dir / f"ChipmoSentryAgent-{info.version}.zip"
     total = info.size
     done = 0
 
@@ -172,70 +178,92 @@ def download_asset(
     return dest
 
 
-def _build_update_script(src: Path, dst: Path, log_path: Path) -> str:
-    """The swap-and-relaunch .bat.
+def _build_update_script(
+    extract_dir: Path, install_dir: Path, exe: Path, log_path: Path
+) -> str:
+    """The copy-over-folder-and-relaunch .bat (for the --onedir layout).
 
     Crucial Windows details learned the hard way:
-      • `timeout` needs a console input handle — it FAILS under a detached/
-        no-console process ("Input redirection is not supported"). We use
-        `ping -n` for delays instead, which always works.
-      • The retry-move loop IS the wait: `move` fails while the old process
-        still locks the .exe and succeeds the instant the lock releases, so we
-        don't need a separate PID wait.
-      • If the swap ultimately fails (e.g. a stray locked handle), we STILL
-        relaunch `dst` (the old exe) so the app never just vanishes.
+      • `timeout` needs a console input handle — it FAILS under a no-console
+        process ("Input redirection is not supported"). We use `ping -n`.
+      • The retry-`robocopy` loop IS the wait: while the app is running its
+        .exe/DLLs are locked and robocopy returns ≥8; the instant the app exits
+        the copy succeeds. (robocopy rc < 8 = success.)
+      • If the copy ultimately fails we STILL relaunch the existing exe, so the
+        app never just vanishes.
       • Everything is logged so a failed update is diagnosable.
     """
     return f"""@echo off
 setlocal enableextensions
-set "SRC={src}"
-set "DST={dst}"
+set "SRC={extract_dir}"
+set "DST={install_dir}"
+set "EXE={exe}"
 set "LOG={log_path}"
 echo [start] %date% %time% >> "%LOG%"
 
 set /a n=0
 :try
-move /y "%SRC%" "%DST%" >nul 2>&1
-if not errorlevel 1 (
-    echo [ok] moved after %n% retries >> "%LOG%"
+robocopy "%SRC%" "%DST%" /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP >nul
+if %errorlevel% lss 8 (
+    echo [ok] copied after %n% retries rc=%errorlevel% >> "%LOG%"
     goto launch
 )
 set /a n+=1
 if %n% geq 60 (
-    echo [warn] swap failed after %n% tries; relaunching existing >> "%LOG%"
+    echo [warn] copy failed after %n% tries rc=%errorlevel%; relaunching >> "%LOG%"
     goto launch
 )
 ping -n 2 127.0.0.1 >nul
 goto try
 
 :launch
-echo [launch] %DST% >> "%LOG%"
-start "" "%DST%"
+echo [launch] %EXE% >> "%LOG%"
+start "" "%EXE%"
+rmdir /s /q "%SRC%" >nul 2>&1
 del "%~f0" >nul 2>&1
 """
 
 
-def apply_update_and_restart(new_exe: Path, *, on_before_exit: object = None) -> None:
-    """Replace the running .exe with `new_exe`, relaunch, then exit.
+def apply_update_and_restart(new_zip: Path, *, on_before_exit: object = None) -> None:
+    """Extract `new_zip` over the install folder, relaunch the exe, then exit.
 
-    Windows locks a running .exe, so a detached .bat does the swap once this
-    process releases the lock (see `_build_update_script`). `on_before_exit`,
-    if callable, runs just before exit (e.g. stop the tray icon).
+    The app is a --onedir folder (exe + _internal/*). We extract the downloaded
+    zip to a temp dir, then a windowless .bat robocopies it over the install
+    folder once this process exits (releasing the file locks) and relaunches.
+    `on_before_exit`, if callable, runs just before exit (e.g. stop the tray).
 
-    Raises RuntimeError when not frozen (a Python process can't swap itself).
+    Raises RuntimeError when not frozen (dev can't self-replace).
     """
     if not is_frozen():
         raise RuntimeError(
             "Dev горимд автомат шинэчлэл боломжгүй — GitHub-аас гараар татна уу."
         )
 
-    target = current_exe_path()
+    exe = current_exe_path()
+    install_dir = exe.parent
     pid = os.getpid()
     tmp = Path(tempfile.gettempdir())
-    bat = tmp / f"chipmo_update_{pid}.bat"
+    extract_dir = tmp / f"chipmo_update_extract_{pid}"
     log_path = tmp / "chipmo_update.log"
-    bat.write_text(_build_update_script(new_exe, target, log_path), encoding="utf-8")
-    log.info("updater.applying", target=str(target), new=str(new_exe), bat=str(bat))
+
+    # Extract the zip (flat: exe + _internal/ at the root).
+    if extract_dir.exists():
+        import shutil
+
+        shutil.rmtree(extract_dir, ignore_errors=True)
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(new_zip) as zf:
+        zf.extractall(extract_dir)
+    # If the zip wrapped everything in a single top folder, descend into it.
+    entries = list(extract_dir.iterdir())
+    if len(entries) == 1 and entries[0].is_dir() and not (extract_dir / exe.name).exists():
+        extract_dir = entries[0]
+
+    bat = tmp / f"chipmo_update_{pid}.bat"
+    bat.write_text(
+        _build_update_script(extract_dir, install_dir, exe, log_path), encoding="utf-8"
+    )
+    log.info("updater.applying", install=str(install_dir), src=str(extract_dir), bat=str(bat))
 
     # CREATE_NO_WINDOW (NOT detached): hides the cmd window, but the helper
     # stays attached to the interactive window station so the relaunched GUI is

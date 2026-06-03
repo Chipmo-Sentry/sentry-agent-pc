@@ -26,26 +26,27 @@ def test_version_ordering() -> None:
     assert updater.parse_version("v1.0.0") > updater.parse_version("v0.9.9")
 
 
-def test_pick_exe_asset_prefers_exact_name() -> None:
+def test_pick_asset_prefers_exact_zip_name() -> None:
     assets = [
-        {"name": "other.exe", "browser_download_url": "u1"},
+        {"name": "ChipmoSentryAgent-Setup.exe", "browser_download_url": "u1"},
         {"name": updater.ASSET_NAME, "browser_download_url": "u2"},
     ]
-    picked = updater._pick_exe_asset(assets)
+    picked = updater._pick_asset(assets)
     assert picked is not None
     assert picked["name"] == updater.ASSET_NAME
 
 
-def test_pick_exe_asset_falls_back_to_any_exe() -> None:
+def test_pick_asset_falls_back_to_any_zip_not_exe() -> None:
+    # Must NOT pick the Setup.exe — only the zip is valid for self-update.
     assets = [
-        {"name": "readme.txt", "browser_download_url": "u1"},
-        {"name": "Setup-x64.exe", "browser_download_url": "u2"},
+        {"name": "ChipmoSentryAgent-Setup.exe", "browser_download_url": "u1"},
+        {"name": "build-x64.zip", "browser_download_url": "u2"},
     ]
-    picked = updater._pick_exe_asset(assets)
+    picked = updater._pick_asset(assets)
     assert picked is not None
-    assert picked["name"] == "Setup-x64.exe"
+    assert picked["name"] == "build-x64.zip"
 
 
-def test_pick_exe_asset_none_when_no_exe() -> None:
-    assert updater._pick_exe_asset([{"name": "notes.md"}]) is None
-    assert updater._pick_exe_asset([]) is None
+def test_pick_asset_none_when_no_zip() -> None:
+    assert updater._pick_asset([{"name": "ChipmoSentryAgent-Setup.exe"}]) is None
+    assert updater._pick_asset([]) is None

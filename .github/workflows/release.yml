@@ -47,14 +47,18 @@ jobs:
         shell: pwsh
         run: .\scripts\build_exe.ps1
 
-      - name: Verify artifact exists
+      - name: Verify build + package onedir zip
         shell: pwsh
         run: |
-          if (-not (Test-Path "dist\ChipmoSentryAgent.exe")) {
-            Write-Error "Build produced no dist\ChipmoSentryAgent.exe"
+          if (-not (Test-Path "dist\ChipmoSentryAgent\ChipmoSentryAgent.exe")) {
+            Write-Error "Build produced no dist\ChipmoSentryAgent\ChipmoSentryAgent.exe"
             exit 1
           }
-          Get-Item "dist\ChipmoSentryAgent.exe" | Select-Object Name, Length
+          # Zip the onedir CONTENTS (exe + _internal at the zip root) for the
+          # in-app self-updater.
+          Compress-Archive -Path "dist\ChipmoSentryAgent\*" `
+            -DestinationPath "dist\ChipmoSentryAgent-windows.zip" -Force
+          Get-Item "dist\ChipmoSentryAgent-windows.zip" | Select-Object Name, Length
 
       - name: Build installer (Inno Setup)
         shell: pwsh
@@ -74,6 +78,6 @@ jobs:
         with:
           files: |
             dist/ChipmoSentryAgent-Setup.exe
-            dist/ChipmoSentryAgent.exe
+            dist/ChipmoSentryAgent-windows.zip
           generate_release_notes: true
           fail_on_unmatched_files: true

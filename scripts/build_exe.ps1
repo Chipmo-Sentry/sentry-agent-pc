@@ -31,9 +31,14 @@ Write-Host "==> Running PyInstaller..." -ForegroundColor Cyan
 # App icon bundled for the tray + window + .exe resource.
 $iconPath = "src\sentry_agent_pc\assets\icon.ico"
 
+# --onedir (NOT --onefile): a one-file exe unpacks python311.dll + deps to a
+# temp _MEI dir at every launch; when the app self-updates (replaces its own
+# exe) that extraction races and fails with "Failed to load Python DLL". A
+# onedir build ships the DLLs alongside the exe (no runtime extraction), so
+# self-update is reliable and startup is faster. Output: dist\ChipmoSentryAgent\.
 uv run pyinstaller `
     --name ChipmoSentryAgent `
-    --onefile `
+    --onedir `
     --windowed `
     --noconfirm `
     --clean `
@@ -50,5 +55,5 @@ uv run pyinstaller `
     src\sentry_agent_pc\gui_main.py
 
 Write-Host ""
-Write-Host "==> Done. Output: dist\ChipmoSentryAgent.exe" -ForegroundColor Green
-Write-Host "    Double-click to launch, or distribute via GitHub Releases (M2)." -ForegroundColor Green
+Write-Host "==> Done. Output: dist\ChipmoSentryAgent\ChipmoSentryAgent.exe (onedir folder)" -ForegroundColor Green
+Write-Host "    Distribute via the installer (Setup.exe) or the onedir zip." -ForegroundColor Green
