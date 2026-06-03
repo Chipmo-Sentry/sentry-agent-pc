@@ -70,15 +70,22 @@ def _best_onvif_stream(
     )
 
 
+# RTSP ports to brute-force, in order. 554 is standard; some cameras (and
+# NVR-fronted setups) expose RTSP on 8554/10554. We try 554 fully first and
+# only escalate to alt ports if it finds nothing — so the common case stays
+# fast and we don't fan out 3× probes unless needed.
+_RTSP_PORTS: tuple[int, ...] = (554, 8554, 10554)
+
+
 def _best_rtsp_path_stream(ip: str, username: str, password: str) -> ResolvedStream | None:
     """Brute-force the RTSP path library (parallel) and pick the best hit.
 
     Credentials are correct here (wrong path ≠ auth failure), so concurrency
-    won't trip account lockouts. Kept modest (5 workers) to be gentle.
+    won't trip account lockouts. Tries port 554 first, then 8554/10554 only if
+    554 yields nothing (covers cameras on non-standard RTSP ports).
     """
     u = urllib.parse.quote(username, safe="")
     p = urllib.parse.quote(password, safe="")
-    urls = [f"rtsp://{u}:{p}@{ip}:554{path}" for path in RTSP_PATHS]
 
     def go(url: str) -> ResolvedStream | None:
         r = rtsp_probe.probe(url, timeout_sec=2)
@@ -89,17 +96,19 @@ def _best_rtsp_path_stream(ip: str, username: str, password: str) -> ResolvedStr
             )
         return None
 
-    hits: list[ResolvedStream] = []
-    # Correct creds + wrong path ≠ auth failure, so 10 concurrent probes won't
-    # trip lockouts; this keeps a full-library sweep to ~10-15s.
-    with ThreadPoolExecutor(max_workers=10) as ex:
-        for res in ex.map(go, urls):
-            if res is not None:
-                hits.append(res)
-    if not hits:
-        return None
-    hits.sort(key=lambda s: _score(s.codec, s.width, s.height), reverse=True)
-    return hits[0]
+    for port in _RTSP_PORTS:
+        urls = [f"rtsp://{u}:{p}@{ip}:{port}{path}" for path in RTSP_PATHS]
+        hits: list[ResolvedStream] = []
+        # Correct creds + wrong path ≠ auth failure, so 10 concurrent probes
+        # won't trip lockouts; a full per-port sweep is ~10-15s.
+        with ThreadPoolExecutor(max_workers=10) as ex:
+            for res in ex.map(go, urls):
+                if res is not None:
+                    hits.append(res)
+        if hits:
+            hits.sort(key=lambda s: _score(s.codec, s.width, s.height), reverse=True)
+            return hits[0]
+    return None
 
 
 def resolve_stream(
@@ -277,6 +286,15 @@ def register_camera(
     The target store is determined by the agent's paired token, so no store_id
     is needed here. Backend is created from settings if not supplied.
     """
+    # Dedup by IP: scan already skips known IPs, but manual "Add" did not — so
+    # adding the same camera twice used to create duplicate backend rows. Bail
+    # early (before the ffmpeg probe) if this IP is already registered locally.
+    if any(c.ip == ip for c in load_state().cameras):
+        return RegisterResult(
+            ok=False,
+            error=f"Энэ IP ({ip}) аль хэдийн бүртгэлтэй. Дахин нэмэхийн өмнө хуучныг устгана уу.",
+        )
+
     probe = rtsp_probe.probe(rtsp_url)
     if not probe.ok:
         err = probe.error or ""

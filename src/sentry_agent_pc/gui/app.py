@@ -307,8 +307,10 @@ class AgentApp(ctk.CTk):
         def work() -> dict[str, Any]:
             # Backend delete FIRST — if it fails we keep the local record so the
             # list stays consistent with the server (no orphaned local rows).
+            # Use the AGENT-scoped endpoint: the legacy /api/v1/cameras/{id}
+            # needs a user session, so an agent token gets a 403 there.
             if cam.uuid:
-                BackendClient().delete_camera(cam.uuid)  # raises on real failure
+                BackendClient().agent_delete_camera(cam.uuid)  # raises on real failure
             # Backend ok (or no uuid) → drop from local state
             from sentry_agent_pc.state import save_state
 
