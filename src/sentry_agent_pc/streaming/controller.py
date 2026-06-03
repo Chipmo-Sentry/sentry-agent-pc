@@ -73,7 +73,7 @@ class StreamController:
                 )
 
         targets = [
-            PushTarget(mediamtx_path=c.mediamtx_path, lan_rtsp=c.rtsp_url)
+            PushTarget(mediamtx_path=c.mediamtx_path, lan_rtsp=c.rtsp_url, codec=c.codec)
             for c in state.cameras
             if c.mediamtx_path and c.rtsp_url
         ]

@@ -144,7 +144,9 @@ class ScanDialog(ctk.CTkToplevel):
         self.spinner.start()
         self.register_btn.configure(state="disabled")
         self.rescan_btn.configure(state="disabled")
-        self.info_lbl.configure(text="ONVIF WS-Discovery — 5 секунд хүлээнэ үү.")
+        self.info_lbl.configure(
+            text="Сүлжээг сканердаж байна (ONVIF + RTSP) — хэдэн секунд хүлээнэ үү."
+        )
 
         def work() -> list[svc.DiscoveredCandidate]:
             return svc.scan(timeout_sec=5.0)
@@ -160,21 +162,19 @@ class ScanDialog(ctk.CTkToplevel):
             if not candidates:
                 self.info_lbl.configure(
                     text=(
-                        "Нэг ч ONVIF камер олдсонгүй.\n\n"
-                        "Боломжит шалтгаан:\n"
-                        "• Камер ONVIF-г дэмждэггүй эсвэл идэвхгүй (тохиргооноос асаана уу)\n"
-                        "• P2P/cloud-only хэрэглээний камер (ж: Skyworth ZHCSDB6, Tuya/iCSee) — "
-                        "RTSP байхгүй тул дэмжигдэхгүй\n"
-                        "• Камер өөр дэд сүлжээнд эсвэл firewall хаасан\n\n"
-                        "Дэмжигддэг: Hikvision, Dahua, UNV (Uniview), Imou болон бусад "
-                        "стандарт ONVIF/RTSP камер. 'Камер нэмэх'-ээр IP+нууцаар гараар оруулж "
-                        "болно."
+                        "Камер олдсонгүй (ONVIF болон RTSP/554 аль нь ч хариулсангүй).\n\n"
+                        "• Камер асаалттай, ижил сүлжээнд холбогдсон эсэхийг шалгана уу\n"
+                        "• Зарим камер P2P/cloud-only (ж: зарим Tuya/iCSee) — RTSP байхгүй\n"
+                        "• Эсвэл 'Камер нэмэх'-ээр IP + нэр/нууцаар гараар оруулна уу."
                     ),
                     text_color="#FBBF24",
                 )
                 return
             self.info_lbl.configure(
-                text=f"{len(candidates)} төхөөрөмж олдлоо. Бүртгэх камераа сонгоно уу:",
+                text=(
+                    f"{len(candidates)} төхөөрөмж олдлоо. Камер бүрийн нэр/нууц үгийг "
+                    "оруулаад 'Сонгосныг бүртгэх' дарна уу (ONVIF/RTSP автоматаар тодорхойлно)."
+                ),
                 text_color="gray70",
             )
             for cand in candidates:
@@ -205,17 +205,14 @@ class ScanDialog(ctk.CTkToplevel):
         row.set_status("Холбож байна…", "gray60")
 
         def work() -> dict[str, Any]:
-            cand = svc.authenticate_and_fetch(row.candidate, user, pwd)
-            if cand.error:
-                return {"ok": False, "error": cand.error}
-            profile = svc.pick_h264_profile(cand)
-            if profile is None or not profile.rtsp_uri:
-                return {"ok": False, "error": "H.264 profile олдсонгүй"}
-            rtsp_url = svc.embed_credentials(profile.rtsp_uri, user, pwd)
-            name = f"{cand.manufacturer or 'Камер'} — {cand.ip}"
-            result = svc.register_camera(
-                name=name, ip=cand.ip, rtsp_url=rtsp_url,
-            )
+            ip = row.candidate.ip
+            xaddr = row.candidate.xaddr or None
+            # Multi-protocol resolve: ONVIF → RTSP path brute-force, any codec.
+            stream = svc.resolve_stream(ip, user, pwd, onvif_xaddr=xaddr)
+            if not stream.ok or not stream.rtsp_url:
+                return {"ok": False, "error": stream.error or "Стрим олдсонгүй"}
+            name = f"Камер — {ip}"
+            result = svc.register_camera(name=name, ip=ip, rtsp_url=stream.rtsp_url)
             return {
                 "ok": result.ok,
                 "error": result.error,

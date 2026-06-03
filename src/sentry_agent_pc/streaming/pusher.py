@@ -37,8 +37,14 @@ _CREATE_NO_WINDOW = 0x08000000
 class PushTarget:
     """One camera to relay: LAN source → cloud path."""
 
-    mediamtx_path: str   # destination path on the cloud MediaMTX
-    lan_rtsp: str        # source RTSP on the store LAN (creds embedded)
+    mediamtx_path: str        # destination path on the cloud MediaMTX
+    lan_rtsp: str             # source RTSP on the store LAN (creds embedded)
+    codec: str | None = None  # source codec; "hevc"/"h265" → transcode to H.264
+
+    @property
+    def needs_transcode(self) -> bool:
+        # Browsers can't play H.265 over WebRTC/HLS → re-encode to H.264.
+        return (self.codec or "").lower() in ("hevc", "h265")
 
 
 @dataclass
@@ -148,12 +154,20 @@ class StreamPusher:
             self.push_base, st.target.mediamtx_path, self.publish_user, self.publish_pass
         )
         ffmpeg = get_settings().ffmpeg_path
+        if st.target.needs_transcode:
+            # H.265 → H.264 so browsers can play it (CPU cost on the store box).
+            codec_args = [
+                "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
+                "-pix_fmt", "yuv420p", "-an",
+            ]
+        else:
+            codec_args = ["-c", "copy"]
         cmd = [
             ffmpeg,
             "-nostdin",
             "-rtsp_transport", "tcp",
             "-i", st.target.lan_rtsp,
-            "-c", "copy",
+            *codec_args,
             "-f", "rtsp",
             "-rtsp_transport", "tcp",
             dest,

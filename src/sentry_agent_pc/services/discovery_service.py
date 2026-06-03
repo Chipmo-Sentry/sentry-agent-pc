@@ -8,16 +8,129 @@ from __future__ import annotations
 
 import re
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from sentry_agent_pc.backend_client import BackendClient, BackendError
 from sentry_agent_pc.discovery import manual as manual_mod
 from sentry_agent_pc.discovery import onvif as onvif_mod
 from sentry_agent_pc.discovery import rtsp_probe
+from sentry_agent_pc.discovery.rtsp_paths import RTSP_PATHS
 from sentry_agent_pc.logging_setup import get_logger
 from sentry_agent_pc.state import CameraRecord, load_state, save_state
 
 log = get_logger("sentry_agent_pc.services.discovery")
+
+
+@dataclass(slots=True)
+class ResolvedStream:
+    """A working RTSP stream found for a camera (creds embedded in rtsp_url)."""
+
+    ok: bool
+    rtsp_url: str | None = None
+    codec: str | None = None       # "h264" | "hevc" | ...
+    width: int | None = None
+    height: int | None = None
+    via: str | None = None         # "onvif" | "rtsp-path"
+    error: str | None = None
+
+    @property
+    def is_h264(self) -> bool:
+        return (self.codec or "").lower() == "h264"
+
+
+def _score(codec: str | None, width: int | None, height: int | None) -> tuple[int, int]:
+    """Rank a candidate: prefer H.264 (browser-friendly), then larger frame."""
+    return (1 if (codec or "").lower() == "h264" else 0, (width or 0) * (height or 0))
+
+
+def _best_onvif_stream(
+    ip: str, username: str, password: str, xaddr: str
+) -> ResolvedStream | None:
+    """Pick the best (H.264, highest-res) ONVIF profile.
+
+    Trusts ONVIF's codec/resolution metadata rather than probing each profile:
+    probing a high-res main stream can exceed the timeout and wrongly fall back
+    to the sub stream. register_camera probes the chosen URL anyway.
+    """
+    device = onvif_mod.OnvifDevice(xaddr=xaddr, ip=ip)
+    device = onvif_mod.fetch_profiles(device, username, password)
+    cands = [p for p in device.profiles if p.rtsp_uri]
+    if not cands:
+        return None
+    cands.sort(key=lambda p: _score(p.encoding, p.width, p.height), reverse=True)
+    best = cands[0]
+    return ResolvedStream(
+        ok=True,
+        rtsp_url=embed_credentials(best.rtsp_uri or "", username, password),
+        codec=(best.encoding or "").lower() or None,
+        width=best.width,
+        height=best.height,
+        via="onvif",
+    )
+
+
+def _best_rtsp_path_stream(ip: str, username: str, password: str) -> ResolvedStream | None:
+    """Brute-force the RTSP path library (parallel) and pick the best hit.
+
+    Credentials are correct here (wrong path ≠ auth failure), so concurrency
+    won't trip account lockouts. Kept modest (5 workers) to be gentle.
+    """
+    u = urllib.parse.quote(username, safe="")
+    p = urllib.parse.quote(password, safe="")
+    urls = [f"rtsp://{u}:{p}@{ip}:554{path}" for path in RTSP_PATHS]
+
+    def go(url: str) -> ResolvedStream | None:
+        r = rtsp_probe.probe(url, timeout_sec=2)
+        if r.ok:
+            return ResolvedStream(
+                ok=True, rtsp_url=url, codec=r.codec, width=r.width, height=r.height,
+                via="rtsp-path",
+            )
+        return None
+
+    hits: list[ResolvedStream] = []
+    # Correct creds + wrong path ≠ auth failure, so 10 concurrent probes won't
+    # trip lockouts; this keeps a full-library sweep to ~10-15s.
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        for res in ex.map(go, urls):
+            if res is not None:
+                hits.append(res)
+    if not hits:
+        return None
+    hits.sort(key=lambda s: _score(s.codec, s.width, s.height), reverse=True)
+    return hits[0]
+
+
+def resolve_stream(
+    ip: str,
+    username: str,
+    password: str,
+    *,
+    onvif_xaddr: str | None = None,
+) -> ResolvedStream:
+    """Find a usable RTSP stream for `ip` by ANY means: ONVIF first (clean,
+    no hammering), then a brute-force of known brand RTSP paths. Accepts H.264
+    AND H.265, preferring H.264 + the highest resolution (main stream).
+
+    This is what lets one "Scan/Add" connect Hikvision (RTSP, no ONVIF user),
+    UNV (ONVIF), and Skyworth (H.265 at /stream1) alike.
+    """
+    xaddr = onvif_xaddr or f"http://{ip}:80/onvif/device_service"
+    best = _best_onvif_stream(ip, username, password, xaddr)
+    if best is None:
+        best = _best_rtsp_path_stream(ip, username, password)
+    if best is None:
+        return ResolvedStream(
+            ok=False,
+            error=(
+                "Стрим олдсонгүй. Нэр/нууц үгээ шалгана уу (тусгай тэмдэгт орсныг "
+                "анхаар), эсвэл камер RTSP-г дэмжихгүй байж магадгүй."
+            ),
+        )
+    log.info("resolve.ok", ip=ip, via=best.via, codec=best.codec,
+             res=f"{best.width}x{best.height}")
+    return best
 
 
 @dataclass(slots=True)
@@ -47,23 +160,73 @@ class RegisterResult:
 
 
 def scan(timeout_sec: float = 5.0) -> list[DiscoveredCandidate]:
-    """Run ONVIF WS-Discovery, return raw candidates (no auth yet).
+    """Discover cameras by BOTH ONVIF WS-Discovery AND a LAN port-554 sweep.
 
-    Marks already-registered IPs from local state so the UI can default-deselect.
+    ONVIF finds ONVIF-enabled cameras (with their device-service xaddr). The
+    RTSP sweep finds every host with port 554 open — so cameras whose ONVIF is
+    disabled (e.g. Hikvision out of the box) still show up and can be added via
+    the credential-based resolver. Dedups by IP; marks already-registered ones.
     """
     state = load_state()
     known_ips = {c.ip for c in state.cameras}
-    devices = onvif_mod.discover(timeout_sec=timeout_sec)
-    out: list[DiscoveredCandidate] = []
-    for d in devices:
-        out.append(
-            DiscoveredCandidate(
-                ip=d.ip,
-                xaddr=d.xaddr,
-                already_registered=d.ip in known_ips,
-            ),
+
+    by_ip: dict[str, DiscoveredCandidate] = {}
+    for d in onvif_mod.discover(timeout_sec=timeout_sec):
+        by_ip[d.ip] = DiscoveredCandidate(
+            ip=d.ip, xaddr=d.xaddr, already_registered=d.ip in known_ips
         )
-    return out
+    for ip in _sweep_rtsp_hosts():
+        if ip not in by_ip:
+            by_ip[ip] = DiscoveredCandidate(
+                ip=ip, xaddr="", already_registered=ip in known_ips
+            )
+
+    # Sort: unregistered first, then by IP.
+    return sorted(
+        by_ip.values(), key=lambda c: (c.already_registered, _ip_sort_key(c.ip))
+    )
+
+
+def _ip_sort_key(ip: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(o) for o in ip.split("."))
+    except ValueError:
+        return (999,)
+
+
+def _sweep_rtsp_hosts(port: int = 554, timeout: float = 0.5) -> list[str]:
+    """Scan every local /24 for hosts with `port` (RTSP) open. Best-effort."""
+    import ipaddress
+    import socket
+
+    targets: set[str] = set()
+    for local_ip in onvif_mod._local_ipv4_addresses():
+        try:
+            net = ipaddress.ip_network(f"{local_ip}/24", strict=False)
+        except ValueError:
+            continue
+        targets.update(str(h) for h in net.hosts())
+    if not targets:
+        return []
+
+    def check(host: str) -> str | None:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        try:
+            s.connect((host, port))
+            return host
+        except OSError:
+            return None
+        finally:
+            s.close()
+
+    found: list[str] = []
+    with ThreadPoolExecutor(max_workers=100) as ex:
+        for r in ex.map(check, sorted(targets)):
+            if r is not None:
+                found.append(r)
+    log.info("sweep.rtsp_hosts", count=len(found))
+    return found
 
 
 def authenticate_and_fetch(
@@ -126,11 +289,14 @@ def register_camera(
         else:
             msg = f"RTSP холбогдсонгүй: {err}"
         return RegisterResult(ok=False, error=msg)
-    if not probe.is_h264:
+    codec = (probe.codec or "").lower()
+    if codec not in ("h264", "hevc", "h265"):
         return RegisterResult(
             ok=False,
-            error=f"Камер {probe.codec} буцаалаа — H.264 шаардлагатай. Web UI-аас codec солих.",
+            error=f"Камер {probe.codec or '?'} буцаалаа — H.264/H.265 дэмжинэ. Web UI-аас codec солих.",
         )
+    # H.265 (hevc) is accepted: AI decodes it fine; the cloud push transcodes
+    # it to H.264 for browser viewing (browsers can't play HEVC over WebRTC/HLS).
 
     client = backend or BackendClient()
     try:

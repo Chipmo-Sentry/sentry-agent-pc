@@ -15,6 +15,7 @@ from typing import Any
 import customtkinter as ctk
 
 from sentry_agent_pc.discovery import manual as manual_mod
+from sentry_agent_pc.discovery import rtsp_probe
 from sentry_agent_pc.gui import widgets
 from sentry_agent_pc.logging_setup import get_logger
 from sentry_agent_pc.services import discovery_service as svc
@@ -129,21 +130,27 @@ class AddCameraDialog(ctk.CTkToplevel):
         self._status("RTSP шалгаж байна…", "gray60")
 
         def work() -> dict[str, Any]:
+            # 1) Try the brand template / custom path first (fast, user-directed),
+            #    accepting H.264 OR H.265.
             _main, candidates = svc.build_manual_url(
                 brand.key, host=host, username=user, password=pwd,
                 port=port, custom_path=custom_path,
             )
-            probe = svc.probe_first_h264(candidates)
-            if not probe.ok:
-                return {"ok": False, "error": f"RTSP холбогдсонгүй: {probe.error}"}
-            if not probe.is_h264:
-                return {
-                    "ok": False,
-                    "error": f"Камер {probe.codec} буцаалаа — H.264 шаардлагатай. "
-                    "Web UI-аас codec солих.",
-                }
+            rtsp_url: str | None = None
+            for url in candidates:
+                pr = rtsp_probe.probe(url, timeout_sec=4)
+                if pr.ok and (pr.codec or "").lower() in ("h264", "hevc", "h265"):
+                    rtsp_url = url
+                    break
+            # 2) Fall back to the full multi-protocol resolver (ONVIF + RTSP
+            #    path brute-force) so any reachable camera still connects.
+            if rtsp_url is None:
+                stream = svc.resolve_stream(host, user, pwd)
+                if not stream.ok or not stream.rtsp_url:
+                    return {"ok": False, "error": stream.error or "RTSP холбогдсонгүй"}
+                rtsp_url = stream.rtsp_url
             name = f"{brand.label} — {host}"
-            result = svc.register_camera(name=name, ip=host, rtsp_url=probe.url)
+            result = svc.register_camera(name=name, ip=host, rtsp_url=rtsp_url)
             return {
                 "ok": result.ok,
                 "error": result.error,
