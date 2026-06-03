@@ -16,6 +16,11 @@ from sentry_agent_pc.settings import get_settings
 
 log = get_logger("sentry_agent_pc.discovery.rtsp_probe")
 
+# Windows: hide the ffmpeg console window when launched from the GUI .exe.
+# Without this, every probe (and a scan fans out dozens at once) pops a
+# flashing terminal. Mirrors streaming/pusher.py.
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 # Sample ffmpeg lines we care about:
 #   Stream #0:0: Video: h264 (Main), yuvj420p(pc, bt709), 1920x1080, 25 tbr, 90k tbn
 #   Stream #0:0: Video: hevc (Main), yuv420p(tv, bt709), 2688x1520, 20 fps, 50 tbr, 90k tbn
@@ -57,8 +62,10 @@ def probe(url: str, timeout_sec: int | None = None) -> ProbeResult:
         proc = subprocess.run(  # noqa: S603
             args,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             timeout=timeout + 5,
             check=False,
+            creationflags=_CREATE_NO_WINDOW,
         )
     except FileNotFoundError as e:
         return ProbeResult(ok=False, url=url, error=f"ffmpeg not found: {e}")
