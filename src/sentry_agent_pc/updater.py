@@ -172,14 +172,55 @@ def download_asset(
     return dest
 
 
-def apply_update_and_restart(new_exe: Path) -> None:
-    """Replace the running .exe with `new_exe` and relaunch, then exit.
+def _build_update_script(src: Path, dst: Path, log_path: Path) -> str:
+    """The swap-and-relaunch .bat.
 
-    Windows holds a lock on a running executable, so we can't overwrite it in
-    place. We write a detached .bat that:
-      1. waits for this PID to exit,
-      2. moves the downloaded file over the current .exe (retrying on lock),
-      3. relaunches the app and deletes itself.
+    Crucial Windows details learned the hard way:
+      • `timeout` needs a console input handle — it FAILS under a detached/
+        no-console process ("Input redirection is not supported"). We use
+        `ping -n` for delays instead, which always works.
+      • The retry-move loop IS the wait: `move` fails while the old process
+        still locks the .exe and succeeds the instant the lock releases, so we
+        don't need a separate PID wait.
+      • If the swap ultimately fails (e.g. a stray locked handle), we STILL
+        relaunch `dst` (the old exe) so the app never just vanishes.
+      • Everything is logged so a failed update is diagnosable.
+    """
+    return f"""@echo off
+setlocal enableextensions
+set "SRC={src}"
+set "DST={dst}"
+set "LOG={log_path}"
+echo [start] %date% %time% >> "%LOG%"
+
+set /a n=0
+:try
+move /y "%SRC%" "%DST%" >nul 2>&1
+if not errorlevel 1 (
+    echo [ok] moved after %n% retries >> "%LOG%"
+    goto launch
+)
+set /a n+=1
+if %n% geq 60 (
+    echo [warn] swap failed after %n% tries; relaunching existing >> "%LOG%"
+    goto launch
+)
+ping -n 2 127.0.0.1 >nul
+goto try
+
+:launch
+echo [launch] %DST% >> "%LOG%"
+start "" "%DST%"
+del "%~f0" >nul 2>&1
+"""
+
+
+def apply_update_and_restart(new_exe: Path, *, on_before_exit: object = None) -> None:
+    """Replace the running .exe with `new_exe`, relaunch, then exit.
+
+    Windows locks a running .exe, so a detached .bat does the swap once this
+    process releases the lock (see `_build_update_script`). `on_before_exit`,
+    if callable, runs just before exit (e.g. stop the tray icon).
 
     Raises RuntimeError when not frozen (a Python process can't swap itself).
     """
@@ -190,48 +231,32 @@ def apply_update_and_restart(new_exe: Path) -> None:
 
     target = current_exe_path()
     pid = os.getpid()
-    bat = Path(tempfile.gettempdir()) / f"chipmo_update_{pid}.bat"
+    tmp = Path(tempfile.gettempdir())
+    bat = tmp / f"chipmo_update_{pid}.bat"
+    log_path = tmp / "chipmo_update.log"
+    bat.write_text(_build_update_script(new_exe, target, log_path), encoding="utf-8")
+    log.info("updater.applying", target=str(target), new=str(new_exe), bat=str(bat))
 
-    # %1=pid %2=source(new) %3=target(current exe)
-    script = f"""@echo off
-setlocal
-set "PID={pid}"
-set "SRC={new_exe}"
-set "DST={target}"
-
-rem Wait for the running agent to exit (lock release).
-:waitloop
-tasklist /FI "PID eq %PID%" 2>nul | find "%PID%" >nul
-if not errorlevel 1 (
-    timeout /t 1 /nobreak >nul
-    goto waitloop
-)
-
-rem Swap the executable, retrying while the file is briefly locked.
-set /a tries=0
-:movloop
-move /y "%SRC%" "%DST%" >nul 2>&1
-if not errorlevel 1 goto launch
-set /a tries+=1
-if %tries% geq 20 goto launch
-timeout /t 1 /nobreak >nul
-goto movloop
-
-:launch
-start "" "%DST%"
-del "%~f0" >nul 2>&1
-"""
-    bat.write_text(script, encoding="utf-8")
-    log.info("updater.applying", target=str(target), new=str(new_exe))
-
-    # Detached, no console window — survives our exit.
+    # CREATE_NO_WINDOW (NOT detached): hides the cmd window, but the helper
+    # stays attached to the interactive window station so the relaunched GUI is
+    # visible to the user. It survives our exit (Windows doesn't kill children
+    # on parent exit). DETACHED_PROCESS was the bug — `start` from a detached
+    # process can launch with no visible window. We also use `ping` (not
+    # `timeout`) for delays, which needs no console input.
     creationflags = 0
     if os.name == "nt":
-        creationflags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+        creationflags = subprocess.CREATE_NO_WINDOW
     subprocess.Popen(
         ["cmd", "/c", str(bat)],
         creationflags=creationflags,
         close_fds=True,
+        cwd=str(tmp),
     )
-    # Hard-exit so the .bat can grab the file lock immediately.
+
+    if callable(on_before_exit):
+        try:
+            on_before_exit()
+        except Exception as e:  # noqa: BLE001 — never block the exit
+            log.debug("updater.on_before_exit_failed", error=str(e))
+    # Hard-exit so the OS releases the .exe lock immediately for the swap.
     os._exit(0)

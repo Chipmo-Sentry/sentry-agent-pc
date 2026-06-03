@@ -166,8 +166,18 @@ class UpdateDialog(ctk.CTkToplevel):
             text="Татаж дууслаа. Програм хаагдаж, шинэчлэгдээд дахин нээгдэнэ…",
             text_color="#4ADE80",
         )
+
+        def _stop_tray() -> None:
+            # Release the tray icon (and any handles) before the process exits.
+            tray = getattr(self.master, "_tray", None)
+            if tray is not None:
+                tray.stop()
+
         # Give the label a beat to render, then swap + relaunch.
-        self.after(800, lambda: updater.apply_update_and_restart(path))
+        self.after(
+            800,
+            lambda: updater.apply_update_and_restart(path, on_before_exit=_stop_tray),
+        )
 
     def _download_failed(self, err: str) -> None:
         self.progress.pack_forget()
