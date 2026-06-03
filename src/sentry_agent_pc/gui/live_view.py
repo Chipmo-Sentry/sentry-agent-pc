@@ -16,8 +16,8 @@ from __future__ import annotations
 import subprocess
 import sys
 
+from sentry_agent_pc.config_file import frontend_url as configured_frontend_url
 from sentry_agent_pc.logging_setup import get_logger
-from sentry_agent_pc.settings import get_settings
 
 log = get_logger("sentry_agent_pc.gui.live_view")
 
@@ -25,8 +25,11 @@ _LIVE_VIEW_FLAG = "--live-view"
 
 
 def live_url() -> str:
-    """The /live URL to load, from configured frontend_url."""
-    return f"{get_settings().frontend_url.rstrip('/')}/live"
+    """The /live URL to load, from the configured (editable) frontend URL.
+
+    Reads config_file directly (not cached settings) so an edit in the pairing
+    dialog takes effect on the next launch without restarting the app."""
+    return f"{configured_frontend_url().rstrip('/')}/live"
 
 
 def open_live_view() -> None:

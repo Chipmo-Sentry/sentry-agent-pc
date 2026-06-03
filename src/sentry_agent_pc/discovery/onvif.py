@@ -280,7 +280,13 @@ def fetch_profiles(
         device.manufacturer = getattr(info, "Manufacturer", None)
         device.model = getattr(info, "Model", None)
     except Exception as e:  # noqa: BLE001 — onvif-zeep raises a sea of types
-        device.error = f"auth/info failed: {e}"
+        device.error = (
+            "Нэвтрэлт амжилтгүй — нэр/нууц үгээ шалгана уу (тусгай тэмдэгт "
+            "орсон бол анхаар, ж: '*'). Hikvision дээр ONVIF-г идэвхжүүлж, "
+            "ONVIF хэрэглэгч үүсгэх шаардлагатай (Configuration → Network → "
+            "Integration Protocol). Эсвэл 'Камер нэмэх'-ээр RTSP-ээр гараар оруулна уу."
+        )
+        log.info("onvif.auth_failed", ip=device.ip, error=str(e))
         return device
 
     # Try Media2 (modern), fall back to Media (legacy ONVIF 1.x)

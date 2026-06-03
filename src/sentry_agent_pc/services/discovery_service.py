@@ -116,7 +116,16 @@ def register_camera(
     """
     probe = rtsp_probe.probe(rtsp_url)
     if not probe.ok:
-        return RegisterResult(ok=False, error=f"RTSP probe failed: {probe.error}")
+        err = probe.error or ""
+        if "401" in err or "Unauthorized" in err or "authorization failed" in err.lower():
+            msg = (
+                "Нэр/нууц үг буруу (401). Нууц үгээ шалгана уу — тусгай тэмдэгт "
+                "(ж: '*') орсон бол яг таг бичих. Hikvision/Dahua дээр хэд дахин "
+                "буруу оролдвол данс түр түгжигддэг тул хэдэн минут хүлээгээд дахин үзнэ үү."
+            )
+        else:
+            msg = f"RTSP холбогдсонгүй: {err}"
+        return RegisterResult(ok=False, error=msg)
     if not probe.is_h264:
         return RegisterResult(
             ok=False,

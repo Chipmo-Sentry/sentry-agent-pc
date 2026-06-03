@@ -16,7 +16,12 @@ import customtkinter as ctk
 
 from sentry_agent_pc import __version__, resources, updater
 from sentry_agent_pc.backend_client import BackendClient, BackendError
-from sentry_agent_pc.config_file import DEFAULT_BACKEND_URL, read_config, write_config
+from sentry_agent_pc.config_file import (
+    DEFAULT_BACKEND_URL,
+    DEFAULT_FRONTEND_URL,
+    read_config,
+    write_config,
+)
 from sentry_agent_pc.gui import widgets
 from sentry_agent_pc.gui.add_dialog import AddCameraDialog
 from sentry_agent_pc.gui.scan_dialog import ScanDialog
@@ -484,7 +489,7 @@ class PairingDialog(ctk.CTkToplevel):
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
         btn_row.pack(side="bottom", fill="x", padx=20, pady=16)
         ctk.CTkButton(btn_row, text="Хаах", fg_color="transparent", border_width=1,
-                      command=self.destroy).pack(side="right", padx=(8, 0))
+                      command=self._save_and_close).pack(side="right", padx=(8, 0))
         self.connect_btn = ctk.CTkButton(
             btn_row, text="Холбох", fg_color=CHIPMO_ORANGE,
             hover_color="#E57A12", command=self._pair,
@@ -538,12 +543,31 @@ class PairingDialog(ctk.CTkToplevel):
             fill="x", padx=20,
         )
         self.url_entry = ctk.CTkEntry(body, placeholder_text=DEFAULT_BACKEND_URL)
-        self.url_entry.pack(fill="x", padx=20, pady=(2, 4))
+        self.url_entry.pack(fill="x", padx=20, pady=(2, 8))
         self.url_entry.insert(0, cfg.get("BACKEND_URL") or DEFAULT_BACKEND_URL)
+
+        ctk.CTkLabel(
+            body, text="Веб хаяг (Шууд харах цонхонд ачаална):",
+            anchor="w", font=ctk.CTkFont(size=11), text_color="gray60",
+        ).pack(fill="x", padx=20)
+        self.frontend_entry = ctk.CTkEntry(body, placeholder_text=DEFAULT_FRONTEND_URL)
+        self.frontend_entry.pack(fill="x", padx=20, pady=(2, 4))
+        self.frontend_entry.insert(0, cfg.get("FRONTEND_URL") or DEFAULT_FRONTEND_URL)
+
+    def _save_and_close(self) -> None:
+        """Persist edited Backend/Web URLs (no pairing needed), then close.
+
+        Lets an already-paired user change the live-view web address without
+        re-entering a pairing code."""
+        url = self.url_entry.get().strip() or DEFAULT_BACKEND_URL
+        frontend = self.frontend_entry.get().strip() or DEFAULT_FRONTEND_URL
+        write_config(url, frontend)
+        self.destroy()
 
     def _pair(self) -> None:
         code = self.code_entry.get().strip()
         url = self.url_entry.get().strip() or DEFAULT_BACKEND_URL
+        frontend = self.frontend_entry.get().strip() or DEFAULT_FRONTEND_URL
         if not code.isdigit() or len(code) != 6:
             self.status_lbl.configure(
                 text="Код 6 оронтой тоо байх ёстой.", text_color="#FF6B6B",
@@ -551,7 +575,7 @@ class PairingDialog(ctk.CTkToplevel):
             return
         self.connect_btn.configure(state="disabled")
         self.status_lbl.configure(text="Холбож байна…", text_color="gray60")
-        write_config(url)
+        write_config(url, frontend)
 
         def runner() -> None:
             try:
