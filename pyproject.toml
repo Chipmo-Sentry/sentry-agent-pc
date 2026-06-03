@@ -1,6 +1,6 @@
 [project]
 name = "sentry-agent-pc"
-version = "0.3.3"
+version = "0.3.4"
 description = "Chipmo Sentry Windows agent — ONVIF camera discovery + manual add + backend registration"
 readme = "README.md"
 requires-python = "==3.11.*"
@@ -25,6 +25,8 @@ dependencies = [
     # Embedded live view — webview window loading the web /live page.
     # On Windows uses the system WebView2 (EdgeChromium) runtime via pythonnet.
     "pywebview>=5.0,<6.0",
+    # System tray icon (minimize-to-tray + autostart toggle).
+    "pystray>=0.19,<0.20",
 ]
 
 [dependency-groups]
@@ -74,7 +76,7 @@ mypy_path = "src"
 packages = ["sentry_agent_pc"]
 
 [[tool.mypy.overrides]]
-module = ["onvif.*", "zeep.*", "customtkinter.*", "webview.*"]
+module = ["onvif.*", "zeep.*", "customtkinter.*", "webview.*", "pystray.*"]
 ignore_missing_imports = true
 
 # customtkinter ships no type stubs → subclassing its widgets trips

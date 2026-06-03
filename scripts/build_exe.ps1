@@ -28,18 +28,25 @@ Write-Host "==> onvif wsdl at: $onvifPath" -ForegroundColor Cyan
 Write-Host "==> Running PyInstaller..." -ForegroundColor Cyan
 # wsdl bundled to ./wsdl inside the bundle; onvif resolves it via our runtime
 # patch in settings.py (sets wsdl_dir for the frozen case).
+# App icon bundled for the tray + window + .exe resource.
+$iconPath = "src\sentry_agent_pc\assets\icon.ico"
+
 uv run pyinstaller `
     --name ChipmoSentryAgent `
     --onefile `
     --windowed `
     --noconfirm `
     --clean `
+    --icon "$iconPath" `
     --add-data "$ctkPath;customtkinter" `
     --add-data "$onvifPath;wsdl" `
+    --add-data "src\sentry_agent_pc\assets;assets" `
     --collect-submodules customtkinter `
+    --collect-submodules pystray `
     --collect-all webview `
     --collect-all clr_loader `
     --hidden-import PIL._tkinter_finder `
+    --hidden-import pystray._win32 `
     src\sentry_agent_pc\gui_main.py
 
 Write-Host ""

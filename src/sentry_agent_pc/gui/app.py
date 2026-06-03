@@ -14,12 +14,13 @@ from typing import Any
 
 import customtkinter as ctk
 
-from sentry_agent_pc import __version__, updater
+from sentry_agent_pc import __version__, resources, updater
 from sentry_agent_pc.backend_client import BackendClient, BackendError
 from sentry_agent_pc.config_file import DEFAULT_BACKEND_URL, read_config, write_config
 from sentry_agent_pc.gui import widgets
 from sentry_agent_pc.gui.add_dialog import AddCameraDialog
 from sentry_agent_pc.gui.scan_dialog import ScanDialog
+from sentry_agent_pc.gui.tray import TrayController
 from sentry_agent_pc.gui.update_dialog import UpdateDialog, check_in_background
 from sentry_agent_pc.logging_setup import get_logger
 from sentry_agent_pc.state import CameraRecord, load_state, save_state
@@ -44,6 +45,8 @@ class AgentApp(ctk.CTk):
         # refresh). Updated by the periodic _tick_push_status loop.
         self._push_labels: dict[str, ctk.CTkLabel] = {}
 
+        self._set_window_icon()
+
         self._build_header()
         self._build_toolbar()
         self._build_camera_list()
@@ -59,6 +62,11 @@ class AgentApp(ctk.CTk):
         # Live push status indicators (5s) + periodic stream-config reconcile (30s).
         self.after(5000, self._tick_push_status)
         self.after(30000, self._tick_periodic_refresh)
+
+        # System tray icon + minimize-to-tray (closing hides instead of quitting).
+        self._tray = TrayController(self)
+        self._tray.start()
+        self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
 
     # === Layout ===
 
@@ -341,6 +349,42 @@ class AgentApp(ctk.CTk):
         open_live_view()
         self.set_status("Шууд харах цонх нээгдэж байна…")
 
+    # === Window / tray lifecycle ===
+
+    def _set_window_icon(self) -> None:
+        """Set the title-bar / taskbar icon (best-effort; Windows .ico)."""
+        try:
+            ico = resources.icon_ico()
+            if ico.exists():
+                self.iconbitmap(default=str(ico))
+        except Exception as e:  # noqa: BLE001 — icon is cosmetic
+            log.debug("window.icon_failed", error=str(e))
+
+    def hide_to_tray(self) -> None:
+        """Hide the window to the system tray (used by the close button)."""
+        if getattr(self, "_tray", None) is not None and self._tray.active:
+            self.withdraw()
+            self.set_status("Tray-д жижигрэв — taskbar-ийн tray icon-оос нээнэ")
+        else:
+            # No tray available → closing really exits.
+            self.quit_app()
+
+    def show_window(self) -> None:
+        """Restore the window from the tray."""
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def quit_app(self) -> None:
+        """Fully exit: stop tray + stream relays, then destroy the window."""
+        try:
+            get_stream_controller().stop()
+        except Exception as e:  # noqa: BLE001
+            log.debug("quit.stop_streams_failed", error=str(e))
+        if getattr(self, "_tray", None) is not None:
+            self._tray.stop()
+        self.destroy()
+
     def _auto_check_update(self) -> None:
         """Silent startup check — only opens the dialog if a newer release exists."""
         def on_available(info: updater.UpdateInfo) -> None:
@@ -549,7 +593,9 @@ class PairingDialog(ctk.CTkToplevel):
         self.destroy()
 
 
-def run() -> None:
-    """GUI entry point."""
+def run(minimized: bool = False) -> None:
+    """GUI entry point. `minimized=True` (auto-start) launches hidden in the tray."""
     app = AgentApp()
+    if minimized:
+        app.after(0, app.hide_to_tray)
     app.mainloop()

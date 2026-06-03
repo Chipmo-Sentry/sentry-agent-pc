@@ -19,7 +19,8 @@ def main() -> None:
     # The same .exe doubles as the live-view child process (see gui/live_view.py).
     if maybe_run_live_view_from_argv(sys.argv):
         return
-    run()
+    # --minimized: launched by auto-start at login → start hidden in the tray.
+    run(minimized="--minimized" in sys.argv)
 
 
 if __name__ == "__main__":
