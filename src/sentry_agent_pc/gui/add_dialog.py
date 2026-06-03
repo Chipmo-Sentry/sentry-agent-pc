@@ -30,29 +30,46 @@ class AddCameraDialog(ctk.CTkToplevel):
         super().__init__(master)
         self.on_done = on_done
         self.title("Камер нэмэх (гараар)")
-        self.geometry("560x600")
         self.transient(master)
         self.grab_set()
+        widgets.setup_dialog(self, 580, 640, min_width=520, min_height=460)
 
         self.brands = manual_mod.list_brands()
         self.brand_by_label = {b.label: b for b in self.brands}
 
+        # Bottom button bar FIRST so it always stays visible (Tk clips the
+        # last-packed widget when space is tight).
+        btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        btn_row.pack(side="bottom", fill="x", padx=20, pady=14)
+        ctk.CTkButton(btn_row, text="Болих", fg_color="transparent", border_width=1,
+                      command=self.destroy).pack(side="right", padx=(8, 0))
+        self.add_btn = ctk.CTkButton(
+            btn_row, text="Шалгах ба нэмэх", fg_color=CHIPMO_ORANGE,
+            hover_color="#E57A12", command=self._submit,
+        )
+        self.add_btn.pack(side="right")
+
+        # Scrollable body — content scrolls if the window is short.
+        body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        body.pack(side="top", fill="both", expand=True)
+        self._body = body
+
         ctk.CTkLabel(
-            self, text="Камер гараар нэмэх",
+            body, text="Камер гараар нэмэх",
             font=ctk.CTkFont(size=16, weight="bold"),
-        ).pack(pady=(18, 8), padx=20, anchor="w")
+        ).pack(pady=(8, 8), padx=20, anchor="w")
 
         # Brand picker
-        ctk.CTkLabel(self, text="Камерын брэнд:", anchor="w").pack(fill="x", padx=20)
+        ctk.CTkLabel(body, text="Камерын брэнд:", anchor="w").pack(fill="x", padx=20)
         self.brand_var = ctk.StringVar(value=self.brands[0].label)
         self.brand_menu = ctk.CTkOptionMenu(
-            self, values=list(self.brand_by_label.keys()),
+            body, values=list(self.brand_by_label.keys()),
             variable=self.brand_var, command=self._on_brand_change,
         )
         self.brand_menu.pack(fill="x", padx=20, pady=(2, 4))
 
         self.notes_lbl = ctk.CTkLabel(
-            self, text="", font=ctk.CTkFont(size=11), text_color="#FBBF24",
+            body, text="", font=ctk.CTkFont(size=11), text_color="#FBBF24",
             anchor="w", wraplength=500, justify="left",
         )
         self.notes_lbl.pack(fill="x", padx=20)
@@ -67,30 +84,19 @@ class AddCameraDialog(ctk.CTkToplevel):
         )
 
         # Status + spinner
-        self.spinner = widgets.Spinner(self)
+        self.spinner = widgets.Spinner(body)
         self.spinner.pack(pady=(8, 0))
         self.status_lbl = ctk.CTkLabel(
-            self, text="", font=ctk.CTkFont(size=12), text_color="gray60",
+            body, text="", font=ctk.CTkFont(size=12), text_color="gray60",
             wraplength=500,
         )
         self.status_lbl.pack(pady=4, padx=20)
 
-        # Buttons
-        btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.pack(fill="x", padx=20, pady=16, side="bottom")
-        ctk.CTkButton(btn_row, text="Болих", fg_color="transparent", border_width=1,
-                      command=self.destroy).pack(side="right", padx=(8, 0))
-        self.add_btn = ctk.CTkButton(
-            btn_row, text="Шалгах ба нэмэх", fg_color=CHIPMO_ORANGE,
-            hover_color="#E57A12", command=self._submit,
-        )
-        self.add_btn.pack(side="right")
-
         self._on_brand_change(self.brand_var.get())
 
     def _field(self, label: str, default: str, show: str | None = None) -> ctk.CTkEntry:
-        ctk.CTkLabel(self, text=label, anchor="w").pack(fill="x", padx=20, pady=(8, 0))
-        entry = ctk.CTkEntry(self, show=show)
+        ctk.CTkLabel(self._body, text=label, anchor="w").pack(fill="x", padx=20, pady=(8, 0))
+        entry = ctk.CTkEntry(self._body, show=show)
         entry.pack(fill="x", padx=20)
         if default:
             entry.insert(0, default)

@@ -91,32 +91,15 @@ class ScanDialog(ctk.CTkToplevel):
         super().__init__(master)
         self.on_done = on_done
         self.title("Камер хайх (ONVIF)")
-        self.geometry("640x560")
         self.transient(master)
         self.grab_set()
+        widgets.setup_dialog(self, 680, 600, min_width=560, min_height=460)
 
         self.rows: list[_DeviceRow] = []
 
-        ctk.CTkLabel(
-            self, text="Сүлжээнд холбогдсон камеруудыг хайж байна…",
-            font=ctk.CTkFont(size=15, weight="bold"),
-        ).pack(pady=(18, 4), padx=20, anchor="w")
-
-        self.info_lbl = ctk.CTkLabel(
-            self, text="ONVIF WS-Discovery — 5 секунд хүлээнэ үү.",
-            font=ctk.CTkFont(size=12), text_color="gray60", anchor="w",
-        )
-        self.info_lbl.pack(padx=20, anchor="w")
-
-        self.spinner = widgets.Spinner(self)
-        self.spinner.pack(pady=10)
-        self.spinner.start()
-
-        self.results = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        self.results.pack(fill="both", expand=True, padx=16, pady=8)
-
+        # Bottom button bar FIRST so it stays visible when results fill up.
         self.btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        self.btn_row.pack(fill="x", padx=20, pady=14, side="bottom")
+        self.btn_row.pack(side="bottom", fill="x", padx=20, pady=14)
         self.close_btn = ctk.CTkButton(
             self.btn_row, text="Хаах", fg_color="transparent", border_width=1,
             command=self.destroy,
@@ -132,6 +115,25 @@ class ScanDialog(ctk.CTkToplevel):
             command=self._start_scan, state="disabled",
         )
         self.rescan_btn.pack(side="left")
+
+        ctk.CTkLabel(
+            self, text="Сүлжээнд холбогдсон камеруудыг хайж байна…",
+            font=ctk.CTkFont(size=15, weight="bold"),
+        ).pack(pady=(18, 4), padx=20, anchor="w")
+
+        self.info_lbl = ctk.CTkLabel(
+            self, text="ONVIF WS-Discovery — 5 секунд хүлээнэ үү.",
+            font=ctk.CTkFont(size=12), text_color="gray60", anchor="w",
+            wraplength=620, justify="left",
+        )
+        self.info_lbl.pack(fill="x", padx=20, anchor="w")
+
+        self.spinner = widgets.Spinner(self)
+        self.spinner.pack(pady=10)
+        self.spinner.start()
+
+        self.results = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.results.pack(fill="both", expand=True, padx=16, pady=8)
 
         self._start_scan()
 

@@ -14,6 +14,7 @@ from typing import Any
 import customtkinter as ctk
 
 from sentry_agent_pc import __version__, updater
+from sentry_agent_pc.gui import widgets
 from sentry_agent_pc.logging_setup import get_logger
 
 log = get_logger("sentry_agent_pc.gui.update")
@@ -35,11 +36,37 @@ class UpdateDialog(ctk.CTkToplevel):
     ) -> None:
         super().__init__(master)
         self.title("Шинэчлэл")
-        self.geometry("520x440")
         self.transient(master)
         self.grab_set()
+        widgets.setup_dialog(self, 560, 480, min_width=480, min_height=400)
 
         self.info = info
+
+        # Bottom-anchored controls FIRST (buttons → status → progress), so they
+        # always stay visible; the notes box fills the remaining space above.
+        btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        btn_row.pack(side="bottom", fill="x", padx=20, pady=(4, 16))
+        self.close_btn = ctk.CTkButton(
+            btn_row, text="Хаах", fg_color="transparent", border_width=1,
+            command=self.destroy,
+        )
+        self.close_btn.pack(side="right", padx=(8, 0))
+        self.action_btn = ctk.CTkButton(
+            btn_row, text="Шинэчлэх", fg_color=CHIPMO_ORANGE,
+            hover_color="#E57A12", command=self._on_action,
+        )
+        self.action_btn.pack(side="right")
+
+        self.status_lbl = ctk.CTkLabel(
+            self, text="", font=ctk.CTkFont(size=12),
+            text_color="gray60", anchor="w", wraplength=470,
+        )
+        self.status_lbl.pack(side="bottom", fill="x", padx=20, pady=(0, 4))
+
+        self.progress = ctk.CTkProgressBar(self)
+        self.progress.set(0)
+        self.progress.pack(side="bottom", fill="x", padx=20, pady=(0, 4))
+        self.progress.pack_forget()  # hidden until download starts
 
         ctk.CTkLabel(
             self, text="Программын шинэчлэл",
@@ -52,33 +79,9 @@ class UpdateDialog(ctk.CTkToplevel):
         )
         self.version_lbl.pack(fill="x", padx=20, pady=(0, 8))
 
-        self.notes_box = ctk.CTkTextbox(self, height=200, wrap="word")
+        self.notes_box = ctk.CTkTextbox(self, wrap="word")
         self.notes_box.pack(fill="both", expand=True, padx=20, pady=(0, 8))
         self.notes_box.configure(state="disabled")
-
-        self.progress = ctk.CTkProgressBar(self)
-        self.progress.set(0)
-        self.progress.pack(fill="x", padx=20, pady=(0, 4))
-        self.progress.pack_forget()  # hidden until download starts
-
-        self.status_lbl = ctk.CTkLabel(
-            self, text="", font=ctk.CTkFont(size=12),
-            text_color="gray60", anchor="w", wraplength=470,
-        )
-        self.status_lbl.pack(fill="x", padx=20, pady=(0, 4))
-
-        btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.pack(fill="x", padx=20, pady=(4, 16), side="bottom")
-        self.close_btn = ctk.CTkButton(
-            btn_row, text="Хаах", fg_color="transparent", border_width=1,
-            command=self.destroy,
-        )
-        self.close_btn.pack(side="right", padx=(8, 0))
-        self.action_btn = ctk.CTkButton(
-            btn_row, text="Шинэчлэх", fg_color=CHIPMO_ORANGE,
-            hover_color="#E57A12", command=self._on_action,
-        )
-        self.action_btn.pack(side="right")
 
         if self.info is not None:
             self._show_available(self.info)
@@ -135,7 +138,7 @@ class UpdateDialog(ctk.CTkToplevel):
 
         self.action_btn.configure(state="disabled")
         self.close_btn.configure(state="disabled")
-        self.progress.pack(fill="x", padx=20, pady=(0, 4))
+        self.progress.pack(side="bottom", fill="x", padx=20, pady=(0, 4))
         self.progress.set(0)
         self.status_lbl.configure(text="Татаж байна… 0%", text_color="gray70")
 

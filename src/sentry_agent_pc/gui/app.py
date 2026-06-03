@@ -17,6 +17,7 @@ import customtkinter as ctk
 from sentry_agent_pc import __version__, updater
 from sentry_agent_pc.backend_client import BackendClient, BackendError
 from sentry_agent_pc.config_file import DEFAULT_BACKEND_URL, read_config, write_config
+from sentry_agent_pc.gui import widgets
 from sentry_agent_pc.gui.add_dialog import AddCameraDialog
 from sentry_agent_pc.gui.scan_dialog import ScanDialog
 from sentry_agent_pc.gui.update_dialog import UpdateDialog, check_in_background
@@ -428,56 +429,16 @@ class PairingDialog(ctk.CTkToplevel):
         super().__init__(master)
         self.on_saved = on_saved
         self.title("Дэлгүүртэй холбох")
-        self.geometry("520x420")
         self.transient(master)
         self.grab_set()
+        widgets.setup_dialog(self, 540, 460, min_width=480, min_height=420)
 
         state = load_state()
         cfg = read_config()
 
-        ctk.CTkLabel(
-            self, text="Дэлгүүртэй холбох",
-            font=ctk.CTkFont(size=18, weight="bold"),
-        ).pack(pady=(20, 2), padx=20, anchor="w")
-
-        if state.is_paired:
-            ctk.CTkLabel(
-                self,
-                text=f"✅ Одоо холбогдсон дэлгүүр: {state.store_name or '—'}",
-                font=ctk.CTkFont(size=13), text_color="#4ADE80", anchor="w",
-            ).pack(fill="x", padx=20, pady=(2, 8))
-
-        ctk.CTkLabel(
-            self,
-            text="Веб апп → Дэлгүүр → 'Компьютер холбох' дарж 6 оронтой код аваад "
-            "доор оруулна уу.",
-            font=ctk.CTkFont(size=12), text_color="gray70", anchor="w", wraplength=470,
-            justify="left",
-        ).pack(fill="x", padx=20, pady=(0, 10))
-
-        ctk.CTkLabel(self, text="6 оронтой код:", anchor="w").pack(fill="x", padx=20)
-        self.code_entry = ctk.CTkEntry(
-            self, placeholder_text="123456",
-            font=ctk.CTkFont(size=22, weight="bold"), justify="center",
-        )
-        self.code_entry.pack(fill="x", padx=20, pady=(2, 12))
-
-        ctk.CTkLabel(self, text="Backend URL (default-ыг хэвээр үлдээж болно):",
-                     anchor="w", font=ctk.CTkFont(size=11), text_color="gray60").pack(
-            fill="x", padx=20,
-        )
-        self.url_entry = ctk.CTkEntry(self, placeholder_text=DEFAULT_BACKEND_URL)
-        self.url_entry.pack(fill="x", padx=20, pady=(2, 4))
-        self.url_entry.insert(0, cfg.get("BACKEND_URL") or DEFAULT_BACKEND_URL)
-
-        self.status_lbl = ctk.CTkLabel(
-            self, text="", font=ctk.CTkFont(size=12), text_color="gray60",
-            wraplength=470, anchor="w",
-        )
-        self.status_lbl.pack(fill="x", padx=20, pady=(6, 0))
-
+        # Bottom button bar FIRST so it's never clipped, then status above it.
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.pack(fill="x", padx=20, pady=18, side="bottom")
+        btn_row.pack(side="bottom", fill="x", padx=20, pady=16)
         ctk.CTkButton(btn_row, text="Хаах", fg_color="transparent", border_width=1,
                       command=self.destroy).pack(side="right", padx=(8, 0))
         self.connect_btn = ctk.CTkButton(
@@ -490,6 +451,51 @@ class PairingDialog(ctk.CTkToplevel):
                 btn_row, text="Салгах", fg_color="transparent", border_width=1,
                 text_color="#FF6B6B", border_color="#FF6B6B", command=self._unpair,
             ).pack(side="left")
+
+        self.status_lbl = ctk.CTkLabel(
+            self, text="", font=ctk.CTkFont(size=12), text_color="gray60",
+            wraplength=470, anchor="w",
+        )
+        self.status_lbl.pack(side="bottom", fill="x", padx=20, pady=(6, 0))
+
+        # Scrollable body.
+        body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        body.pack(side="top", fill="both", expand=True)
+
+        ctk.CTkLabel(
+            body, text="Дэлгүүртэй холбох",
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).pack(pady=(8, 2), padx=20, anchor="w")
+
+        if state.is_paired:
+            ctk.CTkLabel(
+                body,
+                text=f"✅ Одоо холбогдсон дэлгүүр: {state.store_name or '—'}",
+                font=ctk.CTkFont(size=13), text_color="#4ADE80", anchor="w",
+            ).pack(fill="x", padx=20, pady=(2, 8))
+
+        ctk.CTkLabel(
+            body,
+            text="Веб апп → Дэлгүүр → 'Компьютер холбох' дарж 6 оронтой код аваад "
+            "доор оруулна уу.",
+            font=ctk.CTkFont(size=12), text_color="gray70", anchor="w", wraplength=470,
+            justify="left",
+        ).pack(fill="x", padx=20, pady=(0, 10))
+
+        ctk.CTkLabel(body, text="6 оронтой код:", anchor="w").pack(fill="x", padx=20)
+        self.code_entry = ctk.CTkEntry(
+            body, placeholder_text="123456",
+            font=ctk.CTkFont(size=22, weight="bold"), justify="center",
+        )
+        self.code_entry.pack(fill="x", padx=20, pady=(2, 12))
+
+        ctk.CTkLabel(body, text="Backend URL (default-ыг хэвээр үлдээж болно):",
+                     anchor="w", font=ctk.CTkFont(size=11), text_color="gray60").pack(
+            fill="x", padx=20,
+        )
+        self.url_entry = ctk.CTkEntry(body, placeholder_text=DEFAULT_BACKEND_URL)
+        self.url_entry.pack(fill="x", padx=20, pady=(2, 4))
+        self.url_entry.insert(0, cfg.get("BACKEND_URL") or DEFAULT_BACKEND_URL)
 
     def _pair(self) -> None:
         code = self.code_entry.get().strip()
