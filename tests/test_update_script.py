@@ -38,3 +38,9 @@ def test_relaunches_even_if_copy_fails() -> None:
     s = _script()
     assert ":launch" in s
     assert "goto launch" in s
+
+
+def test_kills_stray_instances_before_copy() -> None:
+    # A webview child keeps the .exe locked; kill all instances first.
+    s = _script()
+    assert "taskkill /f /im ChipmoSentryAgent.exe" in s

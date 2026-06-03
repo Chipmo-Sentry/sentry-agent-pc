@@ -201,6 +201,11 @@ set "EXE={exe}"
 set "LOG={log_path}"
 echo [start] %date% %time% >> "%LOG%"
 
+rem Kill ANY remaining instances (incl. a "Шууд харах" webview child, same image)
+rem so nothing keeps the .exe/DLLs locked during the copy.
+taskkill /f /im ChipmoSentryAgent.exe >nul 2>&1
+ping -n 2 127.0.0.1 >nul
+
 set /a n=0
 :try
 robocopy "%SRC%" "%DST%" /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP >nul
