@@ -313,20 +313,41 @@ def fetch_profiles(
                 prof.width = getattr(res, "Width", None)
                 prof.height = getattr(res, "Height", None)
 
-        # Stream URI
-        try:
-            req = {
-                "ProfileToken": prof.token,
-                "Protocol": "RTSP",
-            }
-            uri_result = media_service.GetStreamUri(req)  # type: ignore[union-attr]
-            prof.rtsp_uri = getattr(uri_result, "Uri", None) or str(uri_result)
-        except Exception as e:  # noqa: BLE001
-            log.debug("onvif.stream_uri_failed", token=prof.token, error=str(e))
-
+        prof.rtsp_uri = _get_stream_uri(media_service, prof.token)
         device.profiles.append(prof)
 
     return device
+
+
+def _get_stream_uri(media_service: object, token: str) -> str | None:
+    """Fetch the RTSP stream URI for a profile across ONVIF service flavors.
+
+    Legacy Media (ONVIF 1.x — the common case for onvif-zeep, which has no
+    Media2 service) REQUIRES a full StreamSetup; passing just
+    {ProfileToken, Protocol} fails with `Missing element Stream`. Media2 (when
+    present) takes the simpler {Protocol, ProfileToken}. Try the legacy form
+    first, then fall back to the Media2 form.
+    """
+    attempts = (
+        {
+            "StreamSetup": {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}},
+            "ProfileToken": token,
+        },
+        {"ProfileToken": token, "Protocol": "RTSP"},
+    )
+    for req in attempts:
+        try:
+            res = media_service.GetStreamUri(req)  # type: ignore[attr-defined]
+        except Exception as e:  # noqa: BLE001 — onvif-zeep raises many types
+            log.debug("onvif.stream_uri_attempt_failed", token=token, error=str(e))
+            continue
+        uri = getattr(res, "Uri", None)
+        if uri:
+            return str(uri)
+        if isinstance(res, str) and res.startswith("rtsp"):
+            return res
+    log.warning("onvif.stream_uri_unavailable", token=token)
+    return None
 
 
 def _video_encoder_config(profile: object) -> object | None:

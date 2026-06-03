@@ -73,6 +73,46 @@ def test_split_host_port_invalid_raises() -> None:
         onvif._split_host_port("garbage")
 
 
+class _FakeMedia:
+    """Mimics onvif-zeep media service GetStreamUri for the two flavors."""
+
+    def __init__(self, *, accept: str) -> None:
+        self.accept = accept  # "streamsetup" | "simple" | "none"
+        self.calls: list[dict] = []
+
+    def GetStreamUri(self, req: dict) -> object:  # noqa: N802 — ONVIF API name
+        self.calls.append(req)
+        is_streamsetup = "StreamSetup" in req
+        ok = (self.accept == "streamsetup" and is_streamsetup) or (
+            self.accept == "simple" and not is_streamsetup
+        )
+        if not ok:
+            raise ValueError("Missing element Stream")
+
+        class _Res:
+            Uri = "rtsp://cam/stream"
+
+        return _Res()
+
+
+def test_get_stream_uri_legacy_streamsetup_tried_first() -> None:
+    m = _FakeMedia(accept="streamsetup")
+    assert onvif._get_stream_uri(m, "tok") == "rtsp://cam/stream"
+    # Legacy StreamSetup form must be the first attempt (the common real case).
+    assert "StreamSetup" in m.calls[0]
+
+
+def test_get_stream_uri_falls_back_to_media2_simple_form() -> None:
+    m = _FakeMedia(accept="simple")
+    assert onvif._get_stream_uri(m, "tok") == "rtsp://cam/stream"
+    assert len(m.calls) == 2  # tried StreamSetup, then simple
+
+
+def test_get_stream_uri_none_when_all_forms_fail() -> None:
+    m = _FakeMedia(accept="none")
+    assert onvif._get_stream_uri(m, "tok") is None
+
+
 def test_probe_envelope_is_valid_xml() -> None:
     import xml.etree.ElementTree as ET
 
