@@ -1,11 +1,14 @@
-"""Scan Camera dialog — ONVIF discovery → approval → per-camera register.
+"""Scan Camera dialog — ONVIF/RTSP discovery → approval → per-camera register.
 
 Flow:
-  1. Open → background ONVIF scan (3-5 sec spinner)
-  2. Show found devices as checkboxes; already-registered ones pre-disabled
-  3. User ticks cameras, supplies username/password per device
-  4. "Бүртгэх" → per-device: fetch profiles → pick H.264 → probe → register
-  5. Progress shown inline; on success row turns green
+  1. Open → background scan (ONVIF WS-Discovery + LAN port-554 sweep)
+  2. Show found-but-NOT-yet-registered cameras as a table; already-registered
+     IPs are hidden (re-adding a live camera is never wanted — delete it first
+     to re-add).
+  3. User ticks cameras, supplies username/password per row (eye toggle to
+     reveal the password)
+  4. "Сонгосныг бүртгэх" → per-row: resolve a stream (ONVIF → RTSP paths) →
+     register. Status shows inline; on success the row turns green.
 """
 
 from __future__ import annotations
@@ -25,62 +28,71 @@ log = get_logger("sentry_agent_pc.gui.scan")
 
 CHIPMO_ORANGE = "#FF8A1F"
 
+# Table columns. Index drives the .grid(column=...) of every cell + header.
+_COL_CHECK = 0
+_COL_IP = 1
+_COL_USER = 2
+_COL_PASS = 3
+_COL_STATUS = 4
+
 
 class _DeviceRow:
-    """Holds the widgets + entry refs for one discovered candidate."""
+    """One discovered (unregistered) camera, laid out as a row in the table grid."""
 
     def __init__(
         self,
-        parent: ctk.CTkFrame,
+        grid: ctk.CTkScrollableFrame,
+        row: int,
         candidate: svc.DiscoveredCandidate,
     ) -> None:
         self.candidate = candidate
-        self.frame = ctk.CTkFrame(parent, fg_color="gray17", corner_radius=8)
-        self.frame.pack(fill="x", pady=3)
+        self._pass_shown = False
 
-        top = ctk.CTkFrame(self.frame, fg_color="transparent")
-        top.pack(fill="x", padx=10, pady=(8, 2))
+        self.checkbox = ctk.CTkCheckBox(grid, text="", width=24)
+        self.checkbox.grid(row=row, column=_COL_CHECK, padx=(10, 4), pady=6)
+        self.checkbox.select()
 
-        self.checkbox = ctk.CTkCheckBox(top, text="", width=24)
-        self.checkbox.pack(side="left")
-        if candidate.already_registered:
-            self.checkbox.configure(state="disabled")
-        else:
-            self.checkbox.select()
-
-        label = f"{candidate.ip}"
-        if candidate.already_registered:
-            label += "  (бүртгэлтэй)"
+        ip_text = candidate.ip
+        if candidate.model or candidate.manufacturer:
+            brand = " ".join(x for x in (candidate.manufacturer, candidate.model) if x)
+            ip_text = f"{candidate.ip}\n{brand}"
         ctk.CTkLabel(
-            top, text=label, font=ctk.CTkFont(size=13, weight="bold"), anchor="w",
-        ).pack(side="left", padx=6)
+            grid, text=ip_text, font=ctk.CTkFont(size=13, weight="bold"),
+            anchor="w", justify="left",
+        ).grid(row=row, column=_COL_IP, sticky="w", padx=6, pady=6)
+
+        self.user_entry = ctk.CTkEntry(grid, width=110, placeholder_text="admin")
+        self.user_entry.insert(0, get_settings().onvif_default_user)
+        self.user_entry.grid(row=row, column=_COL_USER, padx=4, pady=6)
+
+        # Password cell: entry + eye toggle, packed in a sub-frame so they sit
+        # together in the one grid cell.
+        pass_cell = ctk.CTkFrame(grid, fg_color="transparent")
+        pass_cell.grid(row=row, column=_COL_PASS, padx=4, pady=6)
+        self.pass_entry = ctk.CTkEntry(pass_cell, width=140, show="•")
+        self.pass_entry.pack(side="left")
+        self.eye_btn = ctk.CTkButton(
+            pass_cell, text="👁", width=30, fg_color="transparent", border_width=1,
+            command=self._toggle_password,
+        )
+        self.eye_btn.pack(side="left", padx=(4, 0))
 
         self.status_lbl = ctk.CTkLabel(
-            top, text="", font=ctk.CTkFont(size=11), text_color="gray60",
+            grid, text="", font=ctk.CTkFont(size=11), text_color="gray60",
+            anchor="w", wraplength=220, justify="left",
         )
-        self.status_lbl.pack(side="right", padx=6)
+        self.status_lbl.grid(row=row, column=_COL_STATUS, sticky="w", padx=6, pady=6)
 
-        # Credentials row (hidden for already-registered)
-        self.user_entry: ctk.CTkEntry | None = None
-        self.pass_entry: ctk.CTkEntry | None = None
-        if not candidate.already_registered:
-            creds = ctk.CTkFrame(self.frame, fg_color="transparent")
-            creds.pack(fill="x", padx=40, pady=(0, 8))
-            ctk.CTkLabel(creds, text="Нэвтрэх:", width=60, anchor="w").pack(side="left")
-            self.user_entry = ctk.CTkEntry(creds, width=130, placeholder_text="admin")
-            self.user_entry.pack(side="left", padx=4)
-            self.user_entry.insert(0, get_settings().onvif_default_user)
-            ctk.CTkLabel(creds, text="Нууц үг:", width=60, anchor="w").pack(side="left", padx=(10, 0))
-            self.pass_entry = ctk.CTkEntry(creds, width=160, show="•")
-            self.pass_entry.pack(side="left", padx=4)
+    def _toggle_password(self) -> None:
+        self._pass_shown = not self._pass_shown
+        self.pass_entry.configure(show="" if self._pass_shown else "•")
+        self.eye_btn.configure(text="🙈" if self._pass_shown else "👁")
 
     def is_selected(self) -> bool:
-        return bool(self.checkbox.get()) and not self.candidate.already_registered
+        return bool(self.checkbox.get())
 
     def credentials(self) -> tuple[str, str]:
-        user = self.user_entry.get() if self.user_entry else ""
-        pwd = self.pass_entry.get() if self.pass_entry else ""
-        return user, pwd
+        return self.user_entry.get(), self.pass_entry.get()
 
     def set_status(self, text: str, color: str = "gray60") -> None:
         self.status_lbl.configure(text=text, text_color=color)
@@ -93,7 +105,7 @@ class ScanDialog(ctk.CTkToplevel):
         self.title("Камер хайх (ONVIF)")
         self.transient(master)
         self.grab_set()
-        widgets.setup_dialog(self, 680, 600, min_width=560, min_height=460)
+        widgets.setup_dialog(self, 760, 600, min_width=620, min_height=460)
 
         self.rows: list[_DeviceRow] = []
 
@@ -124,7 +136,7 @@ class ScanDialog(ctk.CTkToplevel):
         self.info_lbl = ctk.CTkLabel(
             self, text="ONVIF WS-Discovery — 5 секунд хүлээнэ үү.",
             font=ctk.CTkFont(size=12), text_color="gray60", anchor="w",
-            wraplength=620, justify="left",
+            wraplength=700, justify="left",
         )
         self.info_lbl.pack(fill="x", padx=20, anchor="w")
 
@@ -134,8 +146,25 @@ class ScanDialog(ctk.CTkToplevel):
 
         self.results = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.results.pack(fill="both", expand=True, padx=16, pady=8)
+        # IP + Status columns take the slack; inputs stay their natural width.
+        self.results.grid_columnconfigure(_COL_IP, weight=1)
+        self.results.grid_columnconfigure(_COL_STATUS, weight=1)
 
         self._start_scan()
+
+    def _add_table_header(self) -> None:
+        hdr = {
+            _COL_CHECK: "",
+            _COL_IP: "Камер (IP)",
+            _COL_USER: "Нэвтрэх",
+            _COL_PASS: "Нууц үг",
+            _COL_STATUS: "Төлөв",
+        }
+        for col, text in hdr.items():
+            ctk.CTkLabel(
+                self.results, text=text, font=ctk.CTkFont(size=11, weight="bold"),
+                text_color="gray50", anchor="w",
+            ).grid(row=0, column=col, sticky="w", padx=6, pady=(0, 2))
 
     def _start_scan(self) -> None:
         for w in self.results.winfo_children():
@@ -159,26 +188,45 @@ class ScanDialog(ctk.CTkToplevel):
                     text=f"Алдаа: {candidates.get('error')}", text_color="#FF6B6B",
                 )
                 return
-            if not candidates:
-                self.info_lbl.configure(
-                    text=(
-                        "Камер олдсонгүй (ONVIF болон RTSP/554 аль нь ч хариулсангүй).\n\n"
-                        "• Камер асаалттай, ижил сүлжээнд холбогдсон эсэхийг шалгана уу\n"
-                        "• Зарим камер P2P/cloud-only (ж: зарим Tuya/iCSee) — RTSP байхгүй\n"
-                        "• Эсвэл 'Камер нэмэх'-ээр IP + нэр/нууцаар гараар оруулна уу."
-                    ),
-                    text_color="#FBBF24",
+
+            all_found = list(candidates)
+            registered = sum(1 for c in all_found if c.already_registered)
+            # Already-registered cameras are hidden: re-adding a live camera is
+            # never the goal. (Delete it first to re-add — deletion clears it
+            # from local state, so it reappears here next scan.)
+            fresh = [c for c in all_found if not c.already_registered]
+
+            if not fresh:
+                base = (
+                    "Шинээр нэмэх камер олдсонгүй."
+                    if registered
+                    else "Камер олдсонгүй (ONVIF болон RTSP/554 аль нь ч хариулсангүй)."
                 )
+                hint = (
+                    f"\n\n{registered} камер аль хэдийн бүртгэлтэй (нуусан). "
+                    "Дахин холбохыг хүсвэл эхлээд «Камер» жагсаалтаас устгана уу."
+                    if registered
+                    else (
+                        "\n\n• Камер асаалттай, ижил сүлжээнд холбогдсон эсэхийг шалгана уу\n"
+                        "• Зарим камер P2P/cloud-only (RTSP байхгүй) — 'Камер нэмэх'-ээр "
+                        "IP + нэр/нууцаар гараар оруулна уу."
+                    )
+                )
+                self.info_lbl.configure(text=base + hint, text_color="#FBBF24")
                 return
-            self.info_lbl.configure(
-                text=(
-                    f"{len(candidates)} төхөөрөмж олдлоо. Камер бүрийн нэр/нууц үгийг "
-                    "оруулаад 'Сонгосныг бүртгэх' дарна уу (ONVIF/RTSP автоматаар тодорхойлно)."
-                ),
-                text_color="gray70",
+
+            note = f"{len(fresh)} шинэ камер олдлоо."
+            if registered:
+                note += f" ({registered} бүртгэлтэйг нуусан.)"
+            note += (
+                " Камер бүрийн нэр/нууц үгийг оруулаад 'Сонгосныг бүртгэх' дарна уу "
+                "(👁 товчоор нууц үгээ шалгаж болно)."
             )
-            for cand in candidates:
-                self.rows.append(_DeviceRow(self.results, cand))
+            self.info_lbl.configure(text=note, text_color="gray70")
+
+            self._add_table_header()
+            for i, cand in enumerate(fresh, start=1):
+                self.rows.append(_DeviceRow(self.results, i, cand))
             self.register_btn.configure(state="normal")
 
         self._run_bg(work, done)
@@ -212,7 +260,11 @@ class ScanDialog(ctk.CTkToplevel):
             if not stream.ok or not stream.rtsp_url:
                 return {"ok": False, "error": stream.error or "Стрим олдсонгүй"}
             name = f"Камер — {ip}"
-            result = svc.register_camera(name=name, ip=ip, rtsp_url=stream.rtsp_url)
+            # Hand the just-verified stream to register so it doesn't re-pull
+            # the same URL (faster, one fewer RTSP session on the camera).
+            result = svc.register_camera(
+                name=name, ip=ip, rtsp_url=stream.rtsp_url, resolved=stream,
+            )
             return {
                 "ok": result.ok,
                 "error": result.error,
@@ -226,7 +278,7 @@ class ScanDialog(ctk.CTkToplevel):
                 res_txt = f"{res[0]}×{res[1]}" if res else ""
                 row.set_status(f"✅ {r.get('codec', '').upper()} {res_txt}", "#4ADE80")
             else:
-                row.set_status(f"❌ {r.get('error', 'алдаа')[:40]}", "#FF6B6B")
+                row.set_status(f"❌ {r.get('error', 'алдаа')[:60]}", "#FF6B6B")
             self._register_next(rows, idx + 1)
 
         self._run_bg(work, done)

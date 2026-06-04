@@ -11,6 +11,23 @@ embeds them in the path (rare); most use userinfo in the URL.
 
 from __future__ import annotations
 
+# Tried FIRST, all at once: the single main-stream path of each brand we know.
+# Whatever the camera is, its real path is almost always in here — so the
+# resolver finds it in the first concurrent batch (~one probe-timeout) instead
+# of grinding the long tail. Critically this matters for cameras whose WRONG
+# paths HANG to the timeout instead of returning a quick 404 (e.g. Skyworth):
+# if its `/stream1` weren't up front, every dead Hik/Dahua path ahead of it
+# would burn a full timeout first. One path per brand keeps the batch small.
+RTSP_PATHS_PRIORITY: list[str] = [
+    "/Streaming/Channels/101",              # Hikvision main
+    "/cam/realmonitor?channel=1&subtype=0",  # Dahua / Amcrest main
+    "/media/video1",                        # UNV (Uniview) main
+    "/stream1",                             # Skyworth / XiongMai / Tuya main
+    "/live/0/main",                         # common generic main
+    "/onvif1",                              # ONVIF-style generic
+    "/h264/ch1/main/av_stream",             # Hikvision alt main
+]
+
 # Ordered: most-common / main-stream first. Deduped at use time.
 RTSP_PATHS: list[str] = [
     # Hikvision

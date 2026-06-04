@@ -39,6 +39,16 @@ class ProbeResult:
     height: int | None = None
     error: str | None = None
     is_h264: bool = False
+    # True when the camera answered but REJECTED the credentials (RTSP 401 /
+    # Unauthorized). Lets the resolver stop brute-forcing paths the instant it
+    # learns the password is wrong — a wrong password never gets righter on a
+    # different path, and hammering risks a Hikvision/Dahua account lockout.
+    is_auth_error: bool = False
+
+
+def _looks_like_auth_error(text: str) -> bool:
+    t = text.lower()
+    return "401" in t or "unauthorized" in t or "authorization failed" in t
 
 
 def probe(url: str, timeout_sec: int | None = None) -> ProbeResult:
@@ -81,6 +91,7 @@ def probe(url: str, timeout_sec: int | None = None) -> ProbeResult:
             ok=False,
             url=url,
             error=err_line or f"no Stream/Video line (ffmpeg exit {proc.returncode})",
+            is_auth_error=_looks_like_auth_error(stderr),
         )
 
     codec = m.group(1).lower()

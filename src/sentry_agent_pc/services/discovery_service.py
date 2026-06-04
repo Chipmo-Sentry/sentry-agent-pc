@@ -7,15 +7,16 @@ flows so the UI layer never touches sockets or subprocess directly.
 from __future__ import annotations
 
 import re
+import time
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 
 from sentry_agent_pc.backend_client import BackendClient, BackendError
 from sentry_agent_pc.discovery import manual as manual_mod
 from sentry_agent_pc.discovery import onvif as onvif_mod
 from sentry_agent_pc.discovery import rtsp_probe
-from sentry_agent_pc.discovery.rtsp_paths import RTSP_PATHS
+from sentry_agent_pc.discovery.rtsp_paths import RTSP_PATHS, RTSP_PATHS_PRIORITY
 from sentry_agent_pc.logging_setup import get_logger
 from sentry_agent_pc.state import CameraRecord, load_state, save_state
 
@@ -77,38 +78,116 @@ def _best_onvif_stream(
 _RTSP_PORTS: tuple[int, ...] = (554, 8554, 10554)
 
 
-def _best_rtsp_path_stream(ip: str, username: str, password: str) -> ResolvedStream | None:
-    """Brute-force the RTSP path library (parallel) and pick the best hit.
+# How long ffmpeg gets to pull a keyframe before we call a path dead. Real
+# cameras need real time: a 4 MP H.264 main stream answers in ~3s, an H.265
+# stream with a long GOP can take 5-6s (measured: UNV 2.9s, Skyworth 5.7s). The
+# old 2s budget timed out the CORRECT path and reported "no stream" — the #1
+# cause of "scan found the camera but couldn't connect". 7s clears all three.
+_RTSP_PROBE_TIMEOUT_SEC = 7
 
-    Credentials are correct here (wrong path ≠ auth failure), so concurrency
-    won't trip account lockouts. Tries port 554 first, then 8554/10554 only if
-    554 yields nothing (covers cameras on non-standard RTSP ports).
+# Probe a few paths at once — enough to stay fast, few enough to be gentle. A
+# camera that limits concurrent RTSP sessions (Hikvision) returns 401/453 under
+# a 10-wide fan-out even with the RIGHT password; 3 avoids that while a wrong
+# path still 404s quickly so we move on.
+_RTSP_PROBE_CONCURRENCY = 3
+
+# Hard ceiling on the whole RTSP path search. The good case finishes far sooner
+# (priority batch ~one timeout). This bound is for the nasty case: some cameras
+# (UNV) neither serve nor 401 on a WRONG password — ffmpeg just hangs to the
+# timeout on every path, so we can't tell "bad password" from "bad path" and
+# would otherwise grind the whole library for ~100s. Better to give up at ~18s
+# and tell the user to check the password.
+_RTSP_RESOLVE_DEADLINE_SEC = 18.0
+
+
+def _best_rtsp_path_stream(
+    ip: str, username: str, password: str
+) -> tuple[ResolvedStream | None, bool]:
+    """Find a working RTSP path for `ip`. Returns (stream, auth_error_seen).
+
+    Two-phase, first-hit-wins. Phase 1 probes the brand main-stream paths
+    (RTSP_PATHS_PRIORITY) ALL AT ONCE — so whatever the brand, the real path is
+    in the very first batch and we return as soon as it answers (~one probe).
+    Phase 2 only runs if phase 1 missed, sweeping the long tail with small
+    concurrency. The instant any probe reports an auth rejection (401) we abort:
+    a wrong password fails the same on every path, and hammering 33× is what
+    trips a Hikvision/Dahua account lockout — caller turns the flag into a
+    "check your password" message.
+
+    Tries port 554 first, then 8554/10554 only if 554 found nothing.
     """
     u = urllib.parse.quote(username, safe="")
     p = urllib.parse.quote(password, safe="")
+    tail = [path for path in RTSP_PATHS if path not in RTSP_PATHS_PRIORITY]
+    auth_error_seen = False
+    deadline = time.monotonic() + _RTSP_RESOLVE_DEADLINE_SEC
 
+    for port in _RTSP_PORTS:
+        for paths, workers in (
+            (RTSP_PATHS_PRIORITY, len(RTSP_PATHS_PRIORITY)),
+            (tail, _RTSP_PROBE_CONCURRENCY),
+        ):
+            if time.monotonic() >= deadline:
+                return None, auth_error_seen
+            urls = [f"rtsp://{u}:{p}@{ip}:{port}{path}" for path in paths]
+            stream, auth = _probe_until_hit(urls, workers, deadline)
+            auth_error_seen = auth_error_seen or auth
+            if stream is not None:
+                return stream, auth_error_seen
+            if auth:
+                # Password is wrong — no port/path will do better. Stop now.
+                return None, True
+    return None, auth_error_seen
+
+
+def _probe_until_hit(
+    urls: list[str], max_workers: int, deadline: float
+) -> tuple[ResolvedStream | None, bool]:
+    """Probe `urls` concurrently; return (first working stream, auth_seen).
+
+    Returns the MOMENT one probe succeeds (or one reports 401) without waiting
+    for the slow ones — some cameras let a wrong path HANG to the full timeout
+    rather than 404 quickly, so joining them would throw away all the speed.
+    Gives up at `deadline` (monotonic seconds). The abandoned probes are ffmpeg
+    subprocesses that self-terminate at their own timeout; we don't block on them.
+    """
     def go(url: str) -> ResolvedStream | None:
-        r = rtsp_probe.probe(url, timeout_sec=2)
+        r = rtsp_probe.probe(url, timeout_sec=_RTSP_PROBE_TIMEOUT_SEC)
         if r.ok:
             return ResolvedStream(
                 ok=True, rtsp_url=url, codec=r.codec, width=r.width, height=r.height,
                 via="rtsp-path",
             )
+        if r.is_auth_error:
+            raise _AuthError
         return None
 
-    for port in _RTSP_PORTS:
-        urls = [f"rtsp://{u}:{p}@{ip}:{port}{path}" for path in RTSP_PATHS]
-        hits: list[ResolvedStream] = []
-        # Correct creds + wrong path ≠ auth failure, so 10 concurrent probes
-        # won't trip lockouts; a full per-port sweep is ~10-15s.
-        with ThreadPoolExecutor(max_workers=10) as ex:
-            for res in ex.map(go, urls):
+    ex = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        pending = {ex.submit(go, url) for url in urls}
+        while pending:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None, False
+            done, pending = wait(pending, timeout=remaining, return_when=FIRST_COMPLETED)
+            if not done:  # deadline hit before any probe finished
+                return None, False
+            for fut in done:
+                try:
+                    res = fut.result()
+                except _AuthError:
+                    return None, True
                 if res is not None:
-                    hits.append(res)
-        if hits:
-            hits.sort(key=lambda s: _score(s.codec, s.width, s.height), reverse=True)
-            return hits[0]
-    return None
+                    return res, False
+        return None, False
+    finally:
+        # Drop the queued probes and return immediately; don't join the ones
+        # already running (a hung wrong-path probe would stall us for seconds).
+        ex.shutdown(wait=False, cancel_futures=True)
+
+
+class _AuthError(Exception):
+    """Internal signal: a probe got an RTSP 401 — stop, the password is wrong."""
 
 
 def resolve_stream(
@@ -127,19 +206,34 @@ def resolve_stream(
     """
     xaddr = onvif_xaddr or f"http://{ip}:80/onvif/device_service"
     best = _best_onvif_stream(ip, username, password, xaddr)
-    if best is None:
-        best = _best_rtsp_path_stream(ip, username, password)
-    if best is None:
+    if best is not None:
+        log.info("resolve.ok", ip=ip, via=best.via, codec=best.codec,
+                 res=f"{best.width}x{best.height}")
+        return best
+
+    best, auth_error = _best_rtsp_path_stream(ip, username, password)
+    if best is not None:
+        log.info("resolve.ok", ip=ip, via=best.via, codec=best.codec,
+                 res=f"{best.width}x{best.height}")
+        return best
+
+    if auth_error:
         return ResolvedStream(
             ok=False,
             error=(
-                "Стрим олдсонгүй. Нэр/нууц үгээ шалгана уу (тусгай тэмдэгт орсныг "
-                "анхаар), эсвэл камер RTSP-г дэмжихгүй байж магадгүй."
+                "Нэр/нууц үг буруу (401). Нууц үгээ яг таг шалгана уу — тусгай "
+                "тэмдэгт (ж: '*') орсон бол анхаарна уу. Hikvision/Dahua дээр "
+                "хэд дахин буруу оролдвол данс түр түгждэг тул хэдэн минут "
+                "хүлээгээд дахин үзнэ үү."
             ),
         )
-    log.info("resolve.ok", ip=ip, via=best.via, codec=best.codec,
-             res=f"{best.width}x{best.height}")
-    return best
+    return ResolvedStream(
+        ok=False,
+        error=(
+            "Стрим олдсонгүй. Камер RTSP-г дэмжихгүй, эсвэл стандарт бус зам/порт "
+            "ашиглаж байж магадгүй — 'Камер нэмэх'-ээр замыг гараар оруулна уу."
+        ),
+    )
 
 
 @dataclass(slots=True)
@@ -280,11 +374,16 @@ def register_camera(
     ip: str,
     rtsp_url: str,
     backend: BackendClient | None = None,
+    resolved: ResolvedStream | None = None,
 ) -> RegisterResult:
     """Probe RTSP, register with the backend (agent-scoped), persist locally.
 
     The target store is determined by the agent's paired token, so no store_id
     is needed here. Backend is created from settings if not supplied.
+
+    `resolved` lets the Scan flow hand in the stream it JUST verified, so we
+    skip a second ffmpeg pull on the same URL (faster, and one fewer RTSP
+    session on cameras that limit them). Manual "Add" passes None → we probe.
     """
     # Dedup by IP: scan already skips known IPs, but manual "Add" did not — so
     # adding the same camera twice used to create duplicate backend rows. Bail
@@ -295,10 +394,18 @@ def register_camera(
             error=f"Энэ IP ({ip}) аль хэдийн бүртгэлтэй. Дахин нэмэхийн өмнө хуучныг устгана уу.",
         )
 
-    probe = rtsp_probe.probe(rtsp_url)
+    if resolved is not None and resolved.ok:
+        # Already verified during resolve — trust it, don't re-pull the stream.
+        probe = rtsp_probe.ProbeResult(
+            ok=True, url=rtsp_url, codec=resolved.codec,
+            width=resolved.width, height=resolved.height,
+            is_h264=resolved.is_h264,
+        )
+    else:
+        probe = rtsp_probe.probe(rtsp_url)
     if not probe.ok:
         err = probe.error or ""
-        if "401" in err or "Unauthorized" in err or "authorization failed" in err.lower():
+        if probe.is_auth_error or "401" in err or "authorization failed" in err.lower():
             msg = (
                 "Нэр/нууц үг буруу (401). Нууц үгээ шалгана уу — тусгай тэмдэгт "
                 "(ж: '*') орсон бол яг таг бичих. Hikvision/Dahua дээр хэд дахин "
