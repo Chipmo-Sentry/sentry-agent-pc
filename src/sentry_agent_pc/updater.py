@@ -184,6 +184,13 @@ def _build_update_script(
     """The copy-over-folder-and-relaunch .bat (for the --onedir layout).
 
     Crucial Windows details learned the hard way:
+      • `chcp 65001` FIRST: this .bat is written UTF-8, but cmd.exe otherwise
+        reads it in the OEM code page (e.g. CP866). Any non-ASCII path —
+        a Cyrillic/Mongolian install folder, or just a Cyrillic Windows
+        USERNAME in the default %LOCALAPPDATA% path — would then be mangled,
+        so robocopy created a garbage-named phantom folder instead of updating
+        the real install (the app "vanished"). Switching cmd to UTF-8 first
+        makes the embedded paths resolve correctly.
       • `timeout` needs a console input handle — it FAILS under a no-console
         process ("Input redirection is not supported"). We use `ping -n`.
       • The retry-`robocopy` loop IS the wait: while the app is running its
@@ -194,6 +201,7 @@ def _build_update_script(
       • Everything is logged so a failed update is diagnosable.
     """
     return f"""@echo off
+chcp 65001 >nul
 setlocal enableextensions
 set "SRC={extract_dir}"
 set "DST={install_dir}"
