@@ -15,7 +15,9 @@ manually" link instead.
 
 from __future__ import annotations
 
+import hashlib
 import os
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -39,6 +41,9 @@ RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
 # downloads the zip and copies it over the install folder (see
 # apply_update_and_restart). The installer (Setup.exe) is for fresh installs.
 ASSET_NAME = "ChipmoSentryAgent-windows.zip"
+# Sidecar published alongside the zip (see release.yml). Its content is the
+# zip's SHA-256 (hex), optionally followed by the filename — `sha256sum` format.
+SHA256_ASSET_NAME = ASSET_NAME + ".sha256"
 
 
 @dataclass(slots=True)
@@ -51,6 +56,11 @@ class UpdateInfo:
     notes: str            # release body (markdown)
     html_url: str         # release page (manual download fallback)
     size: int = 0         # asset size in bytes (0 if unknown)
+    # Integrity: expected SHA-256 (hex) of the zip. Taken from GitHub's asset
+    # `digest` field when present, else fetched from the .sha256 sidecar. The
+    # download is REFUSED if neither is available (no unsigned auto-update).
+    expected_sha256: str | None = None
+    sha256_url: str | None = None  # sidecar asset URL (fallback source)
 
 
 def parse_version(s: str) -> tuple[int, ...]:
@@ -115,10 +125,18 @@ def check_for_update(
         log.debug("updater.up_to_date", current=current, latest=tag)
         return None
 
-    asset = _pick_asset(rel.get("assets") or [])
+    assets = rel.get("assets") or []
+    asset = _pick_asset(assets)
     if asset is None:
         log.info("updater.no_zip_asset", tag=tag)
         return None
+
+    # Prefer GitHub's own asset digest ("sha256:<hex>") when present; otherwise
+    # fall back to the .sha256 sidecar asset, fetched at download time.
+    digest = str(asset.get("digest") or "")
+    expected_sha256 = digest[7:].lower() if digest.startswith("sha256:") else None
+    sidecar = _find_sidecar_sha256(assets)
+    sha256_url = str(sidecar["browser_download_url"]) if sidecar else None
 
     return UpdateInfo(
         version=tag.lstrip("vV"),
@@ -127,19 +145,29 @@ def check_for_update(
         notes=str(rel.get("body") or "").strip(),
         html_url=str(rel.get("html_url") or RELEASES_PAGE),
         size=int(asset.get("size") or 0),
+        expected_sha256=expected_sha256,
+        sha256_url=sha256_url,
     )
 
 
 def _pick_asset(assets: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Pick the onedir zip asset. Prefer the exact name, else first .zip.
+    """Pick the onedir zip asset — by EXACT name only.
 
-    Never the Setup.exe (that's for fresh installs, not in-place self-update).
+    A loose "first .zip" fallback would let a release that happens to carry any
+    other .zip be auto-installed; require the exact published name so the
+    updater applies only the artifact release.yml is known to produce. Never the
+    Setup.exe (that's for fresh installs, not in-place self-update).
     """
     for a in assets:
         if a.get("name") == ASSET_NAME:
             return a
+    return None
+
+
+def _find_sidecar_sha256(assets: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The `<zip>.sha256` checksum sidecar asset, if the release published one."""
     for a in assets:
-        if str(a.get("name", "")).lower().endswith(".zip"):
+        if a.get("name") == SHA256_ASSET_NAME:
             return a
     return None
 
@@ -150,15 +178,21 @@ def download_asset(
     progress: Callable[[int, int], None] | None = None,
     timeout_sec: float = 300.0,
 ) -> Path:
-    """Stream the release .exe to a temp file. Returns the downloaded path.
+    """Stream the release zip to a temp file, verify its SHA-256, return the path.
 
     `progress(downloaded_bytes, total_bytes)` is called as data arrives
     (total is `info.size`, or 0 if the server omits Content-Length).
+
+    Raises RuntimeError when no expected checksum is available or the download's
+    digest does not match — the GUI catches it and falls back to a manual
+    download link. This is the gate against a tampered/partial release being
+    auto-executed on every store PC.
     """
     tmp_dir = Path(tempfile.gettempdir())
     dest = tmp_dir / f"ChipmoSentryAgent-{info.version}.zip"
     total = info.size
     done = 0
+    hasher = hashlib.sha256()
 
     with (
         httpx.Client(timeout=timeout_sec, follow_redirects=True) as client,
@@ -170,12 +204,53 @@ def download_asset(
         with dest.open("wb") as f:
             for chunk in resp.iter_bytes(chunk_size=64 * 1024):
                 f.write(chunk)
+                hasher.update(chunk)
                 done += len(chunk)
                 if progress:
                     progress(done, total)
 
-    log.info("updater.downloaded", path=str(dest), bytes=done)
+    actual = hasher.hexdigest().lower()
+    _verify_checksum(info, actual, dest)
+    log.info("updater.downloaded", path=str(dest), bytes=done, sha256=actual)
     return dest
+
+
+def _resolve_expected_sha256(info: UpdateInfo, *, timeout_sec: float = 30.0) -> str | None:
+    """Expected zip SHA-256 — from the asset digest, else the sidecar, else None."""
+    if info.expected_sha256:
+        return info.expected_sha256.lower()
+    if info.sha256_url:
+        try:
+            with httpx.Client(timeout=timeout_sec, follow_redirects=True) as client:
+                r = client.get(info.sha256_url)
+            r.raise_for_status()
+        except httpx.HTTPError as e:
+            log.info("updater.sha256_fetch_failed", error=str(e))
+            return None
+        # `sha256sum` format: "<hex>  filename" — take the first token.
+        parts = r.text.strip().split()
+        if parts and len(parts[0]) == 64:
+            return parts[0].lower()
+        log.info("updater.sha256_malformed", body=r.text[:80])
+    return None
+
+
+def _verify_checksum(info: UpdateInfo, actual_hex: str, dest: Path) -> None:
+    """Raise (and delete the file) unless `actual_hex` matches the expected digest."""
+    expected = _resolve_expected_sha256(info)
+    if not expected:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError(
+            "Шинэчлэлийн checksum олдсонгүй — автомат шинэчлэл аюулгүйн үүднээс цуцлагдлаа. "
+            "GitHub-аас гараар татна уу."
+        )
+    if not secrets.compare_digest(actual_hex, expected):
+        dest.unlink(missing_ok=True)
+        log.warning("updater.checksum_mismatch", expected=expected, actual=actual_hex)
+        raise RuntimeError(
+            "Татсан файлын checksum таарсангүй — эвдэрсэн эсвэл өөрчлөгдсөн байж магадгүй. "
+            "Шинэчлэл цуцлагдлаа."
+        )
 
 
 def _build_update_script(
