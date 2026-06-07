@@ -59,6 +59,12 @@ jobs:
           Compress-Archive -Path "dist\ChipmoSentryAgent\*" `
             -DestinationPath "dist\ChipmoSentryAgent-windows.zip" -Force
           Get-Item "dist\ChipmoSentryAgent-windows.zip" | Select-Object Name, Length
+          # Publish a SHA-256 sidecar — the in-app updater REFUSES to apply a
+          # release without a verifiable checksum (updater.download_asset).
+          $hash = (Get-FileHash "dist\ChipmoSentryAgent-windows.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ChipmoSentryAgent-windows.zip" | `
+            Out-File -Encoding ascii -NoNewline "dist\ChipmoSentryAgent-windows.zip.sha256"
+          Write-Host "sha256=$hash"
 
       - name: Build installer (Inno Setup)
         shell: pwsh
@@ -79,5 +85,6 @@ jobs:
           files: |
             dist/ChipmoSentryAgent-Setup.exe
             dist/ChipmoSentryAgent-windows.zip
+            dist/ChipmoSentryAgent-windows.zip.sha256
           generate_release_notes: true
           fail_on_unmatched_files: true
