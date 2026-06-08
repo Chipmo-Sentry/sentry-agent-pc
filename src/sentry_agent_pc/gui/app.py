@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import platform
 import threading
+import tkinter as tk
 from collections.abc import Callable
 from typing import Any
 
@@ -28,6 +29,7 @@ from sentry_agent_pc.gui.scan_dialog import ScanDialog
 from sentry_agent_pc.gui.tray import TrayController
 from sentry_agent_pc.gui.update_dialog import UpdateDialog, check_in_background
 from sentry_agent_pc.logging_setup import get_logger
+from sentry_agent_pc.services import discovery_service as svc
 from sentry_agent_pc.state import CameraRecord, load_state, save_state
 from sentry_agent_pc.streaming.controller import get_stream_controller
 
@@ -193,11 +195,17 @@ class AgentApp(ctk.CTk):
     # === Camera list rendering ===
 
     def refresh_cameras(self) -> None:
+        # Render the local list immediately (fast), then reconcile with the
+        # backend in the background — so a camera deleted on the web disappears
+        # here too, and the desktop list always matches the web.
+        self._render_camera_list(load_state().cameras)
+        self._reconcile_in_bg()
+
+    def _render_camera_list(self, cameras: list[CameraRecord]) -> None:
         for w in self.list_frame.winfo_children():
             w.destroy()
         self._push_labels = {}  # rows (and their labels) are being recreated
-        state = load_state()
-        if not state.cameras:
+        if not cameras:
             ctk.CTkLabel(
                 self.list_frame,
                 text="Камер бүртгэгдээгүй байна.\n\n"
@@ -206,13 +214,31 @@ class AgentApp(ctk.CTk):
                 text_color="gray60",
                 justify="center",
             ).pack(pady=60)
-            self.set_status(f"{len(state.cameras)} камер")
+            self.set_status("0 камер")
             return
 
-        for cam in state.cameras:
+        for cam in cameras:
             self._render_camera_row(cam)
-        self.set_status(f"{len(state.cameras)} камер бүртгэлтэй")
+        self.set_status(f"{len(cameras)} камер бүртгэлтэй")
         self._refresh_streaming()
+
+    def _reconcile_in_bg(self) -> None:
+        """Sync the camera list with the backend off the UI thread; re-render
+        only if it changed (web-side delete / a camera registered elsewhere)."""
+        if not load_state().is_paired:
+            return
+
+        def work() -> None:
+            cameras, changed = svc.reconcile_with_backend()
+            if not changed:
+                return
+            try:
+                if self.winfo_exists():
+                    self.after(0, lambda: self._render_camera_list(cameras))
+            except tk.TclError:
+                pass
+
+        threading.Thread(target=work, name="camera-reconcile", daemon=True).start()
 
     def _refresh_streaming(self) -> None:
         """Reconcile cloud stream-push relays with the current camera list.

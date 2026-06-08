@@ -14,6 +14,7 @@ Flow:
 from __future__ import annotations
 
 import threading
+import tkinter as tk
 from collections.abc import Callable
 from typing import Any
 
@@ -52,12 +53,8 @@ class _DeviceRow:
         self.checkbox.grid(row=row, column=_COL_CHECK, padx=(10, 4), pady=6)
         self.checkbox.select()
 
-        ip_text = candidate.ip
-        if candidate.model or candidate.manufacturer:
-            brand = " ".join(x for x in (candidate.manufacturer, candidate.model) if x)
-            ip_text = f"{candidate.ip}\n{brand}"
         ctk.CTkLabel(
-            grid, text=ip_text, font=ctk.CTkFont(size=13, weight="bold"),
+            grid, text=candidate.ip, font=ctk.CTkFont(size=13, weight="bold"),
             anchor="w", justify="left",
         ).grid(row=row, column=_COL_IP, sticky="w", padx=6, pady=6)
 
@@ -290,6 +287,12 @@ class ScanDialog(ctk.CTkToplevel):
             except Exception as e:  # noqa: BLE001
                 log.exception("scan_bg_failed")
                 result = {"ok": False, "error": str(e)}
-            self.after(0, lambda: on_done(result))
+            # The dialog may have been closed while this ran on a daemon thread;
+            # scheduling onto a destroyed widget raises TclError. Guard it.
+            try:
+                if self.winfo_exists():
+                    self.after(0, lambda: on_done(result))
+            except tk.TclError:
+                pass
 
         threading.Thread(target=runner, daemon=True).start()

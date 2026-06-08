@@ -110,3 +110,60 @@ def test_register_uses_resolved_without_reprobe(monkeypatch: pytest.MonkeyPatch)
 
 class _EmptyState:
     cameras: list[object] = []
+
+
+def _mk_state(cams):  # type: ignore[no-untyped-def]
+    from sentry_agent_pc.state import AgentState
+
+    return AgentState(agent_jwt="jwt", cameras=cams)
+
+
+def test_reconcile_drops_web_deleted_camera(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from sentry_agent_pc.state import CameraRecord
+
+    local = _mk_state([
+        CameraRecord(uuid="A", name="Cam A", ip="1.1.1.1", rtsp_url="rtsp://a"),
+        CameraRecord(uuid="B", name="Cam B", ip="2.2.2.2", rtsp_url="rtsp://b"),
+    ])
+    saved = {}
+    monkeypatch.setattr(svc, "load_state", lambda: local)
+    monkeypatch.setattr(svc, "save_state", lambda s: saved.update(c=s.cameras))
+
+    class FakeBackend:
+        def agent_list_cameras(self):  # type: ignore[no-untyped-def]
+            return [{"id": "A", "name": "Cam A", "mediamtx_path": "a"}]  # B deleted on web
+
+    cams, changed = svc.reconcile_with_backend(backend=FakeBackend())  # type: ignore[arg-type]
+    assert changed is True
+    assert [c.uuid for c in cams] == ["A"]  # B pruned
+
+
+def test_reconcile_offline_keeps_local(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from sentry_agent_pc.state import CameraRecord
+
+    local = _mk_state([CameraRecord(uuid="A", name="A", ip="1.1.1.1", rtsp_url="rtsp://a")])
+    monkeypatch.setattr(svc, "load_state", lambda: local)
+    monkeypatch.setattr(svc, "save_state", lambda s: None)
+
+    class DeadBackend:
+        def agent_list_cameras(self):  # type: ignore[no-untyped-def]
+            raise RuntimeError("network down")
+
+    cams, changed = svc.reconcile_with_backend(backend=DeadBackend())  # type: ignore[arg-type]
+    assert changed is False
+    assert [c.uuid for c in cams] == ["A"]  # offline never wipes
+
+
+def test_reconcile_surfaces_backend_only_camera(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    local = _mk_state([])
+    monkeypatch.setattr(svc, "load_state", lambda: local)
+    monkeypatch.setattr(svc, "save_state", lambda s: None)
+
+    class FakeBackend:
+        def agent_list_cameras(self):  # type: ignore[no-untyped-def]
+            return [{"id": "X", "name": "Remote Cam", "mediamtx_path": "x"}]
+
+    cams, changed = svc.reconcile_with_backend(backend=FakeBackend())  # type: ignore[arg-type]
+    assert changed is True
+    assert len(cams) == 1
+    assert cams[0].uuid == "X" and cams[0].rtsp_url == ""  # shown, but can't push

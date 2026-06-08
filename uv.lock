@@ -803,7 +803,7 @@ wheels = [
 
 [[package]]
 name = "sentry-agent-pc"
-version = "0.6.1"
+version = "0.6.2"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },

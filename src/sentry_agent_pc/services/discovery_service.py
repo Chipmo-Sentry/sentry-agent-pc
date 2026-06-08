@@ -85,11 +85,18 @@ _RTSP_PORTS: tuple[int, ...] = (554, 8554, 10554)
 # cause of "scan found the camera but couldn't connect". 7s clears all three.
 _RTSP_PROBE_TIMEOUT_SEC = 7
 
-# Probe a few paths at once — enough to stay fast, few enough to be gentle. A
-# camera that limits concurrent RTSP sessions (Hikvision) returns 401/453 under
-# a 10-wide fan-out even with the RIGHT password; 3 avoids that while a wrong
-# path still 404s quickly so we move on.
+# Tail concurrency — gentle for the long tail of less-common paths.
 _RTSP_PROBE_CONCURRENCY = 3
+
+# Priority-batch concurrency. Capped at 4 (not the full 7) for the LOCKOUT
+# reason: a wrong password fails identically on every path, so a wide fan-out
+# is a simultaneous-auth-failure BURST that can trip a Hikvision/Dahua account
+# lockout before our abort-on-401 fires. Hik's default "illegal login" lock is
+# 5 attempts; 4 stays under it. 4 is also exactly enough to keep the diverse
+# brand mains in ONE batch (the brand-distinct main paths sit in the first 4 of
+# RTSP_PATHS_PRIORITY), so a camera whose other paths HANG (Skyworth) still
+# resolves in ~one timeout instead of waiting for hung workers to free up.
+_RTSP_PRIORITY_CONCURRENCY = 4
 
 # Hard ceiling on the whole RTSP path search. The good case finishes far sooner
 # (priority batch ~one timeout). This bound is for the nasty case: some cameras
@@ -124,7 +131,7 @@ def _best_rtsp_path_stream(
 
     for port in _RTSP_PORTS:
         for paths, workers in (
-            (RTSP_PATHS_PRIORITY, len(RTSP_PATHS_PRIORITY)),
+            (RTSP_PATHS_PRIORITY, _RTSP_PRIORITY_CONCURRENCY),
             (tail, _RTSP_PROBE_CONCURRENCY),
         ):
             if time.monotonic() >= deadline:
@@ -135,7 +142,8 @@ def _best_rtsp_path_stream(
             if stream is not None:
                 return stream, auth_error_seen
             if auth:
-                # Password is wrong — no port/path will do better. Stop now.
+                # Wrong password — fails the same on every path/port. Stop now
+                # (and we only fired up to `workers` auth attempts, not 7+).
                 return None, True
     return None, auth_error_seen
 
@@ -338,6 +346,62 @@ def _sweep_rtsp_hosts(port: int = 554, timeout: float = 0.5) -> list[str]:
                 found.append(r)
     log.info("sweep.rtsp_hosts", count=len(found))
     return found
+
+
+def reconcile_with_backend(
+    backend: BackendClient | None = None,
+) -> tuple[list[CameraRecord], bool]:
+    """Make local state agree with the backend (the source of truth for which
+    cameras exist). Returns (cameras_to_display, changed).
+
+    - Camera deleted on the web → it's gone from the backend list → DROP it
+      locally (so desktop ↔ web always match, and we stop pushing it).
+    - Camera still on the backend → keep the local record (it holds the
+      rtsp_url + credentials needed to push) and refresh its name/path.
+    - Camera on the backend but missing locally (e.g. registered from another
+      PC, or local state was lost) → surface it WITHOUT an rtsp_url so the user
+      sees it; it can't be pushed until re-added (no stored credentials).
+
+    Best-effort: on any backend error (offline) returns local state unchanged,
+    so a flaky uplink never wipes the list. Only a SUCCESSFUL fetch prunes.
+    """
+    state = load_state()
+    if not state.is_paired:
+        return state.cameras, False
+    client = backend or BackendClient()
+    try:
+        remote = client.agent_list_cameras()
+    except Exception as e:  # noqa: BLE001 — offline / any error must not wipe local
+        log.info("reconcile.skipped_offline", error=str(e))
+        return state.cameras, False
+
+    remote_by_id = {str(c.get("id")): c for c in remote if c.get("id")}
+    kept: list[CameraRecord] = []
+    for cam in state.cameras:
+        rc = remote_by_id.pop(cam.uuid, None) if cam.uuid else None
+        if rc is None:
+            continue  # deleted on the web → drop locally
+        cam.name = str(rc.get("name") or cam.name)
+        cam.mediamtx_path = rc.get("mediamtx_path") or cam.mediamtx_path
+        kept.append(cam)
+    # Backend cameras we have no local record for: show them (no creds to push).
+    for rc in remote_by_id.values():
+        kept.append(
+            CameraRecord(
+                uuid=str(rc.get("id")),
+                name=str(rc.get("name") or "?"),
+                ip="",
+                rtsp_url="",
+                mediamtx_path=rc.get("mediamtx_path"),
+            )
+        )
+
+    changed = [c.uuid for c in kept] != [c.uuid for c in state.cameras]
+    if changed:
+        state.cameras = kept
+        save_state(state)
+        log.info("reconcile.applied", kept=len(kept))
+    return kept, changed
 
 
 def authenticate_and_fetch(
