@@ -31,6 +31,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import platform
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -70,25 +71,64 @@ class AgentState(BaseModel):
 
 
 def _machine_key() -> bytes:
-    """Derive a stable per-machine Fernet key.
+    """Derive a STABLE per-machine Fernet key.
 
-    Combines OS hostname + MAC-ish identifier so the key survives reboots
-    but moving the state file to another machine renders it unreadable.
-    This is a pragmatic "scramble at rest" — NOT a hardware secure enclave.
+    ⚠️ History: this used to mix in ``uuid.getnode()`` (a NIC MAC). On a
+    multi-homed PC — several NICs, plus VPN/ZeroTier virtual adapters that come
+    and go — ``getnode()`` returns a DIFFERENT interface's MAC between runs (and
+    a random value when none is readable). The key then changed across reboots,
+    the state file failed to decrypt, and the agent silently lost its pairing +
+    camera list on every restart. Never use a network identifier here.
+
+    Now: Windows ``MachineGuid`` (stable across reboots, unique per OS install,
+    independent of networking), else a random key persisted once on disk. Both
+    survive reboots; the persisted-key fallback also survives moving the install.
     """
-    parts = [
-        platform.node(),
-        platform.machine(),
-        platform.system(),
-        # uuid.getnode() is the MAC of an interface (or random if unavailable);
-        # imported lazily to keep import time fast.
-    ]
-    import uuid
-
-    parts.append(str(uuid.getnode()))
-    raw = "|".join(parts).encode("utf-8")
-    digest = hashlib.sha256(raw).digest()
+    secret = _stable_machine_secret()
+    digest = hashlib.sha256(secret.encode("utf-8")).digest()
     return base64.urlsafe_b64encode(digest)
+
+
+def _stable_machine_secret() -> str:
+    """A reboot-stable, network-independent secret to key state encryption."""
+    if os.name == "nt":
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography"
+            ) as k:
+                guid, _ = winreg.QueryValueEx(k, "MachineGuid")
+            if guid:
+                return f"{platform.node()}|{guid}"
+        except OSError as e:
+            log.debug("state.machineguid_unavailable", error=str(e))
+    return _persisted_random_secret()
+
+
+def _persisted_random_secret() -> str:
+    """A random secret generated once and stored next to the state file.
+
+    Stable forever after first run. Weaker "bound to this machine" property
+    than MachineGuid (copying both files together still decrypts), but never
+    loses state — which is the whole point.
+    """
+    import secrets
+
+    key_path = get_settings().state_path.with_name("machine.key")
+    try:
+        if key_path.exists():
+            val = key_path.read_text(encoding="utf-8").strip()
+            if val:
+                return val
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        val = secrets.token_hex(32)
+        key_path.write_text(val, encoding="utf-8")
+        return val
+    except OSError as e:
+        log.warning("state.keyfile_failed", error=str(e))
+        # Last resort: hostname (stable but weak) — still better than losing state.
+        return platform.node() or "chipmo-sentry-agent"
 
 
 def load_state() -> AgentState:

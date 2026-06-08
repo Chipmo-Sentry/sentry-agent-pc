@@ -205,7 +205,15 @@ def resolve_stream(
     UNV (ONVIF), and Skyworth (H.265 at /stream1) alike.
     """
     xaddr = onvif_xaddr or f"http://{ip}:80/onvif/device_service"
-    best = _best_onvif_stream(ip, username, password, xaddr)
+    # ONVIF is best-effort: in the frozen .exe a missing WSDL/XSD can raise a
+    # FileNotFoundError ("[Errno 2]") deep in zeep — that must NOT crash the
+    # whole scan. Any ONVIF failure falls through to the RTSP path brute-force,
+    # which resolves every camera whose path is in the library anyway.
+    try:
+        best = _best_onvif_stream(ip, username, password, xaddr)
+    except Exception as e:  # noqa: BLE001 — onvif/zeep raises a sea of types
+        log.info("resolve.onvif_error", ip=ip, error=str(e))
+        best = None
     if best is not None:
         log.info("resolve.ok", ip=ip, via=best.via, codec=best.codec,
                  res=f"{best.width}x{best.height}")
