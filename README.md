@@ -6,8 +6,9 @@ AI host — with **zero new hardware** and a one-click installer.
 
 Python 3.11 · CustomTkinter (desktop GUI) · ONVIF · OpenCV · ffmpeg · PyInstaller (`--onedir` .exe) · Apache-2.0
 
-**Current release: v0.7.1** — polishes the **offline LAN live view**: a responsive dark grid with colour-coded
-status badges, double-click-to-focus, and fixed tile sizing (no more giant blank tiles before the first frame).
+**Current release: v0.7.2** — the **offline LAN live view** now pulls each camera's **low-res sub-stream**
+(falling back to the main stream), so the grid stays smooth even on a PC that's also running the AI workers.
+Builds on v0.7.1's responsive dark grid, colour-coded status badges, double-click-to-focus, and fixed tile sizing.
 
 ---
 

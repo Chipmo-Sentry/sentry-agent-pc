@@ -23,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import os
 import threading
+import time
 import tkinter as tk
 
 # RTSP over TCP is far more reliable than the UDP default on busy LANs. Must be
@@ -38,7 +39,7 @@ from sentry_agent_pc.state import load_state  # noqa: E402
 
 log = get_logger("sentry_agent_pc.gui.local_view")
 
-_TARGET_FPS = 15
+_TARGET_FPS = 12
 _MIN_TILE_W = 320  # below this we drop a column
 _MAX_COLS = 3
 
@@ -77,21 +78,64 @@ def _cols_for_width(n: int, avail_w: int) -> int:
     return max(1, min(n, _MAX_COLS, fit))
 
 
+def _redact_host(rtsp_url: str) -> str:
+    """Host[:port] from an RTSP URL, with any user:pass@ credentials stripped."""
+    after_scheme = rtsp_url.split("://", 1)[-1]
+    after_creds = after_scheme.split("@", 1)[-1]  # drop user:pass@ if present
+    return after_creds.split("/", 1)[0]
+
+
+# Main-stream path → low-res sub-stream path, by brand convention. The live grid
+# only needs ~640px tiles, so decoding a 4–5 MP MAIN stream and shrinking it is
+# pure waste — on a PC also running the AI workers it saturates the CPU and the
+# whole window stutters. We pull the SUB stream instead (~16× fewer pixels) and
+# fall back to the main URL if the camera has no sub path.
+_SUBSTREAM_RULES: tuple[tuple[str, str], ...] = (
+    ("/Streaming/Channels/101", "/Streaming/Channels/102"),  # Hikvision main→sub
+    ("/Streaming/Channels/1", "/Streaming/Channels/2"),
+    ("/stream1", "/stream2"),                                 # UNV / Skyworth / generic
+    ("subtype=0", "subtype=1"),                               # Dahua
+    ("/cam/realmonitor?channel=1&subtype=0", "/cam/realmonitor?channel=1&subtype=1"),
+    ("/h264Preview_01_main", "/h264Preview_01_sub"),          # Reolink
+    ("/live/main", "/live/sub"),
+    ("/ch1/main", "/ch1/sub"),
+    ("/main/av_stream", "/sub/av_stream"),
+    ("/videoMain", "/videoSub"),
+)
+
+
+def _substream_url(main_url: str) -> str | None:
+    """Best-guess low-res sub-stream URL for a known brand path, else None."""
+    for main, sub in _SUBSTREAM_RULES:
+        if main in main_url:
+            return main_url.replace(main, sub, 1)
+    return None
+
+
+def _candidate_urls(main_url: str) -> list[str]:
+    """URLs to try in priority order: sub-stream first (light), main as fallback."""
+    sub = _substream_url(main_url)
+    return [sub, main_url] if sub else [main_url]
+
+
 class _CameraReader(threading.Thread):
     """Owns one camera's VideoCapture; exposes the latest frame + a status.
 
+    Tries each candidate URL in order (sub-stream first, main as fallback) and
+    PINS the one that works, so a reconnect goes straight back to the good path.
     The target tile box is settable from the UI thread (on window resize) so the
     downscale always matches what's painted — no wasted pixels, no blur.
     """
 
-    def __init__(self, name: str, rtsp_url: str) -> None:
+    def __init__(self, name: str, urls: list[str]) -> None:
         super().__init__(name=f"camreader-{name}", daemon=True)
         self.cam_name = name
-        self.rtsp_url = rtsp_url
+        self.urls = urls  # priority order: sub-stream first, main last
         self._latest: Image.Image | None = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._box = (640, 360)
+        self._pin: int | None = None  # index of the URL that's working
         self.status = _CONNECTING
         self.detail = "Холбож байна…"
 
@@ -120,53 +164,81 @@ class _CameraReader(threading.Thread):
             return
 
         while not self._stop.is_set():
-            cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
-            with contextlib.suppress(Exception):
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # low latency; some backends ignore
-            if not cap.isOpened():
+            # Pinned URL first (fast reconnect); otherwise try all candidates.
+            idxs = [self._pin] if self._pin is not None else list(range(len(self.urls)))
+            streamed = False
+            for i in idxs:
+                if self._stop.is_set():
+                    return
+                cap = cv2.VideoCapture(self.urls[i], cv2.CAP_FFMPEG)
+                with contextlib.suppress(Exception):
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # low latency; some ignore it
+                if not cap.isOpened() or not self._prime(cap):
+                    cap.release()
+                    continue
+                self._pin = i
+                self.status = _LIVE
+                self.detail = "Шууд"
+                self._consume(cap)  # blocks until the stream drops or we stop
                 cap.release()
+                streamed = True
+                break
+
+            if self._stop.is_set():
+                break
+            if not streamed:
+                # Nothing worked this round. Un-pin so the next round re-tries
+                # every candidate (the camera may have moved or changed path).
+                self._pin = None
                 self.status = _ERROR
                 self.detail = "Холбогдсонгүй — дахин оролдож байна…"
                 # Non-fatal: a console-encoding error must never kill the reader
                 # thread (the camera name is Cyrillic; stdout may be cp1252).
                 # Log the host only — never the full URL (it carries credentials).
                 with contextlib.suppress(Exception):
-                    log.warning("local_view.open_failed", host=_redact_host(self.rtsp_url))
-                if self._stop.wait(2.0):
-                    break
-                continue
-
-            self.status = _LIVE
-            self.detail = "Шууд"
-            fails = 0
-            while not self._stop.is_set():
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    fails += 1
-                    if fails > 15:
-                        break  # stream dropped → reconnect
-                    continue
-                fails = 0
-                box_w, box_h = self._get_box()
-                # Downscale to the tile box HERE (off the UI thread); convert
-                # BGR→RGB and store a ready-to-paint PIL image.
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                img = _fit_letterbox(Image.fromarray(rgb), box_w, box_h)
-                with self._lock:
-                    self._latest = img
-            cap.release()
-            if not self._stop.is_set():
+                    log.warning("local_view.open_failed", host=_redact_host(self.urls[-1]))
+            else:
                 self.status = _RECONNECTING
                 self.detail = "Холболт тасарсан — дахин холбож байна…"
-                if self._stop.wait(2.0):
-                    break
+            if self._stop.wait(2.0):
+                break
 
+    def _prime(self, cap: object) -> bool:
+        """Confirm the stream really delivers a frame (so a 404/401 path is
+        rejected fast and we fall through to the next candidate). Stores the
+        first frame so the tile lights up immediately."""
+        deadline = time.monotonic() + 4.0
+        while time.monotonic() < deadline:
+            if self._stop.is_set():
+                return False
+            ok, frame = cap.read()  # type: ignore[attr-defined]
+            if ok and frame is not None:
+                self._store(frame)
+                return True
+        return False
 
-def _redact_host(rtsp_url: str) -> str:
-    """Host[:port] from an RTSP URL, with any user:pass@ credentials stripped."""
-    after_scheme = rtsp_url.split("://", 1)[-1]
-    after_creds = after_scheme.split("@", 1)[-1]  # drop user:pass@ if present
-    return after_creds.split("/", 1)[0]
+    def _consume(self, cap: object) -> None:
+        """Pump frames until the stream drops (then the caller reconnects)."""
+        fails = 0
+        while not self._stop.is_set():
+            ok, frame = cap.read()  # type: ignore[attr-defined]
+            if not ok or frame is None:
+                fails += 1
+                if fails > 15:
+                    return  # stream dropped → reconnect
+                continue
+            fails = 0
+            self._store(frame)
+
+    def _store(self, frame: object) -> None:
+        """BGR frame → tile-sized RGB PIL image (off the UI thread)."""
+        import cv2
+
+        box_w, box_h = self._get_box()
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = _fit_letterbox(Image.fromarray(rgb), box_w, box_h)
+        with self._lock:
+            self._latest = img
 
 
 def _fit_letterbox(img: Image.Image, box_w: int, box_h: int) -> Image.Image:
@@ -285,7 +357,7 @@ class LocalLiveView(ctk.CTkToplevel):
         self._readers: list[_CameraReader] = []
         self._tiles: list[_Tile] = []
         for cam in cams:
-            reader = _CameraReader(cam.name, cam.rtsp_url)
+            reader = _CameraReader(cam.name, _candidate_urls(cam.rtsp_url))
             reader.start()
             self._readers.append(reader)
             tile = _Tile(self._scroll, reader)
