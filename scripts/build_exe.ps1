@@ -50,6 +50,7 @@ uv run pyinstaller `
     --collect-submodules pystray `
     --collect-all webview `
     --collect-all clr_loader `
+    --collect-all cv2 `
     --hidden-import PIL._tkinter_finder `
     --hidden-import pystray._win32 `
     src\sentry_agent_pc\gui_main.py

@@ -374,13 +374,17 @@ class AgentApp(ctk.CTk):
         UpdateDialog(self, info=None)
 
     def open_live_view(self) -> None:
-        """Open the embedded live view (same WebRTC + AI overlay as the web app)."""
-        if not self._require_paired():
+        """Open the OFFLINE LAN live view — decodes the cameras' RTSP directly in
+        a window inside this app. Works with no internet, no MediaMTX, no login;
+        the cloud sentry-ai pipeline + web /live (with AI overlay) run separately
+        when online."""
+        if not load_state().cameras:
+            self.set_status("Камер бүртгэгдээгүй — эхлээд камер нэмнэ үү.")
             return
-        from sentry_agent_pc.gui.live_view import open_live_view
+        from sentry_agent_pc.gui.local_view import open_local_view
 
-        open_live_view()
-        self.set_status("Шууд харах цонх нээгдэж байна…")
+        open_local_view(self)
+        self.set_status("Шууд харах цонх нээгдэж байна (LAN-аас шууд)…")
 
     # === Window / tray lifecycle ===
 

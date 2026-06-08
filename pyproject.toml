@@ -1,6 +1,6 @@
 [project]
 name = "sentry-agent-pc"
-version = "0.6.4"
+version = "0.7.0"
 description = "Chipmo Sentry Windows agent — ONVIF camera discovery + manual add + backend registration"
 readme = "README.md"
 requires-python = "==3.11.*"
@@ -25,6 +25,10 @@ dependencies = [
     # Embedded live view — webview window loading the web /live page.
     # On Windows uses the system WebView2 (EdgeChromium) runtime via pythonnet.
     "pywebview>=5.0,<6.0",
+    # Offline LAN live view — decode camera RTSP directly (no internet/MediaMTX/
+    # login) and render a grid in the app. headless = no Qt/GTK GUI deps (we draw
+    # frames via Pillow into tkinter), so it stays light.
+    "opencv-python-headless>=4.10,<5.0",
     # System tray icon (minimize-to-tray + autostart toggle).
     "pystray>=0.19,<0.20",
 ]
