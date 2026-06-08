@@ -37,6 +37,12 @@ log = get_logger("sentry_agent_pc.updater")
 GITHUB_REPO = "Chipmo-Sentry/sentry-agent-pc"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
+# Always-latest installer — GitHub redirects /releases/latest/download/<asset>
+# to the newest release's asset, so this never needs bumping. Used as the manual
+# fallback when an in-app self-update can't download (e.g. a GitHub 504).
+SETUP_DOWNLOAD_URL = (
+    f"https://github.com/{GITHUB_REPO}/releases/latest/download/ChipmoSentryAgent-Setup.exe"
+)
 # The app is a PyInstaller --onedir folder, published as a zip. Self-update
 # downloads the zip and copies it over the install folder (see
 # apply_update_and_restart). The installer (Setup.exe) is for fresh installs.

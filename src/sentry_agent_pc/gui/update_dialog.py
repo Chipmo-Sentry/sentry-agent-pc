@@ -180,11 +180,30 @@ class UpdateDialog(ctk.CTkToplevel):
         )
 
     def _download_failed(self, err: str) -> None:
+        # Plain-language message + a one-click manual download. The raw error
+        # (often a transient GitHub 504) is kept small for diagnostics only.
         self.progress.pack_forget()
-        self.action_btn.configure(state="normal")
         self.close_btn.configure(state="normal")
         self.status_lbl.configure(
-            text=f"❌ Татаж чадсангүй: {err[:120]}", text_color="#FF6B6B",
+            text=(
+                "❌ Автомат шинэчлэл татаж чадсангүй (сервер түр завгүй байж "
+                "магадгүй).\nДоорх товчоор хамгийн сүүлийн хувилбарыг гараар "
+                "татаад суулгана уу."
+            ),
+            text_color="#FBBF24",
+        )
+        self._set_notes(
+            "Гараар суулгах:\n"
+            "1. '📥 Setup.exe татах' дарж файлыг татна\n"
+            "2. Татсан ChipmoSentryAgent-Setup.exe-г ажиллуулж суулгана\n"
+            "3. Хуучин тохиргоо (холболт, камер) хэвээр хадгалагдана\n\n"
+            f"Шууд холбоос:\n{updater.SETUP_DOWNLOAD_URL}\n\n"
+            f"(Алдааны дэлгэрэнгүй: {err[:140]})"
+        )
+        # Repurpose the primary button into a manual-download action.
+        self.action_btn.configure(
+            text="📥 Setup.exe татах", state="normal",
+            command=lambda: webbrowser.open(updater.SETUP_DOWNLOAD_URL),
         )
 
     # === helpers ===
