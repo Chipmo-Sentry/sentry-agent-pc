@@ -39,8 +39,11 @@ from sentry_agent_pc.state import load_state  # noqa: E402
 
 log = get_logger("sentry_agent_pc.gui.local_view")
 
-_TARGET_FPS = 12
+_TARGET_FPS = 8  # live monitoring needs no more; halves UI-thread PhotoImage churn
 _MIN_TILE_W = 320  # below this we drop a column
+# Stagger camera connects so N VideoCapture opens don't hammer the LAN/cameras at
+# once (a burst of simultaneous RTSP sessions is what triggers reconnect storms).
+_CONNECT_STAGGER_SEC = 0.35
 _MAX_COLS = 3
 
 # Status → (badge text, badge colour, dot colour)
@@ -101,6 +104,9 @@ _SUBSTREAM_RULES: tuple[tuple[str, str], ...] = (
     ("/ch1/main", "/ch1/sub"),
     ("/main/av_stream", "/sub/av_stream"),
     ("/videoMain", "/videoSub"),
+    ("/media/video1", "/media/video2"),                       # Uniview / generic ONVIF
+    ("/media/video0", "/media/video1"),
+    ("/video1", "/video2"),
 )
 
 
@@ -127,21 +133,35 @@ class _CameraReader(threading.Thread):
     downscale always matches what's painted — no wasted pixels, no blur.
     """
 
-    def __init__(self, name: str, urls: list[str]) -> None:
+    def __init__(self, name: str, urls: list[str], start_delay: float = 0.0) -> None:
         super().__init__(name=f"camreader-{name}", daemon=True)
         self.cam_name = name
         self.urls = urls  # priority order: sub-stream first, main last
+        self._start_delay = start_delay
         self._latest: Image.Image | None = None
+        self._seq = 0  # bumped on every new frame; lets the UI skip idle repaints
         self._lock = threading.Lock()
         self._stop = threading.Event()
+        # _active gated: cleared = paused (hold no VideoCapture, ~0 CPU). Used so a
+        # focused tile doesn't keep the other cameras decoding in the background.
+        self._active = threading.Event()
+        self._active.set()
         self._box = (640, 360)
         self._pin: int | None = None  # index of the URL that's working
         self.status = _CONNECTING
         self.detail = "Холбож байна…"
 
-    def latest(self) -> Image.Image | None:
+    def latest(self) -> tuple[Image.Image | None, int]:
+        """Latest frame plus its sequence number (so the UI repaints only on change)."""
         with self._lock:
-            return self._latest
+            return self._latest, self._seq
+
+    def pause(self) -> None:
+        """Stop decoding and drop the capture until resumed (tile hidden)."""
+        self._active.clear()
+
+    def resume(self) -> None:
+        self._active.set()
 
     def set_box(self, w: int, h: int) -> None:
         with self._lock:
@@ -163,7 +183,16 @@ class _CameraReader(threading.Thread):
             log.error("local_view.cv2_import_failed", error=str(e))
             return
 
+        # Stagger the first connect so all cameras don't open at the same instant.
+        if self._start_delay and self._stop.wait(self._start_delay):
+            return
+
         while not self._stop.is_set():
+            # Paused (hidden behind a focused tile): hold no capture, idle cheaply.
+            if not self._active.is_set():
+                if self._stop.wait(0.2):
+                    break
+                continue
             # Pinned URL first (fast reconnect); otherwise try all candidates.
             idxs = [self._pin] if self._pin is not None else list(range(len(self.urls)))
             streamed = False
@@ -221,6 +250,8 @@ class _CameraReader(threading.Thread):
         """Pump frames until the stream drops (then the caller reconnects)."""
         fails = 0
         while not self._stop.is_set():
+            if not self._active.is_set():
+                return  # paused → drop the capture; run() idles until resumed
             ok, frame = cap.read()  # type: ignore[attr-defined]
             if not ok or frame is None:
                 fails += 1
@@ -231,25 +262,28 @@ class _CameraReader(threading.Thread):
             self._store(frame)
 
     def _store(self, frame: object) -> None:
-        """BGR frame → tile-sized RGB PIL image (off the UI thread)."""
+        """BGR frame → tile-sized RGB PIL image (off the UI thread).
+
+        The resize + letterbox is done in OpenCV (C, releases the GIL) instead of
+        PIL — far cheaper per frame, which is what keeps N cameras from saturating
+        the box. PIL is used only for the final zero-copy ``fromarray`` wrap.
+        """
         import cv2
+        import numpy as np
 
         box_w, box_h = self._get_box()
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = _fit_letterbox(Image.fromarray(rgb), box_w, box_h)
+        ih, iw = frame.shape[:2]  # type: ignore[attr-defined]
+        scale = min(box_w / iw, box_h / ih)
+        nw, nh = max(1, int(iw * scale)), max(1, int(ih * scale))
+        resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_AREA)
+        canvas = np.full((box_h, box_w, 3), 16, dtype=np.uint8)  # dark BGR backdrop
+        x0, y0 = (box_w - nw) // 2, (box_h - nh) // 2
+        canvas[y0 : y0 + nh, x0 : x0 + nw] = resized
+        rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(rgb)
         with self._lock:
             self._latest = img
-
-
-def _fit_letterbox(img: Image.Image, box_w: int, box_h: int) -> Image.Image:
-    """Resize preserving aspect ratio, centered on a black box (no distortion)."""
-    iw, ih = img.size
-    scale = min(box_w / iw, box_h / ih)
-    nw, nh = max(1, int(iw * scale)), max(1, int(ih * scale))
-    resized = img.resize((nw, nh))
-    canvas = Image.new("RGB", (box_w, box_h), (16, 16, 18))
-    canvas.paste(resized, ((box_w - nw) // 2, (box_h - nh) // 2))
-    return canvas
+            self._seq += 1
 
 
 class _Tile(ctk.CTkFrame):
@@ -266,6 +300,9 @@ class _Tile(ctk.CTkFrame):
         self.reader = reader
         self._vid_w = 640
         self._vid_h = 360
+        self._painted_seq = -1  # last frame seq drawn; skip idle PhotoImage rebuilds
+        self._has_image = False
+        self._placeholder = ""  # last placeholder text shown (avoid idle relabels)
 
         bar = ctk.CTkFrame(self, fg_color="transparent")
         bar.pack(fill="x", padx=10, pady=(8, 4))
@@ -302,19 +339,31 @@ class _Tile(ctk.CTkFrame):
         self._vid_w, self._vid_h = w, h
         self._holder.configure(width=w, height=h)
         self.reader.set_box(w, h)
+        self._painted_seq = -1  # box changed → force one repaint at the new size
 
     def paint(self) -> None:
         text, fg, dot = _STATUS_STYLE.get(self.reader.status, _STATUS_STYLE[_CONNECTING])
         self._badge.configure(text=f"●  {text}", fg_color=fg, text_color=dot)
 
-        img = self.reader.latest()
+        img, seq = self.reader.latest()
         if img is not None:
+            if seq == self._painted_seq:
+                return  # no new frame since last paint → skip the PhotoImage rebuild
+            self._painted_seq = seq
             photo = ImageTk.PhotoImage(img)
             self._video.configure(image=photo, text="")
             self._video.image = photo  # type: ignore[attr-defined]  # keep ref (Tk GC)
+            self._has_image = True
+            self._placeholder = ""
         else:
-            self._video.configure(image="", text=self.reader.detail, compound="center")
-            self._video.image = None  # type: ignore[attr-defined]
+            # No frame yet / stream dropped: show the status text, but only
+            # reconfigure when it actually changed (not every tick).
+            detail = self.reader.detail
+            if self._has_image or detail != self._placeholder:
+                self._video.configure(image="", text=detail, compound="center")
+                self._video.image = None  # type: ignore[attr-defined]
+                self._has_image = False
+                self._placeholder = detail
 
 
 class LocalLiveView(ctk.CTkToplevel):
@@ -356,8 +405,11 @@ class LocalLiveView(ctk.CTkToplevel):
 
         self._readers: list[_CameraReader] = []
         self._tiles: list[_Tile] = []
-        for cam in cams:
-            reader = _CameraReader(cam.name, _candidate_urls(cam.rtsp_url))
+        for i, cam in enumerate(cams):
+            reader = _CameraReader(
+                cam.name, _candidate_urls(cam.rtsp_url),
+                start_delay=i * _CONNECT_STAGGER_SEC,
+            )
             reader.start()
             self._readers.append(reader)
             tile = _Tile(self._scroll, reader)
@@ -368,6 +420,7 @@ class LocalLiveView(ctk.CTkToplevel):
         self._cols = 0
         self._last_w = 0
         self._closed = False
+        self._minimized = False
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._scroll.bind("<Configure>", self._on_resize)
         self.after(50, self._relayout)
@@ -422,17 +475,39 @@ class LocalLiveView(ctk.CTkToplevel):
 
     def _toggle_focus(self, tile: _Tile) -> None:
         self._focused = None if self._focused is tile else tile
+        self._apply_visibility()
         self._last_w = 0  # force a relayout
         self._relayout()
+
+    def _apply_visibility(self) -> None:
+        """Decode only what's actually on screen: nothing when minimized, just the
+        focused camera in focus mode, otherwise every tile. Keeps the always-on
+        agent box cool when the user leaves the window minimized."""
+        for t in self._tiles:
+            if self._minimized:
+                t.reader.pause()
+            elif self._focused is not None:
+                (t.reader.resume if t is self._focused else t.reader.pause)()
+            else:
+                t.reader.resume()
 
     # ----- paint loop ---------------------------------------------------------
 
     def _tick(self) -> None:
         if self._closed:
             return
-        for tile in self._tiles:
-            with contextlib.suppress(Exception):
-                tile.paint()
+        # Pause/resume decoding when the window is minimized or restored.
+        try:
+            minimized = self.state() in ("iconic", "withdrawn")
+        except Exception:  # noqa: BLE001 — Tk may transiently refuse state(); ignore
+            minimized = self._minimized
+        if minimized != self._minimized:
+            self._minimized = minimized
+            self._apply_visibility()
+        if not minimized:
+            for tile in self._tiles:
+                with contextlib.suppress(Exception):
+                    tile.paint()
         self.after(int(1000 / _TARGET_FPS), self._tick)
 
     def _on_close(self) -> None:
