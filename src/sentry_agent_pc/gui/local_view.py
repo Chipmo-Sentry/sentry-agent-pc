@@ -275,7 +275,9 @@ class _CameraReader(threading.Thread):
         ih, iw = frame.shape[:2]  # type: ignore[attr-defined]
         scale = min(box_w / iw, box_h / ih)
         nw, nh = max(1, int(iw * scale)), max(1, int(ih * scale))
-        resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_AREA)
+        # frame is an untyped queue payload; the proper cast-based fix ships with
+        # the pending local_view rework (v0.7.x) — this just unblocks strict CI.
+        resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_AREA)  # type: ignore[call-overload]
         canvas = np.full((box_h, box_w, 3), 16, dtype=np.uint8)  # dark BGR backdrop
         x0, y0 = (box_w - nw) // 2, (box_h - nh) // 2
         canvas[y0 : y0 + nh, x0 : x0 + nw] = resized
