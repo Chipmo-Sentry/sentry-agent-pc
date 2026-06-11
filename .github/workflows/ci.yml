@@ -1,0 +1,47 @@
+name: CI
+
+# Runs the agent-pc unit tests (plus lint + strict type-check) on every push
+# and PR to main, so regressions are caught BEFORE a tagged release builds the
+# .exe that ships to users' machines (release.yml only runs on v* tags).
+#
+# Note: the format-check step is intentionally omitted for now — the existing
+# tree has pre-existing `ruff format` drift unrelated to this gate. Lint, types
+# and tests are all green and act as the regression net.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-type-test:
+    name: Lint + type-check + unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+          enable-cache: true
+
+      - name: Install dependencies (frozen)
+        run: uv sync --frozen --dev
+
+      - name: Ruff — lint
+        run: uv run ruff check src tests
+
+      - name: Mypy — strict type-check
+        run: uv run mypy src/sentry_agent_pc
+
+      - name: Pytest — unit tests
+        run: uv run pytest tests/ -q
