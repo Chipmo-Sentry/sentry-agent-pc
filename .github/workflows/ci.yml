@@ -21,8 +21,11 @@ concurrency:
 jobs:
   lint-type-test:
     name: Lint + type-check + unit tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # windows-latest, NOT ubuntu: this is a Windows-only app — winreg (autostart,
+    # state) and the GUI code only type-check on Windows, and release.yml builds
+    # the shipped .exe on Windows. CI must match the target platform.
+    runs-on: windows-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
