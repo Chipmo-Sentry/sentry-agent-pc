@@ -13,6 +13,11 @@ build/
 *.bin
 *.tmp
 
+# Env — never commit secrets
+.env
+.env.local
+.env.*.local
+
 # IDE
 .vscode/
 .idea/
