@@ -10,6 +10,7 @@ from __future__ import annotations
 import platform
 import threading
 import tkinter as tk
+import urllib.parse
 from collections.abc import Callable
 from typing import Any
 
@@ -39,6 +40,23 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 CHIPMO_ORANGE = "#FF8A1F"
+
+
+def creds_from_rtsp(rtsp_url: str) -> tuple[str | None, str]:
+    """Pull (user, password) out of an ``rtsp://user:pass@host/...`` URL so a
+    camera can be re-resolved from its IP when its stored path goes stale.
+    ``user`` is None when the URL carries no credentials; password is always a
+    string (empty when absent)."""
+    try:
+        parts = urllib.parse.urlsplit(rtsp_url)
+        if parts.username is None:
+            return None, ""
+        return (
+            urllib.parse.unquote(parts.username),
+            urllib.parse.unquote(parts.password or ""),
+        )
+    except ValueError:
+        return None, ""
 
 
 class AgentApp(ctk.CTk):
@@ -171,13 +189,22 @@ class AgentApp(ctk.CTk):
         head.pack(fill="x", padx=16, pady=(8, 0))
         head.pack_propagate(False)
         cols = [
-            ("Нэр", 240), ("IP", 120), ("Path", 110), ("Codec", 80),
-            ("Чанар", 100), ("Push", 90), ("", 90),
+            ("Нэр", 240),
+            ("IP", 120),
+            ("Path", 110),
+            ("Codec", 80),
+            ("Чанар", 100),
+            ("Push", 90),
+            ("", 90),
         ]
         for text, width in cols:
             ctk.CTkLabel(
-                head, text=text, width=width, anchor="w",
-                font=ctk.CTkFont(size=12, weight="bold"), text_color="gray80",
+                head,
+                text=text,
+                width=width,
+                anchor="w",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color="gray80",
             ).pack(side="left", padx=4)
 
         self.list_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
@@ -188,7 +215,10 @@ class AgentApp(ctk.CTk):
         bar.pack(fill="x", side="bottom")
         bar.pack_propagate(False)
         self.status_label = ctk.CTkLabel(
-            bar, text="Бэлэн", font=ctk.CTkFont(size=11), text_color="gray70",
+            bar,
+            text="Бэлэн",
+            font=ctk.CTkFont(size=11),
+            text_color="gray70",
         )
         self.status_label.pack(side="left", padx=16)
 
@@ -300,26 +330,101 @@ class AgentApp(ctk.CTk):
         ]
         for text, width in cells:
             ctk.CTkLabel(
-                row, text=text, width=width, anchor="w",
+                row,
+                text=text,
+                width=width,
+                anchor="w",
                 font=ctk.CTkFont(size=12),
             ).pack(side="left", padx=4, pady=8)
 
         # Push status (cloud topology) — updated live by _tick_push_status.
         push_lbl = ctk.CTkLabel(
-            row, text="—", width=90, anchor="w",
-            font=ctk.CTkFont(size=12), text_color="gray50",
+            row,
+            text="—",
+            width=90,
+            anchor="w",
+            font=ctk.CTkFont(size=12),
+            text_color="gray50",
         )
         push_lbl.pack(side="left", padx=4, pady=8)
         if cam.mediamtx_path:
             self._push_labels[cam.mediamtx_path] = push_lbl
 
         ctk.CTkButton(
-            row, text="Устгах", width=80, height=26,
-            fg_color="transparent", border_width=1,
-            text_color="#FF6B6B", border_color="#FF6B6B",
+            row,
+            text="Устгах",
+            width=80,
+            height=26,
+            fg_color="transparent",
+            border_width=1,
+            text_color="#FF6B6B",
+            border_color="#FF6B6B",
             hover_color="gray25",
             command=lambda c=cam: self._delete_camera(c),
-        ).pack(side="right", padx=8)
+        ).pack(side="right", padx=(4, 8))
+
+        # Manual repair: re-probe the camera and restart its relay. Recovers a
+        # camera that was unplugged + came back (the auto-reconnect backoff can
+        # be slow) or whose RTSP path drifted, without deleting + re-adding it.
+        ctk.CTkButton(
+            row,
+            text="Дахин холбох",
+            width=110,
+            height=26,
+            fg_color="transparent",
+            border_width=1,
+            text_color=CHIPMO_ORANGE,
+            border_color=CHIPMO_ORANGE,
+            hover_color="gray25",
+            command=lambda c=cam: self._reconnect_camera(c),
+        ).pack(side="right", padx=4)
+
+    def _reconnect_camera(self, cam: CameraRecord) -> None:
+        def work() -> dict[str, Any]:
+            from sentry_agent_pc.discovery import rtsp_probe
+
+            # 1. Is the stored URL still alive?
+            alive = rtsp_probe.probe(cam.rtsp_url).ok
+            changed = False
+            if not alive:
+                # 2. Stale path — re-resolve from the camera's IP + credentials.
+                user, pwd = creds_from_rtsp(cam.rtsp_url)
+                if user is not None:
+                    try:
+                        rs = svc.resolve_stream(cam.ip, user, pwd)
+                    except Exception as e:  # noqa: BLE001 — resolve raises many types
+                        log.info("reconnect.resolve_error", ip=cam.ip, error=str(e))
+                        rs = None
+                    if rs is not None and rs.rtsp_url:
+                        state = load_state()
+                        for c in state.cameras:
+                            if c.uuid == cam.uuid:
+                                c.rtsp_url = rs.rtsp_url
+                                c.codec = rs.codec or c.codec
+                                if rs.width and rs.height:
+                                    c.resolution = (rs.width, rs.height)
+                                changed = True
+                        if changed:
+                            save_state(state)
+                            alive = True
+            # 3. Restart the push relay (if any) from the latest state.
+            get_stream_controller().refresh()
+            return {"ok": True, "alive": alive, "changed": changed}
+
+        def done(result: Any) -> None:
+            if isinstance(result, dict) and not result.get("ok", True):
+                self.set_status(f"⚠ Дахин холбож чадсангүй: {str(result.get('error', ''))[:60]}")
+            elif result.get("changed"):
+                self.set_status("Камерын шинэ урсгал олдож, дахин холбогдлоо ✓")
+            elif result.get("alive"):
+                self.set_status("Камер амьд байна — дахин холбогдлоо ✓")
+            else:
+                self.set_status(
+                    "⚠ Камер хариу өгсөнгүй — IP/тэжээл/сүлжээгээ шалгаад дахин оролдоно уу"
+                )
+            self.refresh_cameras()
+
+        self._run_bg(work, done, status="Дахин холбож байна…")
 
     def _delete_camera(self, cam: CameraRecord) -> None:
         dlg = ctk.CTkInputDialog(
@@ -424,6 +529,7 @@ class AgentApp(ctk.CTk):
 
     def _auto_check_update(self) -> None:
         """Silent startup check — only opens the dialog if a newer release exists."""
+
         def on_available(info: updater.UpdateInfo) -> None:
             self.set_status(f"Шинэ хувилбар бэлэн: v{info.version}")
             UpdateDialog(self, info=info)
@@ -448,7 +554,8 @@ class AgentApp(ctk.CTk):
         state = load_state()
         if not state.is_paired:
             self.backend_label.configure(
-                text="Холбогдоогүй — '🔗 Холболт' дарна уу", text_color="#FBBF24",
+                text="Холбогдоогүй — '🔗 Холболт' дарна уу",
+                text_color="#FBBF24",
             )
             return
         store = state.store_name or "дэлгүүр"
@@ -463,11 +570,13 @@ class AgentApp(ctk.CTk):
         def done(result: dict[str, Any]) -> None:
             if result.get("ok"):
                 self.backend_label.configure(
-                    text=f"✅ {store}", text_color="#4ADE80",
+                    text=f"✅ {store}",
+                    text_color="#4ADE80",
                 )
             else:
                 self.backend_label.configure(
-                    text=f"⚠ {store} — холбогдсонгүй", text_color="#FF6B6B",
+                    text=f"⚠ {store} — холбогдсонгүй",
+                    text_color="#FF6B6B",
                 )
 
         self._run_bg(work, done)
@@ -520,22 +629,39 @@ class PairingDialog(ctk.CTkToplevel):
         # Bottom button bar FIRST so it's never clipped, then status above it.
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
         btn_row.pack(side="bottom", fill="x", padx=20, pady=16)
-        ctk.CTkButton(btn_row, text="Хаах", fg_color="transparent", border_width=1,
-                      command=self._save_and_close).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(
+            btn_row,
+            text="Хаах",
+            fg_color="transparent",
+            border_width=1,
+            command=self._save_and_close,
+        ).pack(side="right", padx=(8, 0))
         self.connect_btn = ctk.CTkButton(
-            btn_row, text="Холбох", fg_color=CHIPMO_ORANGE,
-            hover_color="#E57A12", command=self._pair,
+            btn_row,
+            text="Холбох",
+            fg_color=CHIPMO_ORANGE,
+            hover_color="#E57A12",
+            command=self._pair,
         )
         self.connect_btn.pack(side="right")
         if state.is_paired:
             ctk.CTkButton(
-                btn_row, text="Салгах", fg_color="transparent", border_width=1,
-                text_color="#FF6B6B", border_color="#FF6B6B", command=self._unpair,
+                btn_row,
+                text="Салгах",
+                fg_color="transparent",
+                border_width=1,
+                text_color="#FF6B6B",
+                border_color="#FF6B6B",
+                command=self._unpair,
             ).pack(side="left")
 
         self.status_lbl = ctk.CTkLabel(
-            self, text="", font=ctk.CTkFont(size=12), text_color="gray60",
-            wraplength=470, anchor="w",
+            self,
+            text="",
+            font=ctk.CTkFont(size=12),
+            text_color="gray60",
+            wraplength=470,
+            anchor="w",
         )
         self.status_lbl.pack(side="bottom", fill="x", padx=20, pady=(6, 0))
 
@@ -544,7 +670,8 @@ class PairingDialog(ctk.CTkToplevel):
         body.pack(side="top", fill="both", expand=True)
 
         ctk.CTkLabel(
-            body, text="Дэлгүүртэй холбох",
+            body,
+            text="Дэлгүүртэй холбох",
             font=ctk.CTkFont(size=18, weight="bold"),
         ).pack(pady=(8, 2), padx=20, anchor="w")
 
@@ -552,35 +679,50 @@ class PairingDialog(ctk.CTkToplevel):
             ctk.CTkLabel(
                 body,
                 text=f"✅ Одоо холбогдсон дэлгүүр: {state.store_name or '—'}",
-                font=ctk.CTkFont(size=13), text_color="#4ADE80", anchor="w",
+                font=ctk.CTkFont(size=13),
+                text_color="#4ADE80",
+                anchor="w",
             ).pack(fill="x", padx=20, pady=(2, 8))
 
         ctk.CTkLabel(
             body,
-            text="Веб апп → Дэлгүүр → 'Компьютер холбох' дарж 6 оронтой код аваад "
-            "доор оруулна уу.",
-            font=ctk.CTkFont(size=12), text_color="gray70", anchor="w", wraplength=470,
+            text="Веб апп → Дэлгүүр → 'Компьютер холбох' дарж 6 оронтой код аваад доор оруулна уу.",
+            font=ctk.CTkFont(size=12),
+            text_color="gray70",
+            anchor="w",
+            wraplength=470,
             justify="left",
         ).pack(fill="x", padx=20, pady=(0, 10))
 
         ctk.CTkLabel(body, text="6 оронтой код:", anchor="w").pack(fill="x", padx=20)
         self.code_entry = ctk.CTkEntry(
-            body, placeholder_text="123456",
-            font=ctk.CTkFont(size=22, weight="bold"), justify="center",
+            body,
+            placeholder_text="123456",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            justify="center",
         )
         self.code_entry.pack(fill="x", padx=20, pady=(2, 12))
 
-        ctk.CTkLabel(body, text="Backend URL (default-ыг хэвээр үлдээж болно):",
-                     anchor="w", font=ctk.CTkFont(size=11), text_color="gray60").pack(
-            fill="x", padx=20,
+        ctk.CTkLabel(
+            body,
+            text="Backend URL (default-ыг хэвээр үлдээж болно):",
+            anchor="w",
+            font=ctk.CTkFont(size=11),
+            text_color="gray60",
+        ).pack(
+            fill="x",
+            padx=20,
         )
         self.url_entry = ctk.CTkEntry(body, placeholder_text=DEFAULT_BACKEND_URL)
         self.url_entry.pack(fill="x", padx=20, pady=(2, 8))
         self.url_entry.insert(0, cfg.get("BACKEND_URL") or DEFAULT_BACKEND_URL)
 
         ctk.CTkLabel(
-            body, text="Веб хаяг (Шууд харах цонхонд ачаална):",
-            anchor="w", font=ctk.CTkFont(size=11), text_color="gray60",
+            body,
+            text="Веб хаяг (Шууд харах цонхонд ачаална):",
+            anchor="w",
+            font=ctk.CTkFont(size=11),
+            text_color="gray60",
         ).pack(fill="x", padx=20)
         self.frontend_entry = ctk.CTkEntry(body, placeholder_text=DEFAULT_FRONTEND_URL)
         self.frontend_entry.pack(fill="x", padx=20, pady=(2, 4))
@@ -602,7 +744,8 @@ class PairingDialog(ctk.CTkToplevel):
         frontend = self.frontend_entry.get().strip() or DEFAULT_FRONTEND_URL
         if not code.isdigit() or len(code) != 6:
             self.status_lbl.configure(
-                text="Код 6 оронтой тоо байх ёстой.", text_color="#FF6B6B",
+                text="Код 6 оронтой тоо байх ёстой.",
+                text_color="#FF6B6B",
             )
             return
         self.connect_btn.configure(state="disabled")
@@ -636,7 +779,8 @@ class PairingDialog(ctk.CTkToplevel):
             self.after(1200, self.destroy)
         else:
             self.status_lbl.configure(
-                text=f"❌ {result.get('error', 'алдаа')[:120]}", text_color="#FF6B6B",
+                text=f"❌ {result.get('error', 'алдаа')[:120]}",
+                text_color="#FF6B6B",
             )
 
     def _unpair(self) -> None:

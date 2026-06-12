@@ -25,6 +25,10 @@ import os
 import threading
 import time
 import tkinter as tk
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    import numpy as np
 
 # RTSP over TCP is far more reliable than the UDP default on busy LANs. Must be
 # set before the first cv2 VideoCapture is created.
@@ -41,6 +45,12 @@ log = get_logger("sentry_agent_pc.gui.local_view")
 
 _TARGET_FPS = 8  # live monitoring needs no more; halves UI-thread PhotoImage churn
 _MIN_TILE_W = 320  # below this we drop a column
+# How long to wait for the FIRST decodable frame before rejecting a candidate URL.
+# Generous on purpose: H.265 cameras (e.g. Skyworth) only emit a decodable frame at
+# the next keyframe, which on a long-GOP stream — and under concurrent decode load —
+# can be 5-10 s after open. The old 4 s budget timed out a perfectly good HEVC stream
+# and the tile fell to "Холбогдсонгүй". Better to wait than to wrongly give up.
+_PRIME_TIMEOUT_SEC = 12.0
 # Stagger camera connects so N VideoCapture opens don't hammer the LAN/cameras at
 # once (a burst of simultaneous RTSP sessions is what triggers reconnect storms).
 _CONNECT_STAGGER_SEC = 0.35
@@ -236,14 +246,17 @@ class _CameraReader(threading.Thread):
         """Confirm the stream really delivers a frame (so a 404/401 path is
         rejected fast and we fall through to the next candidate). Stores the
         first frame so the tile lights up immediately."""
-        deadline = time.monotonic() + 4.0
+        deadline = time.monotonic() + _PRIME_TIMEOUT_SEC
         while time.monotonic() < deadline:
-            if self._stop.is_set():
-                return False
+            if self._stop.is_set() or not self._active.is_set():
+                return False  # stopped or paused mid-prime → drop this attempt
             ok, frame = cap.read()  # type: ignore[attr-defined]
             if ok and frame is not None:
                 self._store(frame)
                 return True
+            # Pre-keyframe reads can return empty instantly — a tiny sleep keeps
+            # the (now up to 12 s) wait from busy-spinning a core per HEVC camera.
+            time.sleep(0.02)
         return False
 
     def _consume(self, cap: object) -> None:
@@ -271,13 +284,12 @@ class _CameraReader(threading.Thread):
         import cv2
         import numpy as np
 
+        arr = cast("np.ndarray", frame)  # a cv2 BGR frame (ndarray)
         box_w, box_h = self._get_box()
-        ih, iw = frame.shape[:2]  # type: ignore[attr-defined]
+        ih, iw = arr.shape[:2]
         scale = min(box_w / iw, box_h / ih)
         nw, nh = max(1, int(iw * scale)), max(1, int(ih * scale))
-        # frame is an untyped queue payload; the proper cast-based fix ships with
-        # the pending local_view rework (v0.7.x) — this just unblocks strict CI.
-        resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_AREA)  # type: ignore[call-overload]
+        resized = cv2.resize(arr, (nw, nh), interpolation=cv2.INTER_AREA)
         canvas = np.full((box_h, box_w, 3), 16, dtype=np.uint8)  # dark BGR backdrop
         x0, y0 = (box_w - nw) // 2, (box_h - nh) // 2
         canvas[y0 : y0 + nh, x0 : x0 + nw] = resized
