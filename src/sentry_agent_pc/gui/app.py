@@ -88,6 +88,10 @@ class AgentApp(ctk.CTk):
         # Live push status indicators (5s) + periodic stream-config reconcile (30s).
         self.after(5000, self._tick_push_status)
         self.after(30000, self._tick_periodic_refresh)
+        # Periodic heartbeat (30s) — keeps the computer "online" in the cloud. The
+        # web UI marks it offline after 120s without a beat, so a one-time beat at
+        # startup made the PC flip offline a couple minutes after launch.
+        self.after(30000, self._tick_heartbeat)
 
         # System tray icon + minimize-to-tray (closing hides instead of quitting).
         self._tray = TrayController(self)
@@ -313,6 +317,16 @@ class AgentApp(ctk.CTk):
             self._refresh_streaming()
         finally:
             self.after(30000, self._tick_periodic_refresh)
+
+    def _tick_heartbeat(self) -> None:
+        """Periodic heartbeat so the cloud keeps this computer marked online.
+        _check_backend_async() POSTs /api/v1/agent/heartbeat (and refreshes the
+        header label). Runs while minimized to tray — only quitting stops it."""
+        try:
+            if load_state().is_paired:
+                self._check_backend_async()
+        finally:
+            self.after(30000, self._tick_heartbeat)
 
     def _update_push_indicators(self) -> None:
         ctrl = get_stream_controller()
