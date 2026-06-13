@@ -129,6 +129,33 @@ class BackendClient:
         )
         return r.json()  # type: ignore[no-any-return]
 
+    def agent_update_camera(
+        self,
+        camera_uuid: str,
+        *,
+        name: str | None = None,
+        rtsp_url: str | None = None,
+        risk_threshold: float | None = None,
+    ) -> dict[str, Any]:
+        """PATCH /api/v1/agent/cameras/{id} — edit name / connection / threshold.
+
+        Only non-None fields are sent (partial update). The backend re-points
+        the live worker at the new rtsp_url when it changes."""
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if rtsp_url is not None:
+            body["rtsp_url"] = rtsp_url
+        if risk_threshold is not None:
+            body["risk_threshold"] = risk_threshold
+        r = self._request(
+            "PATCH",
+            f"/api/v1/agent/cameras/{camera_uuid}",
+            json_body=body,
+            ok_codes=(200,),
+        )
+        return r.json()  # type: ignore[no-any-return]
+
     def agent_delete_camera(self, camera_uuid: str) -> None:
         self._request(
             "DELETE",

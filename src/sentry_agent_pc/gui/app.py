@@ -26,6 +26,7 @@ from sentry_agent_pc.config_file import (
 )
 from sentry_agent_pc.gui import widgets
 from sentry_agent_pc.gui.add_dialog import AddCameraDialog
+from sentry_agent_pc.gui.edit_dialog import EditCameraDialog
 from sentry_agent_pc.gui.scan_dialog import ScanDialog
 from sentry_agent_pc.gui.tray import TrayController
 from sentry_agent_pc.gui.update_dialog import UpdateDialog, check_in_background
@@ -183,29 +184,44 @@ class AgentApp(ctk.CTk):
             command=self.open_live_view,
         ).pack(side="left", padx=(10, 0))
 
+    # Fluid data columns: (title, weight, minsize). Columns expand to fill the
+    # window width on a wide screen and shrink (to minsize) on a narrow one —
+    # the same weights are applied to the header AND every row so they line up.
+    _COLUMNS: tuple[tuple[str, int, int], ...] = (
+        ("Нэр", 3, 120),
+        ("IP", 2, 90),
+        ("Path", 2, 80),
+        ("Codec", 1, 55),
+        ("Чанар", 2, 80),
+        ("Push", 1, 70),
+    )
+    _ACTIONS_MINSIZE = 280  # fixed column for the 3 per-row action buttons
+
+    def _configure_grid(self, frame: ctk.CTkBaseClass) -> None:
+        """Apply the shared column weights/minsizes to a header or row frame."""
+        for i, (_t, weight, minsize) in enumerate(self._COLUMNS):
+            frame.grid_columnconfigure(i, weight=weight, minsize=minsize)
+        frame.grid_columnconfigure(len(self._COLUMNS), weight=0, minsize=self._ACTIONS_MINSIZE)
+
     def _build_camera_list(self) -> None:
-        # Column headers
+        # Column headers — grid with the shared weights. Extra right pad ≈ the
+        # scrollable-frame scrollbar so the header lines up with the rows below.
         head = ctk.CTkFrame(self, fg_color="gray20", height=34)
         head.pack(fill="x", padx=16, pady=(8, 0))
         head.pack_propagate(False)
-        cols = [
-            ("Нэр", 240),
-            ("IP", 120),
-            ("Path", 110),
-            ("Codec", 80),
-            ("Чанар", 100),
-            ("Push", 90),
-            ("", 90),
-        ]
-        for text, width in cols:
+        self._configure_grid(head)
+        for i, (text, _w, _m) in enumerate(self._COLUMNS):
             ctk.CTkLabel(
                 head,
                 text=text,
-                width=width,
                 anchor="w",
                 font=ctk.CTkFont(size=12, weight="bold"),
                 text_color="gray80",
-            ).pack(side="left", padx=4)
+            ).grid(row=0, column=i, sticky="w", padx=6)
+        ctk.CTkLabel(
+            head, text="Үйлдэл", anchor="w",
+            font=ctk.CTkFont(size=12, weight="bold"), text_color="gray80",
+        ).grid(row=0, column=len(self._COLUMNS), sticky="w", padx=6)
 
         self.list_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.list_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
@@ -319,57 +335,60 @@ class AgentApp(ctk.CTk):
     def _render_camera_row(self, cam: CameraRecord) -> None:
         row = ctk.CTkFrame(self.list_frame, fg_color="gray17", corner_radius=8)
         row.pack(fill="x", pady=3)
+        self._configure_grid(row)
 
         res = f"{cam.resolution[0]}×{cam.resolution[1]}" if cam.resolution else "—"
         cells = [
-            (cam.name, 240),
-            (cam.ip, 120),
-            (cam.mediamtx_path or "—", 110),
-            ((cam.codec or "—").upper(), 80),
-            (res, 100),
+            cam.name,
+            cam.ip or "—",
+            cam.mediamtx_path or "—",
+            (cam.codec or "—").upper(),
+            res,
         ]
-        for text, width in cells:
+        for i, text in enumerate(cells):
             ctk.CTkLabel(
                 row,
                 text=text,
-                width=width,
                 anchor="w",
                 font=ctk.CTkFont(size=12),
-            ).pack(side="left", padx=4, pady=8)
+            ).grid(row=0, column=i, sticky="w", padx=6, pady=8)
 
         # Push status (cloud topology) — updated live by _tick_push_status.
         push_lbl = ctk.CTkLabel(
             row,
             text="—",
-            width=90,
             anchor="w",
             font=ctk.CTkFont(size=12),
             text_color="gray50",
         )
-        push_lbl.pack(side="left", padx=4, pady=8)
+        push_lbl.grid(row=0, column=5, sticky="w", padx=6, pady=8)
         if cam.mediamtx_path:
             self._push_labels[cam.mediamtx_path] = push_lbl
 
+        # Action buttons — packed into one cell so they group at the row's end.
+        actions = ctk.CTkFrame(row, fg_color="transparent")
+        actions.grid(row=0, column=len(self._COLUMNS), sticky="e", padx=(6, 8), pady=6)
+
         ctk.CTkButton(
-            row,
-            text="Устгах",
-            width=80,
+            actions,
+            text="✎ Засах",
+            width=70,
             height=26,
             fg_color="transparent",
             border_width=1,
-            text_color="#FF6B6B",
-            border_color="#FF6B6B",
+            text_color=CHIPMO_ORANGE,
+            border_color=CHIPMO_ORANGE,
             hover_color="gray25",
-            command=lambda c=cam: self._delete_camera(c),
-        ).pack(side="right", padx=(4, 8))
+            command=lambda c=cam: self._edit_camera(c),
+        ).pack(side="left", padx=2)
 
         # Manual repair: re-probe the camera and restart its relay. Recovers a
         # camera that was unplugged + came back (the auto-reconnect backoff can
         # be slow) or whose RTSP path drifted, without deleting + re-adding it.
         ctk.CTkButton(
-            row,
-            text="Дахин холбох",
-            width=110,
+            actions,
+            text="↻ Холбох",
+            width=78,
             height=26,
             fg_color="transparent",
             border_width=1,
@@ -377,7 +396,20 @@ class AgentApp(ctk.CTk):
             border_color=CHIPMO_ORANGE,
             hover_color="gray25",
             command=lambda c=cam: self._reconnect_camera(c),
-        ).pack(side="right", padx=4)
+        ).pack(side="left", padx=2)
+
+        ctk.CTkButton(
+            actions,
+            text="🗑 Устгах",
+            width=78,
+            height=26,
+            fg_color="transparent",
+            border_width=1,
+            text_color="#FF6B6B",
+            border_color="#FF6B6B",
+            hover_color="gray25",
+            command=lambda c=cam: self._delete_camera(c),
+        ).pack(side="left", padx=2)
 
     def _reconnect_camera(self, cam: CameraRecord) -> None:
         def work() -> dict[str, Any]:
@@ -470,6 +502,20 @@ class AgentApp(ctk.CTk):
         if not self._require_paired():
             return
         AddCameraDialog(self, on_done=self.refresh_cameras)
+
+    def _edit_camera(self, cam: CameraRecord) -> None:
+        """Open the edit dialog for a camera's connection / name.
+
+        Backend-only cameras (surfaced by reconcile with no local rtsp_url —
+        e.g. registered from another PC) carry no connection to edit here."""
+        if not self._require_paired():
+            return
+        if not cam.rtsp_url:
+            self.set_status(
+                "⚠ Энэ камер өөр компьютероос бүртгэгдсэн — холболтыг эндээс засах боломжгүй."
+            )
+            return
+        EditCameraDialog(self, cam, on_done=self.refresh_cameras)
 
     def open_pairing(self) -> None:
         PairingDialog(self, on_saved=self._on_pairing_saved)

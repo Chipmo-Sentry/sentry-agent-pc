@@ -528,6 +528,71 @@ def register_camera(
     )
 
 
+def update_camera_connection(
+    *,
+    camera_uuid: str | None,
+    name: str | None = None,
+    ip: str | None = None,
+    rtsp_url: str | None = None,
+    risk_threshold: float | None = None,
+    resolved: ResolvedStream | None = None,
+    backend: BackendClient | None = None,
+) -> RegisterResult:
+    """Edit an existing camera: PATCH the backend + update local state.
+
+    Only the provided fields change. When `rtsp_url` changes the backend
+    re-points its live worker at the new source, and `resolved` (the freshly
+    verified stream) refreshes the local codec/resolution. `mediamtx_path` is
+    never changed here — it is the stream identity the live pipeline keys on.
+    """
+    state = load_state()
+    target = next((c for c in state.cameras if c.uuid == camera_uuid), None)
+    if target is None:
+        return RegisterResult(ok=False, error="Камер дотоод бүртгэлд олдсонгүй.")
+
+    # Guard: don't let an edit move this camera onto another camera's IP.
+    if ip and any(c.ip == ip and c.uuid != camera_uuid for c in state.cameras):
+        return RegisterResult(
+            ok=False,
+            error=f"Энэ IP ({ip}) өөр камер дээр бүртгэлтэй байна.",
+        )
+
+    # Backend PATCH first — if it fails we keep local state untouched so the
+    # desktop list never diverges from the server.
+    if camera_uuid:
+        client = backend or BackendClient()
+        try:
+            client.agent_update_camera(
+                camera_uuid,
+                name=name,
+                rtsp_url=rtsp_url,
+                risk_threshold=risk_threshold,
+            )
+        except BackendError as e:
+            return RegisterResult(ok=False, error=str(e))
+
+    # Apply to local state.
+    if name is not None:
+        target.name = name
+    if ip:
+        target.ip = ip
+    if rtsp_url is not None:
+        target.rtsp_url = rtsp_url
+    if resolved is not None and resolved.ok:
+        target.codec = resolved.codec or target.codec
+        if resolved.width and resolved.height:
+            target.resolution = (resolved.width, resolved.height)
+    save_state(state)
+
+    return RegisterResult(
+        ok=True,
+        camera_uuid=camera_uuid,
+        mediamtx_path=target.mediamtx_path,
+        codec=target.codec,
+        resolution=target.resolution,
+    )
+
+
 def build_manual_url(
     brand_key: str,
     *,
