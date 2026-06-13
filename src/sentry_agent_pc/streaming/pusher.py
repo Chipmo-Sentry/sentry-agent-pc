@@ -70,6 +70,39 @@ def build_push_url(base: str, path: str, user: str | None, password: str | None)
     return f"{base}/{path}"
 
 
+def build_relay_cmd(ffmpeg: str, target: PushTarget, dest: str) -> list[str]:
+    """ffmpeg argv for one camera relay: LAN source → cloud publish.
+
+    Always `-map 0:v:0`: take ONLY the first video stream, dropping audio and
+    any extra data/metadata track. Some cameras (e.g. UNV) ship a "Generic"
+    metadata track alongside H.264 that trips the browser's WebRTC — a bare
+    `-c copy` would forward it. Mapping the single video track keeps the
+    published stream clean for ALL cameras at near-zero cost.
+
+      * H.264 source → `-c copy` (remux only, negligible CPU)
+      * H.265 source → re-encode to H.264 (browsers can't play HEVC over WebRTC)
+    """
+    if target.needs_transcode:
+        codec_args = [
+            "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
+            "-pix_fmt", "yuv420p",
+        ]
+    else:
+        codec_args = ["-c:v", "copy"]
+    return [
+        ffmpeg,
+        "-nostdin",
+        "-rtsp_transport", "tcp",
+        "-i", target.lan_rtsp,
+        "-map", "0:v:0",
+        "-an",
+        *codec_args,
+        "-f", "rtsp",
+        "-rtsp_transport", "tcp",
+        dest,
+    ]
+
+
 class StreamPusher:
     """Supervises one ffmpeg relay per camera. Thread-safe start/stop."""
 
@@ -153,25 +186,7 @@ class StreamPusher:
         dest = build_push_url(
             self.push_base, st.target.mediamtx_path, self.publish_user, self.publish_pass
         )
-        ffmpeg = get_settings().ffmpeg_path
-        if st.target.needs_transcode:
-            # H.265 → H.264 so browsers can play it (CPU cost on the store box).
-            codec_args = [
-                "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
-                "-pix_fmt", "yuv420p", "-an",
-            ]
-        else:
-            codec_args = ["-c", "copy"]
-        cmd = [
-            ffmpeg,
-            "-nostdin",
-            "-rtsp_transport", "tcp",
-            "-i", st.target.lan_rtsp,
-            *codec_args,
-            "-f", "rtsp",
-            "-rtsp_transport", "tcp",
-            dest,
-        ]
+        cmd = build_relay_cmd(get_settings().ffmpeg_path, st.target, dest)
         while not st.stop.is_set():
             try:
                 creationflags = _CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
