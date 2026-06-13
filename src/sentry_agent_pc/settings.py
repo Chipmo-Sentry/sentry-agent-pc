@@ -50,6 +50,17 @@ class Settings(BaseSettings):
     ffmpeg_path: str = "ffmpeg"
     rtsp_probe_timeout_sec: int = 5
     log_level: str = "INFO"
+    # Local MediaMTX fan-out: pull each camera ONCE and share it with the cloud
+    # push relay + the offline grid (so cheap cameras aren't hit by 2 sessions).
+    # Master switch — off → both consumers connect to the camera directly (the
+    # pre-fan-out behaviour). Resolves like ffmpeg_path: absolute path, bundled
+    # binary, or "mediamtx" on PATH.
+    local_fanout_enabled: bool = True
+    mediamtx_path: str = "mediamtx"
+    # Loopback-only ports; non-standard to avoid clashing with a manually run
+    # ingest/cloud MediaMTX (8554/9997) during testing on the same box.
+    local_mediamtx_rtsp_port: int = 18554
+    local_mediamtx_api_port: int = 19997
 
 
 def get_settings() -> Settings:

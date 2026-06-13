@@ -2,7 +2,23 @@
 
 from __future__ import annotations
 
-from sentry_agent_pc.gui.local_view import grid_dims
+from sentry_agent_pc.gui.local_view import _reader_urls, grid_dims
+
+
+def test_reader_urls_prefers_local_fanout() -> None:
+    # Hikvision main → sub fallback is derived; local hub URL goes first.
+    main = "rtsp://u:p@cam/Streaming/Channels/101"
+    local = "rtsp://127.0.0.1:18554/cam1"
+    urls = _reader_urls(main, local)
+    assert urls[0] == local  # share the single pull
+    assert main in urls       # direct main still a fallback
+    assert "rtsp://u:p@cam/Streaming/Channels/102" in urls  # sub fallback too
+
+
+def test_reader_urls_without_local_is_direct_only() -> None:
+    main = "rtsp://u:p@cam/stream1"
+    urls = _reader_urls(main, None)
+    assert urls == ["rtsp://u:p@cam/stream2", main]  # sub-first, then main
 
 
 def test_grid_dims_layout() -> None:

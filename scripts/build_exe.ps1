@@ -16,6 +16,36 @@ $ErrorActionPreference = "Stop"
 Write-Host "==> Installing build deps (pyinstaller)..." -ForegroundColor Cyan
 uv pip install pyinstaller
 
+# --- Bundle MediaMTX (local camera fan-out hub) -----------------------------
+# The agent runs a loopback MediaMTX so each camera is pulled ONCE and shared by
+# the cloud push relay + the offline grid (cheap cameras cap concurrent RTSP).
+# Fetch the pinned Windows binary into src\...\bin\ so PyInstaller bundles it.
+# Non-fatal: if the download fails we WARN and ship without it — at runtime the
+# agent then falls back to direct camera connections (no fan-out, no crash).
+# Pinned to match the proven sentry-ingest binary — its config schema
+# (sourceProtocol/sourceOnDemand) is what local_mediamtx.py generates.
+$mtxVersion = "v1.18.2"
+$mtxBinDir = "src\sentry_agent_pc\bin"
+$mtxExe = Join-Path $mtxBinDir "mediamtx.exe"
+if (-not (Test-Path $mtxExe)) {
+    try {
+        New-Item -ItemType Directory -Force -Path $mtxBinDir | Out-Null
+        $mtxZip = Join-Path $env:TEMP "mediamtx_win.zip"
+        $mtxUrl = "https://github.com/bluenviron/mediamtx/releases/download/$mtxVersion/mediamtx_${mtxVersion}_windows_amd64.zip"
+        Write-Host "==> Downloading MediaMTX $mtxVersion ..." -ForegroundColor Cyan
+        Invoke-WebRequest -Uri $mtxUrl -OutFile $mtxZip -UseBasicParsing
+        $mtxTmp = Join-Path $env:TEMP "mediamtx_extract"
+        Remove-Item -Recurse -Force $mtxTmp -ErrorAction SilentlyContinue
+        Expand-Archive -Path $mtxZip -DestinationPath $mtxTmp -Force
+        Copy-Item (Join-Path $mtxTmp "mediamtx.exe") $mtxExe -Force
+        Write-Host "==> MediaMTX bundled at $mtxExe" -ForegroundColor Green
+    } catch {
+        Write-Warning "MediaMTX download failed — building WITHOUT local fan-out: $_"
+    }
+} else {
+    Write-Host "==> MediaMTX already present at $mtxExe" -ForegroundColor Cyan
+}
+
 # Resolve customtkinter package dir (contains assets/ themes the GUI loads)
 $ctkPath = uv run python -c "import customtkinter, os; print(os.path.dirname(customtkinter.__file__))"
 Write-Host "==> customtkinter at: $ctkPath" -ForegroundColor Cyan
@@ -30,6 +60,11 @@ Write-Host "==> Running PyInstaller..." -ForegroundColor Cyan
 # patch in settings.py (sets wsdl_dir for the frozen case).
 # App icon bundled for the tray + window + .exe resource.
 $iconPath = "src\sentry_agent_pc\assets\icon.ico"
+
+# Ensure the bin\ dir exists even if the MediaMTX download was skipped/failed,
+# so the --add-data below never errors (it just bundles an empty dir → runtime
+# falls back to direct camera connections).
+New-Item -ItemType Directory -Force -Path $mtxBinDir | Out-Null
 
 # --onedir (NOT --onefile): a one-file exe unpacks python311.dll + deps to a
 # temp _MEI dir at every launch; when the app self-updates (replaces its own
@@ -46,6 +81,7 @@ uv run pyinstaller `
     --add-data "$ctkPath;customtkinter" `
     --add-data "$onvifPath;wsdl" `
     --add-data "src\sentry_agent_pc\assets;assets" `
+    --add-data "src\sentry_agent_pc\bin;bin" `
     --collect-submodules customtkinter `
     --collect-submodules pystray `
     --collect-all webview `

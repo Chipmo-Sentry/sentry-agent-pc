@@ -134,6 +134,19 @@ def _candidate_urls(main_url: str) -> list[str]:
     return [sub, main_url] if sub else [main_url]
 
 
+def _reader_urls(main_url: str, local_url: str | None) -> list[str]:
+    """URLs for one camera, local fan-out first when available.
+
+    When the agent's local MediaMTX is serving this camera, read from the
+    loopback path FIRST: that shares the single pull the push relay already
+    holds, so the camera isn't hit by a second session. The direct sub/main URLs
+    stay as fallbacks for when the hub is down (offline mode, hub crash) — so the
+    offline grid keeps working exactly as before with no hub.
+    """
+    direct = _candidate_urls(main_url)
+    return [local_url, *direct] if local_url else direct
+
+
 class _CameraReader(threading.Thread):
     """Owns one camera's VideoCapture; exposes the latest frame + a status.
 
@@ -417,11 +430,18 @@ class LocalLiveView(ctk.CTkToplevel):
         self._scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self._scroll.pack(fill="both", expand=True, padx=12, pady=12)
 
+        # Share the push relay's single camera pull via the local MediaMTX hub
+        # when it's up; fall back to direct URLs (offline / hub down).
+        from sentry_agent_pc.streaming.controller import get_stream_controller
+
+        ctrl = get_stream_controller()
+
         self._readers: list[_CameraReader] = []
         self._tiles: list[_Tile] = []
         for i, cam in enumerate(cams):
+            local = ctrl.local_url(cam.mediamtx_path)
             reader = _CameraReader(
-                cam.name, _candidate_urls(cam.rtsp_url),
+                cam.name, _reader_urls(cam.rtsp_url, local),
                 start_delay=i * _CONNECT_STAGGER_SEC,
             )
             reader.start()
