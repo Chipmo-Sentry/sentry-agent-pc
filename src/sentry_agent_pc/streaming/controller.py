@@ -51,11 +51,15 @@ class StreamController:
     def local_url(self, mediamtx_path: str | None) -> str | None:
         """Loopback URL for a camera served by the local hub, else None.
 
-        Called by the offline grid so it reads through the same single camera
-        pull as the push relay instead of opening its own session.
+        Called by the offline grid (GUI thread) so it reads through the same
+        single camera pull as the push relay. Deliberately does NOT take the
+        controller lock: `_local` is set once in __init__ and never reassigned,
+        and LocalMediaMTX.local_url has its own lock — holding the controller
+        lock here would freeze the GUI for up to ~8s when a background refresh()
+        is mid-sync (MediaMTX restart + health poll).
         """
-        with self._lock:
-            return self._local.local_url(mediamtx_path) if self._local else None
+        local = self._local
+        return local.local_url(mediamtx_path) if local else None
 
     def refresh(self) -> None:
         """Re-fetch stream-config (cheap) and reconcile relays with state.

@@ -209,21 +209,38 @@ class LocalMediaMTX:
         # Truncate the log each start so it can't grow unbounded over a long run.
         self._logfile = self._log_path.open("wb")  # noqa: SIM115 — closed in _stop_proc
         creationflags = _CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-        self._proc = subprocess.Popen(
-            [self._exe, str(self._config_path)],
-            stdin=subprocess.DEVNULL,
-            stdout=self._logfile,
-            stderr=subprocess.STDOUT,
-            creationflags=creationflags,
-        )
+        try:
+            self._proc = subprocess.Popen(
+                [self._exe, str(self._config_path)],
+                stdin=subprocess.DEVNULL,
+                stdout=self._logfile,
+                stderr=subprocess.STDOUT,
+                creationflags=creationflags,
+            )
+        except Exception:
+            # Popen failed (bad exe, OS limit): don't leak the logfile handle we
+            # just opened — sync()'s except-path doesn't call _stop_proc().
+            with contextlib.suppress(Exception):
+                self._logfile.close()
+            self._logfile = None
+            raise
         log.info("local_mediamtx.started", pid=self._proc.pid)
 
     def _stop_proc(self) -> None:
-        if self._proc is not None and self._proc.poll() is None:
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
             with contextlib.suppress(OSError):
-                self._proc.terminate()
-            with contextlib.suppress(Exception):
-                self._proc.wait(timeout=3)
+                proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except Exception:
+                # terminate() ignored or timed out → force-kill, else the leaked
+                # child keeps holding the loopback ports and the NEXT restart
+                # bind-fails, locking us into direct-connection fallback for good.
+                with contextlib.suppress(OSError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    proc.wait(timeout=3)
         self._proc = None
         if self._logfile is not None:
             with contextlib.suppress(Exception):
