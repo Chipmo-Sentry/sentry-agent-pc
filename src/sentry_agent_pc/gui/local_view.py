@@ -55,6 +55,9 @@ _PRIME_TIMEOUT_SEC = 12.0
 # once (a burst of simultaneous RTSP sessions is what triggers reconnect storms).
 _CONNECT_STAGGER_SEC = 0.35
 _MAX_COLS = 3
+# HTTP snapshot fallback poll interval (~1.4 fps). Choppy vs RTSP, but it's the
+# "browser can see it, so can we" path for cameras with no usable RTSP stream.
+_SNAPSHOT_INTERVAL_SEC = 0.7
 
 # Status → (badge text, badge colour, dot colour)
 _CONNECTING = "connecting"
@@ -156,10 +159,24 @@ class _CameraReader(threading.Thread):
     downscale always matches what's painted — no wasted pixels, no blur.
     """
 
-    def __init__(self, name: str, urls: list[str], start_delay: float = 0.0) -> None:
+    def __init__(
+        self,
+        name: str,
+        urls: list[str],
+        start_delay: float = 0.0,
+        *,
+        snapshot_urls: list[str] | None = None,
+        snap_user: str | None = None,
+        snap_pass: str | None = None,
+    ) -> None:
         super().__init__(name=f"camreader-{name}", daemon=True)
         self.cam_name = name
         self.urls = urls  # priority order: sub-stream first, main last
+        # Browser-style HTTP snapshot fallback (tried only when all RTSP fail).
+        self._snapshot_urls = snapshot_urls or []
+        self._snap_user = snap_user
+        self._snap_pass = snap_pass
+        self._snap_pin: int | None = None
         self._start_delay = start_delay
         self._latest: Image.Image | None = None
         self._seq = 0  # bumped on every new frame; lets the UI skip idle repaints
@@ -236,6 +253,12 @@ class _CameraReader(threading.Thread):
                 streamed = True
                 break
 
+            if self._stop.is_set():
+                break
+            # RTSP failed → try the browser-style HTTP snapshot fallback before
+            # giving up (the camera may serve a picture over HTTP but no RTSP).
+            if not streamed and self._snapshot_urls:
+                streamed = self._consume_snapshot()
             if self._stop.is_set():
                 break
             if not streamed:
@@ -328,6 +351,58 @@ class _CameraReader(threading.Thread):
         with self._lock:
             self._latest = img
             self._seq += 1
+
+    def _consume_snapshot(self) -> bool:
+        """Browser-style HTTP snapshot fallback when no RTSP path opens.
+
+        Polls a JPEG endpoint (Hik/Dahua/ONVIF/OEM conventions), decodes it, and
+        renders at ~1.4 fps. PINS the working endpoint so a reconnect goes
+        straight back to it. Returns True once it has shown ≥1 frame (so the
+        caller treats it as a live source and shows "reconnecting", not "failed").
+        """
+        import cv2
+        import numpy as np
+
+        from sentry_agent_pc.discovery.snapshot import fetch_snapshot
+
+        def _grab(url: str) -> bool:
+            data = fetch_snapshot(url, self._snap_user, self._snap_pass)
+            if not data:
+                return False
+            arr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+            if arr is None:
+                return False
+            self._store(arr)
+            return True
+
+        idxs = (
+            [self._snap_pin]
+            if self._snap_pin is not None
+            else list(range(len(self._snapshot_urls)))
+        )
+        for i in idxs:
+            if self._stop.is_set() or not self._active.is_set():
+                return False
+            if not _grab(self._snapshot_urls[i]):
+                continue
+            self._snap_pin = i
+            self.status = _LIVE
+            self.detail = "Снапшот (HTTP)"
+            # Pump this pinned endpoint until it stops/fails repeatedly, then
+            # return so run() re-tries RTSP first on the next round.
+            fails = 0
+            while not self._stop.wait(_SNAPSHOT_INTERVAL_SEC) and self._active.is_set():
+                if _grab(self._snapshot_urls[i]):
+                    fails = 0
+                else:
+                    fails += 1
+                    if fails > 3:
+                        break
+            return True
+        self._snap_pin = None  # nothing answered → re-scan all next time
+        with contextlib.suppress(Exception):
+            log.warning("local_view.snapshot_failed", host=_redact_host(self._snapshot_urls[-1]))
+        return False
 
 
 class _Tile(ctk.CTkFrame):
@@ -449,6 +524,8 @@ class LocalLiveView(ctk.CTkToplevel):
 
         # Share the push relay's single camera pull via the local MediaMTX hub
         # when it's up; fall back to direct URLs (offline / hub down).
+        from sentry_agent_pc.discovery.snapshot import snapshot_urls
+        from sentry_agent_pc.gui.edit_dialog import parse_rtsp
         from sentry_agent_pc.streaming.controller import get_stream_controller
 
         ctrl = get_stream_controller()
@@ -457,9 +534,16 @@ class LocalLiveView(ctk.CTkToplevel):
         self._tiles: list[_Tile] = []
         for i, cam in enumerate(cams):
             local = ctrl.local_url(cam.mediamtx_path)
+            # Browser-style HTTP snapshot fallback: parse host+creds off the RTSP
+            # URL and offer the camera's HTTP picture endpoints if RTSP won't open.
+            parts = parse_rtsp(cam.rtsp_url)
+            snaps = snapshot_urls(parts["host"]) if parts.get("host") else []
             reader = _CameraReader(
                 cam.name, _reader_urls(cam.rtsp_url, local),
                 start_delay=i * _CONNECT_STAGGER_SEC,
+                snapshot_urls=snaps,
+                snap_user=parts.get("user") or None,
+                snap_pass=parts.get("password") or None,
             )
             reader.start()
             self._readers.append(reader)
