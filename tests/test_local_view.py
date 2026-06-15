@@ -2,7 +2,24 @@
 
 from __future__ import annotations
 
-from sentry_agent_pc.gui.local_view import _reader_urls, grid_dims
+import pytest
+
+from sentry_agent_pc.gui.local_view import _CameraReader, _reader_urls, grid_dims
+
+
+def test_store_skips_corrupt_frame_without_crashing() -> None:
+    """A 0-dimension / corrupt decode must be dropped, not crash the reader
+    thread (the old box_w/0 ZeroDivisionError froze the tile)."""
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("cv2")
+    r = _CameraReader("cam", ["rtsp://x/1"])
+    r.set_box(320, 180)
+    r._store(np.zeros((0, 0, 3), dtype=np.uint8))  # corrupt → skipped
+    img, seq = r.latest()
+    assert img is None and seq == 0
+    r._store(np.zeros((48, 64, 3), dtype=np.uint8))  # valid → stored
+    img2, seq2 = r.latest()
+    assert img2 is not None and seq2 == 1
 
 
 def test_reader_urls_prefers_local_fanout() -> None:

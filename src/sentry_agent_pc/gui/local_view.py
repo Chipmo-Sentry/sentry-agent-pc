@@ -293,21 +293,38 @@ class _CameraReader(threading.Thread):
         The resize + letterbox is done in OpenCV (C, releases the GIL) instead of
         PIL — far cheaper per frame, which is what keeps N cameras from saturating
         the box. PIL is used only for the final zero-copy ``fromarray`` wrap.
+
+        DEFENSIVE: a corrupt/partial decode — some P2P / H.265 cameras (e.g. the
+        Skyworth ZHCSDB6) emit zero-dimension or odd-channel frames — must SKIP
+        the frame, never raise. An unhandled error here used to crash the reader
+        thread (e.g. ``box_w / 0`` → ZeroDivisionError) and freeze the tile on its
+        last image, which read as "stuck on a width/height/resolution error".
         """
         import cv2
         import numpy as np
 
         arr = cast("np.ndarray", frame)  # a cv2 BGR frame (ndarray)
-        box_w, box_h = self._get_box()
+        if not isinstance(arr, np.ndarray) or arr.ndim < 2:
+            return
         ih, iw = arr.shape[:2]
-        scale = min(box_w / iw, box_h / ih)
-        nw, nh = max(1, int(iw * scale)), max(1, int(ih * scale))
-        resized = cv2.resize(arr, (nw, nh), interpolation=cv2.INTER_AREA)
-        canvas = np.full((box_h, box_w, 3), 16, dtype=np.uint8)  # dark BGR backdrop
-        x0, y0 = (box_w - nw) // 2, (box_h - nh) // 2
-        canvas[y0 : y0 + nh, x0 : x0 + nw] = resized
-        rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
-        img = Image.fromarray(rgb)
+        if iw <= 0 or ih <= 0:
+            return  # 0-dim frame → can't scale; drop it instead of dividing by 0
+        try:
+            box_w, box_h = self._get_box()
+            scale = min(box_w / iw, box_h / ih)
+            nw, nh = max(1, int(iw * scale)), max(1, int(ih * scale))
+            resized = cv2.resize(arr, (nw, nh), interpolation=cv2.INTER_AREA)
+            if resized.ndim == 2:  # grayscale → promote to 3-channel BGR
+                resized = cv2.cvtColor(resized, cv2.COLOR_GRAY2BGR)
+            if resized.ndim != 3 or resized.shape[2] != 3:
+                return  # unexpected channel count — can't letterbox onto BGR
+            canvas = np.full((box_h, box_w, 3), 16, dtype=np.uint8)  # dark backdrop
+            x0, y0 = (box_w - nw) // 2, (box_h - nh) // 2
+            canvas[y0 : y0 + nh, x0 : x0 + nw] = resized
+            rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(rgb)
+        except Exception:  # noqa: BLE001 — one bad frame must not kill the reader
+            return
         with self._lock:
             self._latest = img
             self._seq += 1
