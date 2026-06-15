@@ -29,7 +29,7 @@ class CameraRegistration(BaseModel):
     name: str
     rtsp_url: str
     mediamtx_path: str | None = None
-    risk_threshold: float = 70.0
+    risk_threshold: float = 11.0  # yellow band — wide net, VLM filters (see backend)
 
 
 class BackendError(RuntimeError):
@@ -113,7 +113,7 @@ class BackendClient:
         name: str,
         rtsp_url: str,
         mediamtx_path: str | None = None,
-        risk_threshold: float = 70.0,
+        risk_threshold: float = 11.0,
     ) -> dict[str, Any]:
         """POST /api/v1/agent/cameras — store comes from the agent token."""
         r = self._request(
