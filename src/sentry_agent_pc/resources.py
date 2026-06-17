@@ -28,6 +28,11 @@ def icon_png() -> Path:
     return asset_path("icon.png")
 
 
+def logo_header_png() -> Path:
+    """The 'C' brand mark (white, transparent bg) for the dark in-app header."""
+    return asset_path("logo_header.png")
+
+
 def bundled_binary(name: str) -> Path | None:
     """Absolute path to a bundled ``bin/<name>``, or None if not present.
 

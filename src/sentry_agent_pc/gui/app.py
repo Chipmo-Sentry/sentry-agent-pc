@@ -15,6 +15,7 @@ from collections.abc import Callable
 from typing import Any
 
 import customtkinter as ctk
+from PIL import Image
 
 from sentry_agent_pc import __version__, resources, updater
 from sentry_agent_pc.backend_client import BackendClient, BackendError
@@ -40,7 +41,18 @@ log = get_logger("sentry_agent_pc.gui.app")
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-CHIPMO_ORANGE = "#FF8A1F"
+# Brand palette (Chipmo): navy + orange. CustomTkinter's "blue" theme colors
+# every unstyled button a bright generic blue that clashed with our orange CTAs.
+# Override the default button colour to brand navy so the app reads as one
+# coherent navy + orange scheme; explicit orange stays the primary-action accent.
+BRAND_ORANGE = "#E68425"
+BRAND_ORANGE_HOVER = "#CF7420"
+BRAND_NAVY = "#2A4A73"
+BRAND_NAVY_HOVER = "#36598A"
+CHIPMO_ORANGE = BRAND_ORANGE  # module-wide alias (kept for the existing call sites)
+
+ctk.ThemeManager.theme["CTkButton"]["fg_color"] = [BRAND_NAVY, BRAND_NAVY]
+ctk.ThemeManager.theme["CTkButton"]["hover_color"] = [BRAND_NAVY_HOVER, BRAND_NAVY_HOVER]
 
 
 def creds_from_rtsp(rtsp_url: str) -> tuple[str | None, str]:
@@ -105,12 +117,23 @@ class AgentApp(ctk.CTk):
         header.pack(fill="x", side="top")
         header.pack_propagate(False)
 
+        # Brand lockup: the Chipmo "C" mark + "Sentry" wordmark (replaces the
+        # placeholder shield emoji). The CTkImage ref is kept on self so Tk
+        # doesn't garbage-collect it.
+        brand = ctk.CTkFrame(header, fg_color="transparent")
+        brand.pack(side="left", padx=16)
+        try:
+            _logo = Image.open(resources.logo_header_png())
+            self._logo_img = ctk.CTkImage(light_image=_logo, dark_image=_logo, size=(26, 26))
+            ctk.CTkLabel(brand, image=self._logo_img, text="").pack(side="left", padx=(0, 9))
+        except Exception as e:  # noqa: BLE001 — logo is cosmetic; fall back to text
+            log.debug("header.logo_failed", error=str(e))
         ctk.CTkLabel(
-            header,
-            text="🛡  Sentry",
-            font=ctk.CTkFont(size=18, weight="bold"),
-            text_color=CHIPMO_ORANGE,
-        ).pack(side="left", padx=16)
+            brand,
+            text="Sentry",
+            font=ctk.CTkFont(size=19, weight="bold"),
+            text_color="#FFFFFF",
+        ).pack(side="left")
 
         self.backend_label = ctk.CTkLabel(
             header,
