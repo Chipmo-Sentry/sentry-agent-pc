@@ -167,15 +167,28 @@ class ScanDialog(ctk.CTkToplevel):
         for w in self.results.winfo_children():
             w.destroy()
         self.rows.clear()
+        self._header_added = False
         self.spinner.start()
         self.register_btn.configure(state="disabled")
         self.rescan_btn.configure(state="disabled")
-        self.info_lbl.configure(
-            text="Сүлжээг сканердаж байна (ONVIF + RTSP) — хэдэн секунд хүлээнэ үү."
-        )
+        self.info_lbl.configure(text="Сканердаж байна…", text_color="gray70")
+
+        def _ui(fn: Callable[[], None]) -> None:
+            # Callbacks fire on the scan worker thread → marshal onto the UI.
+            try:
+                if self.winfo_exists():
+                    self.after(0, fn)
+            except tk.TclError:
+                pass
+
+        def on_found(cand: svc.DiscoveredCandidate) -> None:
+            _ui(lambda: self._add_row_live(cand))
+
+        def on_phase(text: str) -> None:
+            _ui(lambda: self.info_lbl.configure(text=text, text_color="gray70"))
 
         def work() -> list[svc.DiscoveredCandidate]:
-            return svc.scan(timeout_sec=5.0)
+            return svc.scan(timeout_sec=5.0, on_found=on_found, on_phase=on_phase)
 
         def done(candidates: Any) -> None:
             self.spinner.stop()
@@ -186,14 +199,11 @@ class ScanDialog(ctk.CTkToplevel):
                 )
                 return
 
-            all_found = list(candidates)
-            registered = sum(1 for c in all_found if c.already_registered)
-            # Already-registered cameras are hidden: re-adding a live camera is
-            # never the goal. (Delete it first to re-add — deletion clears it
-            # from local state, so it reappears here next scan.)
-            fresh = [c for c in all_found if not c.already_registered]
-
-            if not fresh:
+            registered = sum(1 for c in candidates if c.already_registered)
+            # Cameras streamed into self.rows live as they were found. If none
+            # are fresh, explain (already-registered ones are hidden — re-adding a
+            # live camera is never the goal; delete it first to re-add).
+            if not self.rows:
                 base = (
                     "Шинээр нэмэх камер олдсонгүй."
                     if registered
@@ -212,7 +222,7 @@ class ScanDialog(ctk.CTkToplevel):
                 self.info_lbl.configure(text=base + hint, text_color="#FBBF24")
                 return
 
-            note = f"{len(fresh)} шинэ камер олдлоо."
+            note = f"{len(self.rows)} шинэ камер олдлоо."
             if registered:
                 note += f" ({registered} бүртгэлтэйг нуусан.)"
             note += (
@@ -221,12 +231,18 @@ class ScanDialog(ctk.CTkToplevel):
             )
             self.info_lbl.configure(text=note, text_color="gray70")
 
-            self._add_table_header()
-            for i, cand in enumerate(fresh, start=1):
-                self.rows.append(_DeviceRow(self.results, i, cand))
-            self.register_btn.configure(state="normal")
-
         self._run_bg(work, done)
+
+    def _add_row_live(self, cand: svc.DiscoveredCandidate) -> None:
+        """Append one freshly-discovered camera to the table as the scan runs."""
+        if not self._header_added:
+            self._add_table_header()
+            self._header_added = True
+        self.rows.append(_DeviceRow(self.results, len(self.rows) + 1, cand))
+        self.register_btn.configure(state="normal")
+        self.info_lbl.configure(
+            text=f"{len(self.rows)} камер олдлоо… (хайсаар байна)", text_color="gray70"
+        )
 
     def _register_selected(self) -> None:
         selected = [r for r in self.rows if r.is_selected()]

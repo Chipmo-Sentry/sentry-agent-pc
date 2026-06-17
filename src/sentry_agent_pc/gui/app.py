@@ -7,6 +7,7 @@ thread via `self.after(...)` to avoid freezing the window.
 
 from __future__ import annotations
 
+import contextlib
 import platform
 import threading
 import tkinter as tk
@@ -51,8 +52,35 @@ BRAND_NAVY = "#2A4A73"
 BRAND_NAVY_HOVER = "#36598A"
 CHIPMO_ORANGE = BRAND_ORANGE  # module-wide alias (kept for the existing call sites)
 
-ctk.ThemeManager.theme["CTkButton"]["fg_color"] = [BRAND_NAVY, BRAND_NAVY]
-ctk.ThemeManager.theme["CTkButton"]["hover_color"] = [BRAND_NAVY_HOVER, BRAND_NAVY_HOVER]
+def _theme(widget: str, key: str, value: object) -> None:
+    """Set one ThemeManager colour, ignoring keys a CTk version doesn't have."""
+    with contextlib.suppress(KeyError, TypeError):
+        ctk.ThemeManager.theme[widget][key] = value
+
+
+_navy = [BRAND_NAVY, BRAND_NAVY]
+_navy_hover = [BRAND_NAVY_HOVER, BRAND_NAVY_HOVER]
+_orange = [BRAND_ORANGE, BRAND_ORANGE]
+# Buttons → navy (orange stays the explicit primary-action accent).
+_theme("CTkButton", "fg_color", _navy)
+_theme("CTkButton", "hover_color", _navy_hover)
+# Dropdowns (the camera-brand picker) were bright blue → navy + orange hover.
+_theme("CTkOptionMenu", "fg_color", _navy)
+_theme("CTkOptionMenu", "button_color", _navy_hover)
+_theme("CTkOptionMenu", "button_hover_color", _orange)
+_theme("CTkComboBox", "button_color", _navy)
+_theme("CTkComboBox", "button_hover_color", _navy_hover)
+_theme("CTkComboBox", "border_color", _navy)
+# Inputs: orange focus ring (brand) instead of the default blue.
+_theme("CTkEntry", "border_color", _navy)
+# Toggles / progress / sliders → brand orange so nothing reads generic-blue.
+_theme("CTkCheckBox", "fg_color", _orange)
+_theme("CTkCheckBox", "hover_color", _orange)
+_theme("CTkSwitch", "progress_color", _orange)
+_theme("CTkProgressBar", "progress_color", _orange)
+_theme("CTkSlider", "progress_color", _orange)
+_theme("CTkSlider", "button_color", _orange)
+_theme("CTkSlider", "button_hover_color", _orange)
 
 
 def creds_from_rtsp(rtsp_url: str) -> tuple[str | None, str]:
@@ -786,30 +814,41 @@ class PairingDialog(ctk.CTkToplevel):
         )
         self.code_entry.pack(fill="x", padx=20, pady=(2, 12))
 
-        ctk.CTkLabel(
+        # Backend/Web URLs are for power users on custom deployments only. Hide
+        # them behind an "Advanced" toggle so the normal flow is just the code.
+        self._adv_open = False
+        self._adv_btn = ctk.CTkButton(
             body,
-            text="Backend URL (default-ыг хэвээр үлдээж болно):",
-            anchor="w",
-            font=ctk.CTkFont(size=11),
-            text_color="gray60",
-        ).pack(
-            fill="x",
-            padx=20,
+            text="⚙ Нэмэлт тохиргоо (Backend / Веб хаяг)  ▾",
+            fg_color="transparent", border_width=1, text_color="gray60", anchor="w",
+            command=self._toggle_advanced,
         )
-        self.url_entry = ctk.CTkEntry(body, placeholder_text=DEFAULT_BACKEND_URL)
+        self._adv_btn.pack(fill="x", padx=20, pady=(10, 0))
+
+        self._adv = ctk.CTkFrame(body, fg_color="transparent")  # packed on toggle
+        ctk.CTkLabel(
+            self._adv, text="Backend URL (default-ыг хэвээр үлдээж болно):",
+            anchor="w", font=ctk.CTkFont(size=11), text_color="gray60",
+        ).pack(fill="x", padx=20, pady=(8, 0))
+        self.url_entry = ctk.CTkEntry(self._adv, placeholder_text=DEFAULT_BACKEND_URL)
         self.url_entry.pack(fill="x", padx=20, pady=(2, 8))
         self.url_entry.insert(0, cfg.get("BACKEND_URL") or DEFAULT_BACKEND_URL)
-
         ctk.CTkLabel(
-            body,
-            text="Веб хаяг (Шууд харах цонхонд ачаална):",
-            anchor="w",
-            font=ctk.CTkFont(size=11),
-            text_color="gray60",
+            self._adv, text="Веб хаяг (Шууд харах цонхонд ачаална):",
+            anchor="w", font=ctk.CTkFont(size=11), text_color="gray60",
         ).pack(fill="x", padx=20)
-        self.frontend_entry = ctk.CTkEntry(body, placeholder_text=DEFAULT_FRONTEND_URL)
+        self.frontend_entry = ctk.CTkEntry(self._adv, placeholder_text=DEFAULT_FRONTEND_URL)
         self.frontend_entry.pack(fill="x", padx=20, pady=(2, 4))
         self.frontend_entry.insert(0, cfg.get("FRONTEND_URL") or DEFAULT_FRONTEND_URL)
+
+    def _toggle_advanced(self) -> None:
+        self._adv_open = not self._adv_open
+        arrow = "▴" if self._adv_open else "▾"
+        self._adv_btn.configure(text=f"⚙ Нэмэлт тохиргоо (Backend / Веб хаяг)  {arrow}")
+        if self._adv_open:
+            self._adv.pack(fill="x", pady=(4, 0))
+        else:
+            self._adv.pack_forget()
 
     def _save_and_close(self) -> None:
         """Persist edited Backend/Web URLs (no pairing needed), then close.

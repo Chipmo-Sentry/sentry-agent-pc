@@ -6,9 +6,11 @@ flows so the UI layer never touches sockets or subprocess directly.
 
 from __future__ import annotations
 
+import contextlib
 import re
 import time
 import urllib.parse
+from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 
@@ -278,27 +280,52 @@ class RegisterResult:
     error: str | None = None
 
 
-def scan(timeout_sec: float = 5.0) -> list[DiscoveredCandidate]:
+def scan(
+    timeout_sec: float = 5.0,
+    *,
+    on_found: Callable[[DiscoveredCandidate], None] | None = None,
+    on_phase: Callable[[str], None] | None = None,
+) -> list[DiscoveredCandidate]:
     """Discover cameras by BOTH ONVIF WS-Discovery AND a LAN port-554 sweep.
 
     ONVIF finds ONVIF-enabled cameras (with their device-service xaddr). The
     RTSP sweep finds every host with port 554 open — so cameras whose ONVIF is
     disabled (e.g. Hikvision out of the box) still show up and can be added via
     the credential-based resolver. Dedups by IP; marks already-registered ones.
+
+    `on_found` fires (on the worker thread) for each NEW unregistered camera as
+    it's discovered, so the UI can stream rows in instead of waiting for the
+    whole sweep. `on_phase` reports the current step for a live status line.
+    Both are best-effort; the full sorted list is still returned.
     """
     state = load_state()
     known_ips = {c.ip for c in state.cameras}
-
     by_ip: dict[str, DiscoveredCandidate] = {}
+
+    def _emit(cand: DiscoveredCandidate) -> None:
+        if on_found is not None and not cand.already_registered:
+            with contextlib.suppress(Exception):
+                on_found(cand)
+
+    if on_phase is not None:
+        with contextlib.suppress(Exception):
+            on_phase("ONVIF камер хайж байна…")
     for d in onvif_mod.discover(timeout_sec=timeout_sec):
-        by_ip[d.ip] = DiscoveredCandidate(
-            ip=d.ip, xaddr=d.xaddr, already_registered=d.ip in known_ips
-        )
-    for ip in _sweep_rtsp_hosts():
+        cand = DiscoveredCandidate(ip=d.ip, xaddr=d.xaddr, already_registered=d.ip in known_ips)
+        by_ip[d.ip] = cand
+        _emit(cand)
+
+    if on_phase is not None:
+        with contextlib.suppress(Exception):
+            on_phase("Сүлжээний RTSP (554) портыг сканердаж байна…")
+
+    def _on_host(ip: str) -> None:
         if ip not in by_ip:
-            by_ip[ip] = DiscoveredCandidate(
-                ip=ip, xaddr="", already_registered=ip in known_ips
-            )
+            cand = DiscoveredCandidate(ip=ip, xaddr="", already_registered=ip in known_ips)
+            by_ip[ip] = cand
+            _emit(cand)
+
+    _sweep_rtsp_hosts(on_host=_on_host)
 
     # Sort: unregistered first, then by IP.
     return sorted(
@@ -313,8 +340,15 @@ def _ip_sort_key(ip: str) -> tuple[int, ...]:
         return (999,)
 
 
-def _sweep_rtsp_hosts(port: int = 554, timeout: float = 0.5) -> list[str]:
-    """Scan every local /24 for hosts with `port` (RTSP) open. Best-effort."""
+def _sweep_rtsp_hosts(
+    port: int = 554,
+    timeout: float = 0.5,
+    *,
+    on_host: Callable[[str], None] | None = None,
+) -> list[str]:
+    """Scan every local /24 for hosts with `port` (RTSP) open. Best-effort.
+
+    `on_host` fires for each open host AS it's found (live results for the UI)."""
     import ipaddress
     import socket
 
@@ -344,6 +378,9 @@ def _sweep_rtsp_hosts(port: int = 554, timeout: float = 0.5) -> list[str]:
         for r in ex.map(check, sorted(targets)):
             if r is not None:
                 found.append(r)
+                if on_host is not None:
+                    with contextlib.suppress(Exception):
+                        on_host(r)
     log.info("sweep.rtsp_hosts", count=len(found))
     return found
 

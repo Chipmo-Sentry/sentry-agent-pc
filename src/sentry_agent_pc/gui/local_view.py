@@ -599,6 +599,16 @@ class LocalLiveView(ctk.CTkToplevel):
         vid_w = max(_MIN_TILE_W - 40, tile_w - 20)
         vid_h = int(vid_w * 9 / 16)
 
+        # Also constrain by the available HEIGHT so a single / few cameras fill
+        # the viewport instead of sitting small with a big black gap below.
+        # ~52px per row covers the tile's title bar + padding.
+        rows = (len(self._tiles) + cols - 1) // cols
+        avail_h = max(200, self._scroll.winfo_height() - 8)
+        max_vid_h = (avail_h - rows * (12 + 52)) // rows
+        if max_vid_h > 160 and vid_h > max_vid_h:
+            vid_h = max_vid_h
+            vid_w = int(vid_h * 16 / 9)  # keep 16:9; column weight centres it
+
         for c in range(_MAX_COLS):
             self._scroll.grid_columnconfigure(c, weight=1 if c < cols else 0)
 

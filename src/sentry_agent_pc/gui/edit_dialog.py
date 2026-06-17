@@ -117,7 +117,7 @@ class EditCameraDialog(ctk.CTkToplevel):
         self.user_entry = self._field(
             "Нэвтрэх нэр:", self._orig["user"] or get_settings().onvif_default_user
         )
-        self.pass_entry = self._field("Нууц үг:", self._orig["password"], show="•")
+        self.pass_entry = widgets.password_field(self._body, "Нууц үг:", self._orig["password"])
         self.path_entry = self._field(
             "RTSP path (хоосон бол автоматаар хайна):", self._orig["path"]
         )

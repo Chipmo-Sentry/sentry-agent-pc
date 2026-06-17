@@ -79,7 +79,7 @@ class AddCameraDialog(ctk.CTkToplevel):
         self.ip_entry = self._field("IP хаяг:", "192.168.1.64")
         self.port_entry = self._field("Port:", "554")
         self.user_entry = self._field("Нэвтрэх нэр:", get_settings().onvif_default_user)
-        self.pass_entry = self._field("Нууц үг:", "", show="•")
+        self.pass_entry = widgets.password_field(self._body, "Нууц үг:")
         self.path_entry = self._field(
             "RTSP path (заавал биш — хоосон бол брэндийн default):", "",
         )
