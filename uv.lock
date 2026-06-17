@@ -847,7 +847,7 @@ wheels = [
 
 [[package]]
 name = "sentry-agent-pc"
-version = "0.7.6"
+version = "0.7.8"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
