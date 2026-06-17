@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
+
 import customtkinter as ctk
+
+from sentry_agent_pc import resources
 
 CHIPMO_ORANGE = "#FF8A1F"
 
@@ -32,6 +36,27 @@ def setup_dialog(
         win.geometry(f"{width}x{height}+{x}+{y}")
     except Exception:  # noqa: BLE001 — geometry is best-effort; fall back to size only
         win.geometry(f"{width}x{height}")
+
+    apply_brand_icon(win)
+
+
+def apply_brand_icon(win: ctk.CTkToplevel) -> None:
+    """Put the app icon on a dialog's title bar.
+
+    CTkToplevel re-applies its OWN default icon ~200ms after creation (a known
+    CustomTkinter quirk), clobbering the parent's `iconbitmap(default=...)`. So
+    every dialog showed the generic Tk/CTk icon instead of the Sentry mark. We
+    set the brand .ico AFTER that delay so it sticks.
+    """
+
+    def _apply() -> None:
+        with contextlib.suppress(Exception):  # icon is cosmetic
+            ico = resources.icon_ico()
+            if ico.exists():
+                win.iconbitmap(str(ico))
+
+    with contextlib.suppress(Exception):
+        win.after(300, _apply)
 
 
 class Spinner(ctk.CTkLabel):
