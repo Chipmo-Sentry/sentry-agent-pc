@@ -63,7 +63,7 @@ def creds_from_rtsp(rtsp_url: str) -> tuple[str | None, str]:
 class AgentApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Chipmo Sentry — Камерын агент")
+        self.title("Sentry — Камерын агент")
         self.geometry("960x640")
         self.minsize(820, 520)
 
@@ -107,7 +107,7 @@ class AgentApp(ctk.CTk):
 
         ctk.CTkLabel(
             header,
-            text="🛡  Chipmo Sentry",
+            text="🛡  Sentry",
             font=ctk.CTkFont(size=18, weight="bold"),
             text_color=CHIPMO_ORANGE,
         ).pack(side="left", padx=16)

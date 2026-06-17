@@ -1,4 +1,4 @@
-; Inno Setup script for Chipmo Sentry agent.
+; Inno Setup script for Sentry agent.
 ; Build:  iscc /DAppVersion=0.3.4 installer\ChipmoSentry.iss
 ; (CI passes the version from the git tag; defaults below for local builds.)
 ;
@@ -14,7 +14,7 @@
   #define AppVersion "0.0.0"
 #endif
 
-#define AppName "Chipmo Sentry"
+#define AppName "Sentry"
 #define AppPublisher "Chipmo"
 #define AppExeName "ChipmoSentryAgent.exe"
 #define AppId "{{B5F4B6A2-7C3E-4E2A-9D1F-CHIPMOSENTRY01}"
@@ -24,8 +24,8 @@ AppId={#AppId}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
-DefaultDirName={autopf}\Chipmo Sentry
-DefaultGroupName=Chipmo Sentry
+DefaultDirName={autopf}\Sentry
+DefaultGroupName=Sentry
 DisableProgramGroupPage=yes
 ; Keep the directory-selection page so the user picks where to install.
 DisableDirPage=no
@@ -55,9 +55,9 @@ Source: "..\dist\ChipmoSentryAgent\*"; DestDir: "{app}"; \
 Source: "..\src\sentry_agent_pc\assets\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Chipmo Sentry"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\icon.ico"
-Name: "{group}\Chipmo Sentry-г устгах"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\Chipmo Sentry"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
+Name: "{group}\Sentry"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\icon.ico"
+Name: "{group}\Sentry-г устгах"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\Sentry"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
 
 [Registry]
 ; Auto-start at login — same HKCU Run value the in-app toggle manages, so the
@@ -68,5 +68,5 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
   Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
-Filename: "{app}\{#AppExeName}"; Description: "Chipmo Sentry-г одоо ажиллуулах"; \
+Filename: "{app}\{#AppExeName}"; Description: "Sentry-г одоо ажиллуулах"; \
   Flags: nowait postinstall skipifsilent

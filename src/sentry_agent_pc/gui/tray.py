@@ -50,7 +50,7 @@ class TrayController:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Гарах", self._on_quit),
         )
-        self._icon = pystray.Icon("chipmo_sentry", image, "Chipmo Sentry", menu)
+        self._icon = pystray.Icon("chipmo_sentry", image, "Sentry", menu)
         try:
             self._icon.run_detached()  # icon loop on its own thread
             log.info("tray.started")

@@ -73,7 +73,7 @@ def _run_window(url: str) -> None:
 
     log.info("live_view.window_open", url=url)
     webview.create_window(
-        "Chipmo Sentry — Шууд харах",
+        "Sentry — Шууд харах",
         url=url,
         width=1280,
         height=800,

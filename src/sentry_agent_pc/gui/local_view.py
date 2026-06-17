@@ -490,7 +490,7 @@ class LocalLiveView(ctk.CTkToplevel):
 
     def __init__(self, master: ctk.CTk) -> None:
         super().__init__(master)
-        self.title("Chipmo Sentry — Шууд харах (офлайн)")
+        self.title("Sentry — Шууд харах (офлайн)")
         self.configure(fg_color="#0B0B0D")
         self.transient(master)
 
