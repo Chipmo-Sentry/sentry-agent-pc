@@ -70,6 +70,18 @@ class TrayController:
     def active(self) -> bool:
         return self._icon is not None
 
+    def notify(self, title: str, message: str) -> None:
+        """Show a Windows tray balloon/toast. Best-effort: not every backend
+        supports notifications, so failures are swallowed. Safe to call from any
+        thread (pystray marshals internally)."""
+        icon = self._icon
+        if icon is None:
+            return
+        try:
+            icon.notify(message, title)
+        except Exception as e:  # noqa: BLE001 — notification is best-effort
+            log.debug("tray.notify_failed", error=str(e))
+
     # === menu handlers (run on the pystray thread → marshal to Tk) ===
 
     def _on_open(self, _icon: object = None, _item: object = None) -> None:
