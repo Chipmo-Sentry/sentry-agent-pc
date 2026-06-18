@@ -47,19 +47,29 @@ class UpdateDialog(ctk.CTkToplevel):
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
         btn_row.pack(side="bottom", fill="x", padx=20, pady=(4, 16))
         self.close_btn = ctk.CTkButton(
-            btn_row, text="Хаах", fg_color="transparent", border_width=1,
+            btn_row,
+            text="Хаах",
+            fg_color="transparent",
+            border_width=1,
             command=self.destroy,
         )
         self.close_btn.pack(side="right", padx=(8, 0))
         self.action_btn = ctk.CTkButton(
-            btn_row, text="Шинэчлэх", fg_color=CHIPMO_ORANGE,
-            hover_color="#E57A12", command=self._on_action,
+            btn_row,
+            text="Шинэчлэх",
+            fg_color=CHIPMO_ORANGE,
+            hover_color="#E57A12",
+            command=self._on_action,
         )
         self.action_btn.pack(side="right")
 
         self.status_lbl = ctk.CTkLabel(
-            self, text="", font=ctk.CTkFont(size=12),
-            text_color="gray60", anchor="w", wraplength=470,
+            self,
+            text="",
+            font=ctk.CTkFont(size=12),
+            text_color="gray60",
+            anchor="w",
+            wraplength=470,
         )
         self.status_lbl.pack(side="bottom", fill="x", padx=20, pady=(0, 4))
 
@@ -69,13 +79,17 @@ class UpdateDialog(ctk.CTkToplevel):
         self.progress.pack_forget()  # hidden until download starts
 
         ctk.CTkLabel(
-            self, text="Программын шинэчлэл",
+            self,
+            text="Программын шинэчлэл",
             font=ctk.CTkFont(size=18, weight="bold"),
         ).pack(pady=(20, 2), padx=20, anchor="w")
 
         self.version_lbl = ctk.CTkLabel(
-            self, text=f"Одоогийн хувилбар: v{__version__}",
-            font=ctk.CTkFont(size=12), text_color="gray70", anchor="w",
+            self,
+            text=f"Одоогийн хувилбар: v{__version__}",
+            font=ctk.CTkFont(size=12),
+            text_color="gray70",
+            anchor="w",
         )
         self.version_lbl.pack(fill="x", padx=20, pady=(0, 8))
 
@@ -202,7 +216,8 @@ class UpdateDialog(ctk.CTkToplevel):
         )
         # Repurpose the primary button into a manual-download action.
         self.action_btn.configure(
-            text="📥 Setup.exe татах", state="normal",
+            text="📥 Setup.exe татах",
+            state="normal",
             command=lambda: webbrowser.open(updater.SETUP_DOWNLOAD_URL),
         )
 
@@ -215,7 +230,9 @@ class UpdateDialog(ctk.CTkToplevel):
         self.notes_box.configure(state="disabled")
 
 
-def check_in_background(master: ctk.CTk, on_available: Callable[[updater.UpdateInfo], None]) -> None:
+def check_in_background(
+    master: ctk.CTk, on_available: Callable[[updater.UpdateInfo], None]
+) -> None:
     """Silently check for an update; call `on_available(info)` on the UI thread
     only if a newer release exists. Used for the startup auto-check."""
 
@@ -223,5 +240,68 @@ def check_in_background(master: ctk.CTk, on_available: Callable[[updater.UpdateI
         info = updater.check_for_update()
         if info is not None:
             master.after(0, lambda: on_available(info))
+
+    threading.Thread(target=runner, daemon=True).start()
+
+
+def auto_update_in_background(
+    app: Any,
+    info: updater.UpdateInfo,
+    *,
+    on_done: Callable[[bool], None] | None = None,
+) -> None:
+    """Silently download `info` and restart into it with only a tray toast — no
+    dialog, no click. The download (verified by SHA-256 inside `download_asset`)
+    runs on a daemon thread; on success a short toast shows and the app swaps +
+    relaunches itself. On failure the next periodic check simply retries.
+
+    Only meaningful in the frozen build (the caller gates on `is_frozen()`).
+    `on_done(success)` runs on the UI thread so the caller can clear its
+    'update in progress' flag — the success path restarts the process, so it
+    typically only fires on failure.
+    """
+    log.info("auto_update.starting", version=info.version)
+
+    def _notify(message: str) -> None:
+        tray = getattr(app, "_tray", None)
+        if tray is not None:
+            tray.notify("Sentry шинэчлэл", message)
+
+    def _apply(path: Any) -> None:
+        _notify(f"v{info.version} суулгаж байна. Програм дахин нээгдэнэ…")
+
+        def _stop_tray() -> None:
+            tray = getattr(app, "_tray", None)
+            if tray is not None:
+                tray.stop()
+
+        # Brief beat so the toast renders before the in-place swap + relaunch.
+        app.after(
+            2500,
+            lambda: updater.apply_update_and_restart(path, on_before_exit=_stop_tray),
+        )
+
+    def runner() -> None:
+        try:
+            path = updater.download_asset(info)
+        except Exception as e:  # noqa: BLE001 — transient (e.g. GitHub 504); retry next check
+            log.exception("auto_update.download_failed")
+            err = str(e)
+
+            def _fail() -> None:
+                log.info("auto_update.will_retry", error=err[:120])
+                _notify("Шинэчлэл татаж чадсангүй — дараа дахин оролдоно.")
+                if on_done:
+                    on_done(False)
+
+            app.after(0, _fail)
+            return
+
+        def _ok() -> None:
+            if on_done:
+                on_done(True)
+            _apply(path)
+
+        app.after(0, _ok)
 
     threading.Thread(target=runner, daemon=True).start()

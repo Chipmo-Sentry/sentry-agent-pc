@@ -31,9 +31,14 @@ from sentry_agent_pc.gui.add_dialog import AddCameraDialog
 from sentry_agent_pc.gui.edit_dialog import EditCameraDialog
 from sentry_agent_pc.gui.scan_dialog import ScanDialog
 from sentry_agent_pc.gui.tray import TrayController
-from sentry_agent_pc.gui.update_dialog import UpdateDialog, check_in_background
+from sentry_agent_pc.gui.update_dialog import (
+    UpdateDialog,
+    auto_update_in_background,
+    check_in_background,
+)
 from sentry_agent_pc.logging_setup import get_logger
 from sentry_agent_pc.services import discovery_service as svc
+from sentry_agent_pc.settings import get_settings
 from sentry_agent_pc.state import CameraRecord, load_state, save_state
 from sentry_agent_pc.streaming.controller import get_stream_controller
 
@@ -51,6 +56,7 @@ BRAND_ORANGE_HOVER = "#CF7420"
 BRAND_NAVY = "#2A4A73"
 BRAND_NAVY_HOVER = "#36598A"
 CHIPMO_ORANGE = BRAND_ORANGE  # module-wide alias (kept for the existing call sites)
+
 
 def _theme(widget: str, key: str, value: object) -> None:
     """Set one ThemeManager colour, ignoring keys a CTk version doesn't have."""
@@ -123,7 +129,10 @@ class AgentApp(ctk.CTk):
         # First run / unpaired → guide the user straight to the pairing screen.
         if not load_state().is_paired:
             self.after(400, self.open_pairing)
-        # Silent update check shortly after launch; prompt only if newer exists.
+        # Self-update: silent check shortly after launch, then on a periodic timer.
+        # With auto_update on (default) a newer release is downloaded + applied
+        # automatically; this flag stops overlapping checks from stacking it.
+        self._update_in_progress = False
         self.after(2500, self._auto_check_update)
         # Live push status indicators (5s) + periodic stream-config reconcile (30s).
         self.after(5000, self._tick_push_status)
@@ -274,8 +283,11 @@ class AgentApp(ctk.CTk):
                 text_color="gray80",
             ).grid(row=0, column=i, sticky="w", padx=6)
         ctk.CTkLabel(
-            head, text="Үйлдэл", anchor="w",
-            font=ctk.CTkFont(size=12, weight="bold"), text_color="gray80",
+            head,
+            text="Үйлдэл",
+            anchor="w",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="gray80",
         ).grid(row=0, column=len(self._COLUMNS), sticky="w", padx=6)
 
         self.list_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
@@ -639,11 +651,35 @@ class AgentApp(ctk.CTk):
         self.destroy()
 
     def _auto_check_update(self) -> None:
-        """Silent startup check — only opens the dialog if a newer release exists."""
+        """Background self-update check. With `auto_update` on (and a frozen build)
+        a newer release is silently downloaded and applied — the app restarts into
+        it with only a tray toast, no click. Otherwise it falls back to the update
+        dialog (manual apply / dev "download manually" link). Re-arms itself to
+        re-check every `update_check_interval_hours`."""
+        # Re-arm the periodic check first, so a failure anywhere below can't stop
+        # future checks. Floor the interval so a misconfig can't hammer GitHub.
+        interval_h = max(0.25, get_settings().update_check_interval_hours)
+        self.after(int(interval_h * 3600 * 1000), self._auto_check_update)
+
+        if self._update_in_progress:
+            return  # a download/apply from a previous check is still underway
 
         def on_available(info: updater.UpdateInfo) -> None:
-            self.set_status(f"Шинэ хувилбар бэлэн: v{info.version}")
-            UpdateDialog(self, info=info)
+            if get_settings().auto_update and updater.is_frozen():
+                self._update_in_progress = True
+                self.set_status(f"Шинэ хувилбар v{info.version} — автоматаар суулгаж байна…")
+
+                def _done(ok: bool) -> None:
+                    # Success restarts the process; only a failed download returns
+                    # here, so clear the flag and let the next check retry.
+                    if not ok:
+                        self._update_in_progress = False
+
+                auto_update_in_background(self, info, on_done=_done)
+            else:
+                # Auto-update off OR dev (non-frozen) build → prompt via the dialog.
+                self.set_status(f"Шинэ хувилбар бэлэн: v{info.version}")
+                UpdateDialog(self, info=info)
 
         check_in_background(self, on_available)
 
@@ -820,22 +856,31 @@ class PairingDialog(ctk.CTkToplevel):
         self._adv_btn = ctk.CTkButton(
             body,
             text="⚙ Нэмэлт тохиргоо (Backend / Веб хаяг)  ▾",
-            fg_color="transparent", border_width=1, text_color="gray60", anchor="w",
+            fg_color="transparent",
+            border_width=1,
+            text_color="gray60",
+            anchor="w",
             command=self._toggle_advanced,
         )
         self._adv_btn.pack(fill="x", padx=20, pady=(10, 0))
 
         self._adv = ctk.CTkFrame(body, fg_color="transparent")  # packed on toggle
         ctk.CTkLabel(
-            self._adv, text="Backend URL (default-ыг хэвээр үлдээж болно):",
-            anchor="w", font=ctk.CTkFont(size=11), text_color="gray60",
+            self._adv,
+            text="Backend URL (default-ыг хэвээр үлдээж болно):",
+            anchor="w",
+            font=ctk.CTkFont(size=11),
+            text_color="gray60",
         ).pack(fill="x", padx=20, pady=(8, 0))
         self.url_entry = ctk.CTkEntry(self._adv, placeholder_text=DEFAULT_BACKEND_URL)
         self.url_entry.pack(fill="x", padx=20, pady=(2, 8))
         self.url_entry.insert(0, cfg.get("BACKEND_URL") or DEFAULT_BACKEND_URL)
         ctk.CTkLabel(
-            self._adv, text="Веб хаяг (Шууд харах цонхонд ачаална):",
-            anchor="w", font=ctk.CTkFont(size=11), text_color="gray60",
+            self._adv,
+            text="Веб хаяг (Шууд харах цонхонд ачаална):",
+            anchor="w",
+            font=ctk.CTkFont(size=11),
+            text_color="gray60",
         ).pack(fill="x", padx=20)
         self.frontend_entry = ctk.CTkEntry(self._adv, placeholder_text=DEFAULT_FRONTEND_URL)
         self.frontend_entry.pack(fill="x", padx=20, pady=(2, 4))

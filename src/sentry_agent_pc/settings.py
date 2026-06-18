@@ -50,6 +50,16 @@ class Settings(BaseSettings):
     ffmpeg_path: str = "ffmpeg"
     rtsp_probe_timeout_sec: int = 5
     log_level: str = "INFO"
+
+    # Self-update (GitHub Releases). When on, the app silently downloads a newer
+    # release in the background and restarts itself into it — no click needed —
+    # so unattended store PCs stay current. Off → the app still CHECKS and prompts
+    # via the update dialog (the pre-auto behaviour). Only the frozen build can
+    # self-replace; in dev this is a no-op. Tunable in %APPDATA%\...\.env.
+    auto_update: bool = True
+    # How often to re-check for a new release while running (hours), on top of the
+    # startup check. Floored to 0.25h so a misconfig can't hammer the GitHub API.
+    update_check_interval_hours: float = 1.0
     # Local MediaMTX fan-out: pull each camera ONCE and share it with the cloud
     # push relay + the offline grid (so cheap cameras aren't hit by 2 sessions).
     # Master switch — off → both consumers connect to the camera directly (the
