@@ -41,9 +41,13 @@ class _SeqDetector:
 class _SpyRecorder(EdgeClipRecorder):
     def __init__(self) -> None:  # no super().__init__ — avoid ffmpeg/dirs
         self.episodes: list[SuspiciousEpisode] = []
+        self.floors: list[float | None] = []
 
-    def on_episode(self, episode: SuspiciousEpisode) -> None:  # type: ignore[override]
+    def submit(self, episode: SuspiciousEpisode) -> None:
         self.episodes.append(episode)
+
+    def set_protect_floor(self, oldest_open_start: float | None) -> None:
+        self.floors.append(oldest_open_start)
 
 
 def test_pipeline_frame_skip_and_overlay_shape() -> None:

@@ -88,6 +88,8 @@ class BackendClient:
         *,
         auth: bool = True,
         json_body: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+        files: dict[str, Any] | None = None,
         ok_codes: tuple[int, ...] = (200, 201, 204),
         retriable: bool | None = None,
     ) -> httpx.Response:
@@ -109,6 +111,8 @@ class BackendClient:
                         f"{self.base_url}{path}",
                         headers=self._headers(auth=auth),
                         json=json_body,
+                        data=data,
+                        files=files,
                     )
                 break
             except _RETRIABLE_EXC as e:
@@ -221,6 +225,42 @@ class BackendClient:
             f"/api/v1/agent/cameras/{camera_uuid}",
             ok_codes=(200, 204, 404),
         )
+
+    # ── Edge Stage-1 (config-poller + suspicious-clip handoff) ───────────
+    def agent_edge_config(self) -> dict[str, Any]:
+        """GET /api/v1/agent/edge-config → tunables to hot-apply (no release)."""
+        r = self._request("GET", "/api/v1/agent/edge-config", ok_codes=(200,))
+        return r.json()  # type: ignore[no-any-return]
+
+    def agent_upload_clip(
+        self,
+        clip_path: str,
+        *,
+        camera_uuid: str,
+        risk_pct: float,
+        behaviors: list[str],
+        started_at: float,
+        ended_at: float,
+    ) -> dict[str, Any]:
+        """POST a suspicious clip (multipart) to the cloud VLM host for a verdict.
+
+        The edge already decided it's *worth looking at*; the server re-scores +
+        runs the VLM and creates the alert. Non-retriable (a real upload write)."""
+        with open(clip_path, "rb") as fh:  # noqa: PTH123 — httpx wants a file object
+            r = self._request(
+                "POST",
+                "/api/v1/agent/edge/clips",
+                data={
+                    "camera_uuid": camera_uuid,
+                    "risk_pct": str(risk_pct),
+                    "behaviors": ",".join(behaviors),
+                    "started_at": str(started_at),
+                    "ended_at": str(ended_at),
+                },
+                files={"clip": ("clip.mp4", fh, "video/mp4")},
+                ok_codes=(200, 201, 202),
+            )
+        return r.json()  # type: ignore[no-any-return]
 
     # ── Legacy user-scoped (dev token, CLI only) ────────────────────────
     def me(self) -> dict[str, Any]:

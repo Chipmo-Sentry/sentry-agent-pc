@@ -10,7 +10,7 @@ It reuses the same behaviour vocabulary ("item_pickup", "wrist_to_torso",
 "conceal") so edge and cloud stay consistent.
 
 No torch / no ultralytics — a light IoU tracker for stable IDs + keypoint maths.
-Thresholds are tunable (later: central config-poller, no release).
+All thresholds live in EdgeConfig so the central config-poller can hot-apply.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from numpy.typing import NDArray
 
+from sentry_agent_pc.edge.config import EdgeConfig
 from sentry_agent_pc.edge.detector import ItemDet, PersonDet
 from sentry_agent_pc.edge.overlay import kp_point
 from sentry_agent_pc.edge.recorder import SuspiciousEpisode
@@ -28,20 +29,7 @@ from sentry_agent_pc.edge.recorder import SuspiciousEpisode
 # COCO-17 indices used by the gate.
 _KP_L_WRI, _KP_R_WRI = 9, 10
 _KP_L_HIP, _KP_R_HIP = 11, 12
-
-# Tunables (central config-poller will own these later).
-_OPEN_RISK = 60.0  # open an episode at/above this risk
-_CLOSE_RISK = 30.0  # below this counts as "settled"
-_POST_QUIET_SEC = 2.0  # episode closes after this long settled
-_DECAY = 0.90  # per-update suspicion decay
-_DROP_AFTER_SEC = 1.5  # a track unseen this long is dropped
 _TRAIL_MAXLEN = 32
-_IOU_MATCH = 0.3
-
-# Per-frame signal weights.
-_W_HOLDING = 5.0
-_W_CONCEAL = 14.0  # wrist-to-torso WHILE holding (the strong signal)
-_W_WRIST_TORSO = 3.0
 
 
 @dataclass(slots=True)
@@ -82,18 +70,20 @@ def _iou(a: tuple[float, float, float, float], b: tuple[float, float, float, flo
     return inter / union if union > 0 else 0.0
 
 
-def _band(risk_pct: float) -> str:
-    if risk_pct >= 70.0:
+def _band(risk_pct: float, *, yellow: float = 40.0, red: float = 70.0) -> str:
+    if risk_pct >= red:
         return "red"
-    if risk_pct >= 40.0:
+    if risk_pct >= yellow:
         return "yellow"
     return "green"
 
 
-def _wrist_on_item(kp: NDArray[np.float32] | None, items: list[ItemDet], person_h: float) -> bool:
+def _wrist_on_item(
+    kp: NDArray[np.float32] | None, items: list[ItemDet], person_h: float, *, reach_frac: float = 0.35
+) -> bool:
     if kp is None or not items:
         return False
-    reach = person_h * 0.35
+    reach = person_h * reach_frac
     for widx in (_KP_L_WRI, _KP_R_WRI):
         w = kp_point(kp, widx)
         if w is None:
@@ -107,11 +97,13 @@ def _wrist_on_item(kp: NDArray[np.float32] | None, items: list[ItemDet], person_
     return False
 
 
-def _wrist_to_torso(kp: NDArray[np.float32] | None, person_h: float) -> bool:
+def _wrist_to_torso(
+    kp: NDArray[np.float32] | None, person_h: float, *, near_frac: float = 0.18
+) -> bool:
     """A wrist pulled in to a hip/waist — the pocket/bag concealment posture."""
     if kp is None:
         return False
-    near = person_h * 0.18
+    near = person_h * near_frac
     for widx in (_KP_L_WRI, _KP_R_WRI):
         w = kp_point(kp, widx)
         if w is None:
@@ -126,32 +118,50 @@ def _wrist_to_torso(kp: NDArray[np.float32] | None, person_h: float) -> bool:
 
 
 def _frame_signal(
-    kp: NDArray[np.float32] | None, items: list[ItemDet], person_h: float
+    kp: NDArray[np.float32] | None,
+    items: list[ItemDet],
+    person_h: float,
+    cfg: EdgeConfig | None = None,
 ) -> tuple[float, set[str]]:
     """Instantaneous suspicion increment + active behaviour keys for this frame."""
+    c = cfg or EdgeConfig()
     behaviors: set[str] = set()
     score = 0.0
-    holding = _wrist_on_item(kp, items, person_h)
+    holding = _wrist_on_item(kp, items, person_h, reach_frac=c.reach_frac)
     if holding:
         behaviors.add("item_pickup")
-        score += _W_HOLDING
-    if _wrist_to_torso(kp, person_h):
+        score += c.w_holding
+    if _wrist_to_torso(kp, person_h, near_frac=c.near_frac):
         behaviors.add("wrist_to_torso")
         if holding:
             behaviors.add("conceal")
-            score += _W_CONCEAL
+            score += c.w_conceal
         else:
-            score += _W_WRIST_TORSO
+            score += c.w_wrist_torso
     return score, behaviors
 
 
 class EdgeBehavior:
     """Light per-camera behaviour gate: detections → risk bands + episode events."""
 
-    def __init__(self, camera_id: str) -> None:
+    def __init__(self, camera_id: str, config: EdgeConfig | None = None) -> None:
         self.camera_id = camera_id
+        self.cfg = config or EdgeConfig()
         self._tracks: dict[int, _Track] = {}
         self._next_id = 1
+
+    def apply_config(self, config: EdgeConfig) -> None:
+        """Hot-apply new tunables (the config-poller swaps the whole config)."""
+        self.cfg = config
+
+    def oldest_open_episode_start(self) -> float | None:
+        """Earliest start_ts across currently-open (suspicious) episodes, or None.
+
+        The recorder uses this to PROTECT pre-roll segments from the rolling
+        prune while an episode is still open — otherwise a long episode would lose
+        its '−3s before' segments before the clip is ever cut."""
+        starts = [tr.ep_start for tr in self._tracks.values() if tr.state == "suspicious"]
+        return min(starts) if starts else None
 
     def update(
         self, persons: list[PersonDet], items: list[ItemDet], now: float
@@ -169,14 +179,14 @@ class EdgeBehavior:
             tr.trail.append((int((person.box[0] + person.box[2]) / 2), int(person.box[3])))
 
             person_h = max(1.0, person.box[3] - person.box[1])
-            signal, behaviors = _frame_signal(person.keypoints, items, person_h)
-            tr.raw = tr.raw * _DECAY + signal
+            signal, behaviors = _frame_signal(person.keypoints, items, person_h, self.cfg)
+            tr.raw = tr.raw * self.cfg.decay + signal
             risk_pct = min(100.0, tr.raw)
             ep = self._advance_episode(tr, risk_pct, behaviors, now)
             if ep is not None:
                 episodes.append(ep)
 
-            bands.append(_band(risk_pct))
+            bands.append(_band(risk_pct, yellow=self.cfg.band_yellow, red=self.cfg.band_red))
             trails.append(np.array(tr.trail, dtype=np.int32))
 
         episodes.extend(self._drop_stale(now))
@@ -187,7 +197,7 @@ class EdgeBehavior:
         out: list[int] = []
         used: set[int] = set()
         for person in persons:
-            best_id, best_iou = -1, _IOU_MATCH
+            best_id, best_iou = -1, self.cfg.iou_match
             for tid, tr in self._tracks.items():
                 if tid in used:
                     continue
@@ -209,7 +219,7 @@ class EdgeBehavior:
         self, tr: _Track, risk_pct: float, behaviors: set[str], now: float
     ) -> SuspiciousEpisode | None:
         if tr.state == "normal":
-            if risk_pct >= _OPEN_RISK:
+            if risk_pct >= self.cfg.open_risk:
                 tr.state = "suspicious"
                 tr.ep_start = now
                 tr.ep_peak = risk_pct
@@ -219,9 +229,9 @@ class EdgeBehavior:
         # suspicious
         tr.ep_peak = max(tr.ep_peak, risk_pct)
         tr.ep_behaviors |= behaviors
-        if risk_pct >= _CLOSE_RISK:
+        if risk_pct >= self.cfg.close_risk:
             tr.last_active = now
-        if now - tr.last_active >= _POST_QUIET_SEC:
+        if now - tr.last_active >= self.cfg.post_quiet_sec:
             return self._close_episode(tr)
         return None
 
@@ -240,7 +250,8 @@ class EdgeBehavior:
     def _drop_stale(self, now: float) -> list[SuspiciousEpisode]:
         """Drop tracks unseen too long; close any open episode at last_seen."""
         episodes: list[SuspiciousEpisode] = []
-        for tid in [t for t, tr in self._tracks.items() if now - tr.last_seen > _DROP_AFTER_SEC]:
+        stale = [t for t, tr in self._tracks.items() if now - tr.last_seen > self.cfg.drop_after_sec]
+        for tid in stale:
             tr = self._tracks.pop(tid)
             if tr.state == "suspicious":
                 episodes.append(self._close_episode(tr))

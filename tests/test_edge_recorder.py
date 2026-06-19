@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from sentry_agent_pc.edge.recorder import (
     ClipRecord,
     ClipStore,
@@ -115,3 +117,65 @@ def test_build_clip_no_segments_returns_none(tmp_path: Path) -> None:
 
     ep = SuspiciousEpisode("cam01", start_ts=1000.0, end_ts=1002.0, risk_pct=90.0)
     assert build_clip(tmp_path / "empty", ep, tmp_path / "clips") is None
+
+
+def test_prune_respects_protect_floor(tmp_path: Path) -> None:
+    """An open episode's protect floor must keep its pre-roll segments alive even
+    though they're far older than keep_sec (the long-episode bug)."""
+    rec = SegmentRecorder("cam01", "rtsp://x", tmp_path, segment_sec=1.0, keep_sec=10.0)
+    now = int(datetime(2026, 6, 19, 14, 0, 0).timestamp())
+    _touch_segments(tmp_path, now - 100, 50)  # all far older than keep_sec
+    rec.set_protect_floor(float(now - 100))  # episode opened ~100s ago → protect
+    assert rec.prune(now=float(now)) == 0  # nothing pruned while protected
+    rec.set_protect_floor(None)  # episode closed → protection lifted
+    assert rec.prune(now=float(now)) == 50  # now all aged-out segments go
+
+
+def test_submit_processes_episode_off_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    from sentry_agent_pc.edge import recorder as rm
+
+    monkeypatch.setattr(rm.SegmentRecorder, "start", lambda self: None)
+    monkeypatch.setattr(rm.SegmentRecorder, "stop", lambda self: None)
+    now = time.time()
+    fake = ClipRecord(
+        clip_id="id1", camera_id="cam01", path=str(tmp_path / "x.mp4"),
+        started_at=now - 7, ended_at=now, risk_pct=80.0, behaviors=["conceal"], created_at=now,
+    )
+    monkeypatch.setattr(rm, "build_clip", lambda *a, **k: fake)
+    captured: list[ClipRecord] = []
+    rec = rm.EdgeClipRecorder(
+        "cam01", "rtsp://x", tmp_path, rm.ClipStore(tmp_path / "i.json"),
+        on_clip=captured.append,
+    )
+    rec.start()
+    rec.submit(rm.SuspiciousEpisode("cam01", 0.0, 1.0, 80.0))
+    for _ in range(100):  # the worker processes it on its own thread
+        if captured:
+            break
+        time.sleep(0.02)
+    rec.stop()
+    assert captured == [fake]
+
+
+def test_edge_clip_recorder_stores_and_fires_on_clip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sentry_agent_pc.edge import recorder as rm
+
+    now = __import__("time").time()
+    fake = ClipRecord(
+        clip_id="id1", camera_id="cam01", path=str(tmp_path / "x.mp4"),
+        started_at=now - 7, ended_at=now, risk_pct=82.0, behaviors=["conceal"], created_at=now,
+    )
+    monkeypatch.setattr(rm, "build_clip", lambda *a, **k: fake)
+    captured: list[ClipRecord] = []
+    store = rm.ClipStore(tmp_path / "index.json")
+    rec = rm.EdgeClipRecorder("cam01", "rtsp://x", tmp_path, store, on_clip=captured.append)
+    out = rec.on_episode(rm.SuspiciousEpisode("cam01", 0.0, 1.0, 82.0))
+    assert out is fake
+    assert captured == [fake]
+    assert len(store.records()) == 1
