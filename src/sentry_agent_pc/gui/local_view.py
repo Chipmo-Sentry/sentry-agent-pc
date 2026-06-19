@@ -32,7 +32,17 @@ if TYPE_CHECKING:
 
 # RTSP over TCP is far more reliable than the UDP default on busy LANs. Must be
 # set before the first cv2 VideoCapture is created.
-os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
+#
+# The extra flags fight DELAY, the other half of the "vendor app is ahead of us"
+# complaint: FFmpeg otherwise builds a demux/jitter buffer that drifts seconds
+# behind realtime. `nobuffer`+`low_delay` decode as soon as data arrives;
+# `reorder_queue_size;0` is safe because TCP already delivers RTP in order; and
+# `max_delay;500000` caps any residual buffering at 0.5 s. Net effect: the grid
+# tracks realtime like the camera's own software instead of lagging it.
+os.environ.setdefault(
+    "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+    "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|reorder_queue_size;0|max_delay;500000",
+)
 
 import customtkinter as ctk  # noqa: E402
 from PIL import Image, ImageTk  # noqa: E402
@@ -43,7 +53,19 @@ from sentry_agent_pc.state import load_state  # noqa: E402
 
 log = get_logger("sentry_agent_pc.gui.local_view")
 
-_TARGET_FPS = 8  # live monitoring needs no more; halves UI-thread PhotoImage churn
+# 12 fps reads as smooth-enough live monitoring while still throttling UI-thread
+# PhotoImage churn. We can afford more than the old 8 now that hardware decode
+# (below) takes the per-frame decode cost off the CPU.
+_TARGET_FPS = 12
+# Hardware-accelerated decode (iGPU/GPU via d3d11va/dxva2/qsv etc). This is the
+# core fix for BOTH symptoms vs the vendor app: it moves decode off the CPU, so
+# several cameras + the ffmpeg push relays no longer saturate the box. When the
+# box is saturated the software decoder falls behind the stream bitrate and drops
+# packets mid-GOP — exactly the macroblock smearing ("сариналт") the user sees,
+# regardless of codec. OpenCV silently uses software when HW is unsupported, so
+# this is safe with zero config on every store PC. The env override exists ONLY
+# for dev A/B testing — end users download, detect cameras, and never touch it.
+_HWACCEL_ENABLED = os.environ.get("SENTRY_LOCAL_VIEW_HWACCEL", "1") not in ("0", "false", "False")
 _MIN_TILE_W = 320  # below this we drop a column
 # How long to wait for the FIRST decodable frame before rejecting a candidate URL.
 # Generous on purpose: H.265 cameras (e.g. Skyworth) only emit a decodable frame at
@@ -188,6 +210,7 @@ class _CameraReader(threading.Thread):
         self._active.set()
         self._box = (640, 360)
         self._pin: int | None = None  # index of the URL that's working
+        self._hw_logged = -2.0  # last logged hwaccel value; log the path once per change
         self.status = _CONNECTING
         self.detail = "Холбож байна…"
 
@@ -216,7 +239,10 @@ class _CameraReader(threading.Thread):
 
     def run(self) -> None:
         try:
-            import cv2
+            # Probe only: _open() imports cv2 itself. This early import turns a
+            # missing/broken OpenCV install into a clear UI error instead of a
+            # silent "Холбогдсонгүй".
+            import cv2  # noqa: F401
         except Exception as e:  # noqa: BLE001 — surface the import failure in the UI
             self.status = _ERROR
             self.detail = "OpenCV ачаалагдсангүй (cv2)"
@@ -239,17 +265,14 @@ class _CameraReader(threading.Thread):
             for i in idxs:
                 if self._stop.is_set():
                     return
-                cap = cv2.VideoCapture(self.urls[i], cv2.CAP_FFMPEG)
-                with contextlib.suppress(Exception):
-                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # low latency; some ignore it
-                if not cap.isOpened() or not self._prime(cap):
-                    cap.release()
+                cap = self._open(self.urls[i])
+                if cap is None:
                     continue
                 self._pin = i
                 self.status = _LIVE
                 self.detail = "Шууд"
                 self._consume(cap)  # blocks until the stream drops or we stop
-                cap.release()
+                cap.release()  # type: ignore[attr-defined]
                 streamed = True
                 break
 
@@ -277,6 +300,46 @@ class _CameraReader(threading.Thread):
                 self.detail = "Холболт тасарсан — дахин холбож байна…"
             if self._stop.wait(2.0):
                 break
+
+    def _open(self, url: str) -> object | None:
+        """Open `url` with a hardware-decode hint, falling back to plain software.
+
+        The HW hint (``CAP_PROP_HW_ACCELERATION=ANY``) offloads decode to the
+        iGPU/GPU when the OpenCV build + driver support it; otherwise OpenCV
+        silently decodes in software, so passing it is safe on every box. Builds
+        that reject the params arg, or a HW attempt that opens but never delivers
+        a frame, fall through to a plain software open. We log the negotiated
+        path once (so the store PC's effective decode mode is visible in the logs
+        remotely, without the user running anything)."""
+        import cv2
+
+        attempts: list[list[int]] = []
+        if _HWACCEL_ENABLED:
+            attempts.append(
+                [int(cv2.CAP_PROP_HW_ACCELERATION), int(cv2.VIDEO_ACCELERATION_ANY)]
+            )
+        attempts.append([])  # plain software open — always tried as the fallback
+        for params in attempts:
+            try:
+                cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG, params)
+            except Exception:  # noqa: BLE001 — some builds reject the params arg
+                continue
+            with contextlib.suppress(Exception):
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # low latency; some ignore it
+            if cap.isOpened() and self._prime(cap):
+                with contextlib.suppress(Exception):
+                    hw = float(cap.get(cv2.CAP_PROP_HW_ACCELERATION))
+                    if hw != self._hw_logged:
+                        self._hw_logged = hw
+                        log.info(
+                            "local_view.decode_path", cam=self.cam_name,
+                            hwaccel="on" if hw > 0 else "software",
+                        )
+                return cast("object", cap)
+            cap.release()
+            if self._stop.is_set() or not self._active.is_set():
+                return None
+        return None
 
     def _prime(self, cap: object) -> bool:
         """Confirm the stream really delivers a frame (so a 404/401 path is
