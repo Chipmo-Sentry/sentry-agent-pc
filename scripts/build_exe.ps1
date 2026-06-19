@@ -81,6 +81,32 @@ if (-not (Test-Path $ffExe)) {
     Write-Host "==> ffmpeg already present at $ffExe" -ForegroundColor Cyan
 }
 
+# --- Bundle the edge-AI YOLO models (OpenVINO IR) ---------------------------
+# The shipped edge Stage-1 detector (edge/ov_lean.py) loads these with the
+# bundled OpenVINO runtime — so the SINGLE installer is self-contained: a clean
+# store PC just runs the .exe, no pip / no model export by the user. Export is
+# done HERE at build time (needs ultralytics+openvino on the BUILD machine only;
+# the product never ships ultralytics). Non-fatal: if export fails we WARN and
+# ship without edge AI — the scan/push agent still works; the detector raises a
+# clear error and edge AI stays off until a build includes the models.
+$poseModel = Join-Path $mtxBinDir "yolo11n-pose_openvino_model"
+$itemModel = Join-Path $mtxBinDir "yolo11n_openvino_model"
+if (-not (Test-Path (Join-Path $poseModel "yolo11n-pose_openvino_model.xml"))) {
+    try {
+        Write-Host "==> Exporting YOLO11 models to OpenVINO IR ..." -ForegroundColor Cyan
+        uv pip install "ultralytics>=8.4,<9.0" "openvino>=2024.0"
+        uv run yolo export model=yolo11n-pose.pt format=openvino imgsz=640
+        uv run yolo export model=yolo11n.pt      format=openvino imgsz=640
+        Move-Item -Force "yolo11n-pose_openvino_model" $poseModel
+        Move-Item -Force "yolo11n_openvino_model" $itemModel
+        Write-Host "==> Edge models bundled under $mtxBinDir" -ForegroundColor Green
+    } catch {
+        Write-Warning "YOLO OpenVINO export failed — building WITHOUT edge AI: $_"
+    }
+} else {
+    Write-Host "==> Edge models already present at $poseModel" -ForegroundColor Cyan
+}
+
 # Resolve customtkinter package dir (contains assets/ themes the GUI loads)
 $ctkPath = uv run python -c "import customtkinter, os; print(os.path.dirname(customtkinter.__file__))"
 Write-Host "==> customtkinter at: $ctkPath" -ForegroundColor Cyan
@@ -122,6 +148,7 @@ uv run pyinstaller `
     --collect-all webview `
     --collect-all clr_loader `
     --collect-all cv2 `
+    --collect-all openvino `
     --hidden-import PIL._tkinter_finder `
     --hidden-import pystray._win32 `
     src\sentry_agent_pc\gui_main.py

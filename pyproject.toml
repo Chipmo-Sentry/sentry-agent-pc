@@ -31,6 +31,12 @@ dependencies = [
     "opencv-python-headless>=4.10,<5.0",
     # System tray icon (minimize-to-tray + autostart toggle).
     "pystray>=0.19,<0.20",
+    # Edge Stage-1 inference runtime — runs the bundled YOLO OpenVINO IR on the
+    # store PC's Intel iGPU/CPU. numpy comes transitively (opencv) but the edge
+    # decoders use it directly, so pin it explicitly. ultralytics is NOT here —
+    # it's BUILD-time only (model export) + the dev bench; the product ships lean.
+    "openvino>=2024.0,<2026.0",
+    "numpy>=1.26,<3.0",
 ]
 
 [dependency-groups]
