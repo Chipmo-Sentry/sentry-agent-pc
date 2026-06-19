@@ -20,6 +20,7 @@ import urllib.parse
 from dataclasses import dataclass, field
 
 from sentry_agent_pc.logging_setup import get_logger
+from sentry_agent_pc.resources import resolve_ffmpeg_exe
 from sentry_agent_pc.settings import get_settings
 
 log = get_logger("sentry_agent_pc.streaming.pusher")
@@ -186,7 +187,7 @@ class StreamPusher:
         dest = build_push_url(
             self.push_base, st.target.mediamtx_path, self.publish_user, self.publish_pass
         )
-        cmd = build_relay_cmd(get_settings().ffmpeg_path, st.target, dest)
+        cmd = build_relay_cmd(resolve_ffmpeg_exe(get_settings().ffmpeg_path), st.target, dest)
         while not st.stop.is_set():
             try:
                 creationflags = _CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0

@@ -12,6 +12,7 @@ import subprocess
 from dataclasses import dataclass
 
 from sentry_agent_pc.logging_setup import get_logger
+from sentry_agent_pc.resources import resolve_ffmpeg_exe
 from sentry_agent_pc.settings import get_settings
 
 log = get_logger("sentry_agent_pc.discovery.rtsp_probe")
@@ -60,7 +61,7 @@ def probe(url: str, timeout_sec: int | None = None) -> ProbeResult:
     timeout = timeout_sec or settings.rtsp_probe_timeout_sec
 
     args = [
-        settings.ffmpeg_path,
+        resolve_ffmpeg_exe(settings.ffmpeg_path),
         "-hide_banner",
         "-rtsp_transport", "tcp",
         "-i", url,

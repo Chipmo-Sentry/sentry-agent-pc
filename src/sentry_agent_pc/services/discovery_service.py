@@ -20,6 +20,8 @@ from sentry_agent_pc.discovery import onvif as onvif_mod
 from sentry_agent_pc.discovery import rtsp_probe
 from sentry_agent_pc.discovery.rtsp_paths import RTSP_PATHS, RTSP_PATHS_PRIORITY
 from sentry_agent_pc.logging_setup import get_logger
+from sentry_agent_pc.resources import ffmpeg_available
+from sentry_agent_pc.settings import get_settings
 from sentry_agent_pc.state import CameraRecord, load_state, save_state
 
 log = get_logger("sentry_agent_pc.services.discovery")
@@ -228,6 +230,20 @@ def resolve_stream(
         log.info("resolve.ok", ip=ip, via=best.via, codec=best.codec,
                  res=f"{best.width}x{best.height}")
         return best
+
+    # ONVIF missed → fall back to the ffmpeg RTSP-path brute-force. But if ffmpeg
+    # itself is absent every probe fails identically, which used to surface the
+    # misleading "стрим олдсонгүй". Detect it once and say what's actually wrong.
+    if not ffmpeg_available(get_settings().ffmpeg_path):
+        log.error("resolve.ffmpeg_missing", ip=ip)
+        return ResolvedStream(
+            ok=False,
+            error=(
+                "ffmpeg олдсонгүй — энэ компьютерт ffmpeg.exe суугаагүй байна. "
+                "Шинэ суулгацад автоматаар орох ёстой. Гараар засах бол ffmpeg "
+                "тавиад .env-д ffmpeg_path-г заана уу."
+            ),
+        )
 
     best, auth_error = _best_rtsp_path_stream(ip, username, password)
     if best is not None:
