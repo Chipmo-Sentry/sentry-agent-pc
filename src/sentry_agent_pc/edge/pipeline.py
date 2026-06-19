@@ -14,6 +14,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from sentry_agent_pc.edge.behavior import BehaviorFrame, EdgeBehavior
+from sentry_agent_pc.edge.config import EdgeConfig
 from sentry_agent_pc.edge.detector import Detector, DetectResult
 from sentry_agent_pc.edge.overlay import draw_overlays
 from sentry_agent_pc.edge.recorder import EdgeClipRecorder
@@ -28,16 +29,25 @@ class EdgePipeline:
         detector: Detector,
         recorder: EdgeClipRecorder | None = None,
         *,
-        frame_skip: int = 3,
+        config: EdgeConfig | None = None,
+        frame_skip: int | None = None,
     ) -> None:
         self.camera_id = camera_id
         self.detector = detector
-        self.behavior = EdgeBehavior(camera_id)
+        self.cfg = config or EdgeConfig()
+        self.behavior = EdgeBehavior(camera_id, self.cfg)
         self.recorder = recorder
-        self.frame_skip = max(1, frame_skip)
+        # explicit frame_skip overrides the config (tests/callers); else config.
+        self.frame_skip = max(1, frame_skip if frame_skip is not None else self.cfg.frame_skip)
         self._n = 0
         self._last = DetectResult()
         self._frame: BehaviorFrame | None = None
+
+    def apply_config(self, config: EdgeConfig) -> None:
+        """Hot-apply tunables (behaviour gate + frame-skip)."""
+        self.cfg = config
+        self.behavior.apply_config(config)
+        self.frame_skip = max(1, config.frame_skip)
 
     def process(self, frame_bgr: NDArray[np.uint8], now: float) -> NDArray[np.uint8]:
         """Run (or reuse) detection + behaviour for this frame, return the overlay."""

@@ -22,7 +22,7 @@ import json
 import subprocess
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -311,7 +311,10 @@ class SegmentRecorder:
 
 
 class EdgeClipRecorder:
-    """Per-camera facade: rolling segment ring + on-episode clip extraction → store."""
+    """Per-camera facade: rolling segment ring + on-episode clip extraction → store.
+
+    ``on_clip`` (set by the runtime) fires for each saved clip — that's where the
+    server upload / VLM handoff hooks in, decoupled from recording."""
 
     def __init__(
         self,
@@ -324,12 +327,14 @@ class EdgeClipRecorder:
         post: float = 3.0,
         segment_sec: float = 1.0,
         keep_sec: float | None = None,
+        on_clip: Callable[[ClipRecord], None] | None = None,
     ) -> None:
         self.camera_id = camera_id
         self.pre = pre
         self.post = post
         self.segment_sec = segment_sec
         self.store = store
+        self.on_clip = on_clip
         base = Path(base_dir)
         self.seg_dir = base / "segments" / camera_id
         self.clips_dir = base / "clips"
@@ -356,4 +361,9 @@ class EdgeClipRecorder:
                 "clip.saved", camera_id=self.camera_id, clip_id=rec.clip_id,
                 risk=round(rec.risk_pct), dur=round(rec.duration, 1),
             )
+            if self.on_clip is not None:
+                try:
+                    self.on_clip(rec)
+                except Exception:  # noqa: BLE001 — a failed handoff must not break recording
+                    log.exception("clip.on_clip_failed", camera_id=self.camera_id)
         return rec

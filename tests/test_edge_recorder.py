@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 from sentry_agent_pc.edge.recorder import (
     ClipRecord,
     ClipStore,
@@ -115,3 +117,23 @@ def test_build_clip_no_segments_returns_none(tmp_path: Path) -> None:
 
     ep = SuspiciousEpisode("cam01", start_ts=1000.0, end_ts=1002.0, risk_pct=90.0)
     assert build_clip(tmp_path / "empty", ep, tmp_path / "clips") is None
+
+
+def test_edge_clip_recorder_stores_and_fires_on_clip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sentry_agent_pc.edge import recorder as rm
+
+    now = __import__("time").time()
+    fake = ClipRecord(
+        clip_id="id1", camera_id="cam01", path=str(tmp_path / "x.mp4"),
+        started_at=now - 7, ended_at=now, risk_pct=82.0, behaviors=["conceal"], created_at=now,
+    )
+    monkeypatch.setattr(rm, "build_clip", lambda *a, **k: fake)
+    captured: list[ClipRecord] = []
+    store = rm.ClipStore(tmp_path / "index.json")
+    rec = rm.EdgeClipRecorder("cam01", "rtsp://x", tmp_path, store, on_clip=captured.append)
+    out = rec.on_episode(rm.SuspiciousEpisode("cam01", 0.0, 1.0, 82.0))
+    assert out is fake
+    assert captured == [fake]
+    assert len(store.records()) == 1
