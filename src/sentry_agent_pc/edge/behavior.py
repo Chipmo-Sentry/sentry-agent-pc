@@ -154,6 +154,15 @@ class EdgeBehavior:
         """Hot-apply new tunables (the config-poller swaps the whole config)."""
         self.cfg = config
 
+    def oldest_open_episode_start(self) -> float | None:
+        """Earliest start_ts across currently-open (suspicious) episodes, or None.
+
+        The recorder uses this to PROTECT pre-roll segments from the rolling
+        prune while an episode is still open — otherwise a long episode would lose
+        its '−3s before' segments before the clip is ever cut."""
+        starts = [tr.ep_start for tr in self._tracks.values() if tr.state == "suspicious"]
+        return min(starts) if starts else None
+
     def update(
         self, persons: list[PersonDet], items: list[ItemDet], now: float
     ) -> BehaviorFrame:

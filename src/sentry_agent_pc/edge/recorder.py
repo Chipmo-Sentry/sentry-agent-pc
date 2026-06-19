@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import queue
 import subprocess
 import threading
 import time
@@ -254,6 +255,14 @@ class SegmentRecorder:
         self._proc: subprocess.Popen[bytes] | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # Watermark: never prune segments newer than this (an open episode's
+        # start − pre). None = no open episode → normal keep_sec window only.
+        self._protect_floor: float | None = None
+
+    def set_protect_floor(self, floor_ts: float | None) -> None:
+        """Protect segments at/after `floor_ts` from the prune. Plain attribute
+        write — atomic under the GIL — called from the pipeline thread."""
+        self._protect_floor = floor_ts
 
     def start(self) -> None:
         self.seg_dir.mkdir(parents=True, exist_ok=True)
@@ -281,11 +290,17 @@ class SegmentRecorder:
         self._reap()
 
     def prune(self, now: float | None = None) -> int:
-        """Delete segments whose end is older than `keep_sec`. Returns count removed."""
+        """Delete segments older than the keep window — but NEVER newer than the
+        open-episode protect floor, so a long episode keeps its pre-roll until the
+        clip is cut. Returns count removed."""
         ref = now if now is not None else time.time()
+        cutoff = ref - self.keep_sec
+        floor = self._protect_floor
+        if floor is not None:
+            cutoff = min(cutoff, floor)
         removed = 0
         for s in list_segments(self.seg_dir, duration=self.segment_sec):
-            if ref - s.end_ts > self.keep_sec:
+            if s.end_ts <= cutoff:
                 with contextlib.suppress(OSError):
                     s.path.unlink()
                     removed += 1
@@ -342,12 +357,53 @@ class EdgeClipRecorder:
         self._recorder = SegmentRecorder(
             camera_id, src_url, self.seg_dir, segment_sec=segment_sec, keep_sec=keep
         )
+        # Episodes are CUT off the decode/process() thread: submit() just queues,
+        # a worker thread runs the (blocking) ffmpeg concat + store + on_clip
+        # upload. Bounded + drop-oldest so a slow handoff can't stall live view
+        # or grow memory on an 8GB store PC.
+        self._queue: queue.Queue[SuspiciousEpisode | None] = queue.Queue(maxsize=16)
+        self._worker: threading.Thread | None = None
+
+    def set_protect_floor(self, oldest_open_start: float | None) -> None:
+        """Pin pre-roll: protect segments from (oldest open episode start − pre)."""
+        floor = None if oldest_open_start is None else oldest_open_start - self.pre
+        self._recorder.set_protect_floor(floor)
+
+    def submit(self, episode: SuspiciousEpisode) -> None:
+        """Queue a closed episode for off-thread clip extraction (non-blocking)."""
+        try:
+            self._queue.put_nowait(episode)
+        except queue.Full:
+            with contextlib.suppress(queue.Empty):
+                self._queue.get_nowait()  # drop the oldest pending
+            with contextlib.suppress(queue.Full):
+                self._queue.put_nowait(episode)
+            log.warning("clip.queue_full_dropped_oldest", camera_id=self.camera_id)
+
+    def _worker_loop(self) -> None:
+        while True:
+            ep = self._queue.get()
+            if ep is None:  # sentinel
+                return
+            try:
+                self.on_episode(ep)
+            except Exception:  # noqa: BLE001 — never let one bad clip kill the worker
+                log.exception("clip.worker_failed", camera_id=self.camera_id)
 
     def start(self) -> None:
         self._recorder.start()
+        if self._worker is None or not self._worker.is_alive():
+            self._worker = threading.Thread(
+                target=self._worker_loop, name=f"clip-{self.camera_id}", daemon=True
+            )
+            self._worker.start()
 
     def stop(self) -> None:
         self._recorder.stop()
+        if self._worker is not None:
+            self._queue.put(None)  # sentinel
+            self._worker.join(timeout=5.0)
+            self._worker = None
 
     def on_episode(self, episode: SuspiciousEpisode) -> ClipRecord | None:
         """Cut + store the [start−pre, end+post] clip for a suspicious episode."""

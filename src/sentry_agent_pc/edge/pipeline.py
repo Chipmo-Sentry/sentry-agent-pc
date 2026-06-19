@@ -54,9 +54,12 @@ class EdgePipeline:
         if self._n % self.frame_skip == 0:
             self._last = self.detector.detect(frame_bgr)
             self._frame = self.behavior.update(self._last.persons, self._last.items, now)
-            if self.recorder is not None and self._frame.episodes:
+            if self.recorder is not None:
+                # Protect pre-roll segments of any in-flight episode from pruning,
+                # then hand closed episodes to the recorder OFF this thread.
+                self.recorder.set_protect_floor(self.behavior.oldest_open_episode_start())
                 for ep in self._frame.episodes:
-                    self.recorder.on_episode(ep)
+                    self.recorder.submit(ep)
         self._n += 1
         bands = self._frame.bands if self._frame is not None else None
         trails = self._frame.trails if self._frame is not None else None
