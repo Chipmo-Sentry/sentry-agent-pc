@@ -239,7 +239,10 @@ class _CameraReader(threading.Thread):
 
     def run(self) -> None:
         try:
-            import cv2
+            # Probe only: _open() imports cv2 itself. This early import turns a
+            # missing/broken OpenCV install into a clear UI error instead of a
+            # silent "Холбогдсонгүй".
+            import cv2  # noqa: F401
         except Exception as e:  # noqa: BLE001 — surface the import failure in the UI
             self.status = _ERROR
             self.detail = "OpenCV ачаалагдсангүй (cv2)"
@@ -262,14 +265,14 @@ class _CameraReader(threading.Thread):
             for i in idxs:
                 if self._stop.is_set():
                     return
-                cap = self._open(cv2, self.urls[i])
+                cap = self._open(self.urls[i])
                 if cap is None:
                     continue
                 self._pin = i
                 self.status = _LIVE
                 self.detail = "Шууд"
                 self._consume(cap)  # blocks until the stream drops or we stop
-                cap.release()
+                cap.release()  # type: ignore[attr-defined]
                 streamed = True
                 break
 
@@ -298,7 +301,7 @@ class _CameraReader(threading.Thread):
             if self._stop.wait(2.0):
                 break
 
-    def _open(self, cv2: object, url: str) -> object | None:
+    def _open(self, url: str) -> object | None:
         """Open `url` with a hardware-decode hint, falling back to plain software.
 
         The HW hint (``CAP_PROP_HW_ACCELERATION=ANY``) offloads decode to the
@@ -308,7 +311,8 @@ class _CameraReader(threading.Thread):
         a frame, fall through to a plain software open. We log the negotiated
         path once (so the store PC's effective decode mode is visible in the logs
         remotely, without the user running anything)."""
-        capture = cv2.VideoCapture  # type: ignore[attr-defined]
+        import cv2
+
         attempts: list[list[int]] = []
         if _HWACCEL_ENABLED:
             attempts.append(
@@ -317,7 +321,7 @@ class _CameraReader(threading.Thread):
         attempts.append([])  # plain software open — always tried as the fallback
         for params in attempts:
             try:
-                cap = capture(url, cv2.CAP_FFMPEG, params)
+                cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG, params)
             except Exception:  # noqa: BLE001 — some builds reject the params arg
                 continue
             with contextlib.suppress(Exception):
@@ -331,7 +335,7 @@ class _CameraReader(threading.Thread):
                             "local_view.decode_path", cam=self.cam_name,
                             hwaccel="on" if hw > 0 else "software",
                         )
-                return cap
+                return cast("object", cap)
             cap.release()
             if self._stop.is_set() or not self._active.is_set():
                 return None
