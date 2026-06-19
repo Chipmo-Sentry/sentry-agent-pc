@@ -11,15 +11,29 @@ Two auth modes:
 
 from __future__ import annotations
 
+import random
+import time
 from typing import Any
 
 import httpx
 from pydantic import BaseModel
 
 from sentry_agent_pc.logging_setup import get_logger
+from sentry_agent_pc.redact import scrub_credentials
 from sentry_agent_pc.settings import get_settings
 
 log = get_logger("sentry_agent_pc.backend_client")
+
+# Bounded retry for idempotent calls (GET + heartbeat) so one transient network
+# blip on a flaky store link doesn't drop a heartbeat/sync. Non-idempotent calls
+# (pair/register/PATCH/DELETE) are never retried — a half-applied write must not
+# be replayed.
+_MAX_ATTEMPTS = 3
+_BACKOFF_BASE_SEC = 0.5
+_BACKOFF_MAX_SEC = 4.0
+# Only these transport-level failures are retried; HTTP status errors are not
+# (the request reached the server and got a real answer).
+_RETRIABLE_EXC = (httpx.TransportError, httpx.ConnectError, httpx.ReadTimeout)
 
 
 class CameraRegistration(BaseModel):
@@ -55,6 +69,11 @@ class BackendClient:
         # Prefer the paired agent JWT; fall back to the dev token for the CLI.
         self.token = token or _agent_jwt_from_state() or s.dev_token
         self.timeout = timeout_sec
+        # Split timeout: short connect/pool so a dead link fails fast (and gets
+        # retried), generous read for slow-but-alive backends.
+        self._httpx_timeout = httpx.Timeout(
+            connect=5.0, read=float(timeout_sec), write=10.0, pool=5.0
+        )
 
     def _headers(self, *, auth: bool = True) -> dict[str, str]:
         h = {"Content-Type": "application/json"}
@@ -70,16 +89,53 @@ class BackendClient:
         auth: bool = True,
         json_body: dict[str, Any] | None = None,
         ok_codes: tuple[int, ...] = (200, 201, 204),
+        retriable: bool | None = None,
     ) -> httpx.Response:
-        with httpx.Client(timeout=self.timeout) as client:
-            r = client.request(
-                method,
-                f"{self.base_url}{path}",
-                headers=self._headers(auth=auth),
-                json=json_body,
-            )
+        """Send one request, retrying transport blips only when idempotent.
+
+        ``retriable`` defaults to ``method == "GET"``; callers pass ``True`` for
+        the heartbeat POST (idempotent). Never set it for pair/register/PATCH/
+        DELETE — replaying those could double-apply a write.
+        """
+        if retriable is None:
+            retriable = method.upper() == "GET"
+        attempts = _MAX_ATTEMPTS if retriable else 1
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                with httpx.Client(timeout=self._httpx_timeout) as client:
+                    r = client.request(
+                        method,
+                        f"{self.base_url}{path}",
+                        headers=self._headers(auth=auth),
+                        json=json_body,
+                    )
+                break
+            except _RETRIABLE_EXC as e:
+                last_exc = e
+                if attempt >= attempts:
+                    # Scrub: the path may carry a camera UUID, the exception
+                    # repr can echo a URL with embedded creds.
+                    raise BackendError(
+                        scrub_credentials(f"{method} {path} → network: {e}")
+                    ) from e
+                # Exponential backoff with jitter before the next attempt.
+                delay = min(_BACKOFF_BASE_SEC * 2 ** (attempt - 1), _BACKOFF_MAX_SEC)
+                delay += random.uniform(0, _BACKOFF_BASE_SEC)  # noqa: S311 — jitter, not crypto
+                log.warning(
+                    "backend.retry",
+                    method=method,
+                    path=scrub_credentials(path),
+                    attempt=attempt,
+                    error=scrub_credentials(str(e)),
+                )
+                time.sleep(delay)
+        else:  # pragma: no cover — loop always breaks or raises
+            raise BackendError(scrub_credentials(f"{method} {path} → {last_exc}"))
         if r.status_code not in ok_codes:
-            raise BackendError(f"{method} {path} → {r.status_code} {r.text[:300]}")
+            raise BackendError(
+                scrub_credentials(f"{method} {path} → {r.status_code} {r.text[:300]}")
+            )
         return r
 
     # ── Pairing (no auth) ───────────────────────────────────────────────
@@ -96,7 +152,10 @@ class BackendClient:
 
     # ── Agent-scoped (agent JWT) ────────────────────────────────────────
     def heartbeat(self) -> None:
-        self._request("POST", "/api/v1/agent/heartbeat", ok_codes=(204,))
+        # Heartbeat is idempotent (just liveness) → retry transport blips.
+        self._request(
+            "POST", "/api/v1/agent/heartbeat", ok_codes=(204,), retriable=True
+        )
 
     def agent_list_cameras(self) -> list[dict[str, Any]]:
         r = self._request("GET", "/api/v1/agent/cameras", ok_codes=(200,))

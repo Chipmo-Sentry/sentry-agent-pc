@@ -25,6 +25,7 @@ import os
 import threading
 import time
 import tkinter as tk
+from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
@@ -203,7 +204,7 @@ class _CameraReader(threading.Thread):
         self._latest: Image.Image | None = None
         self._seq = 0  # bumped on every new frame; lets the UI skip idle repaints
         self._lock = threading.Lock()
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         # _active gated: cleared = paused (hold no VideoCapture, ~0 CPU). Used so a
         # focused tile doesn't keep the other cameras decoding in the background.
         self._active = threading.Event()
@@ -235,7 +236,7 @@ class _CameraReader(threading.Thread):
             return self._box
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
 
     def run(self) -> None:
         try:
@@ -250,20 +251,20 @@ class _CameraReader(threading.Thread):
             return
 
         # Stagger the first connect so all cameras don't open at the same instant.
-        if self._start_delay and self._stop.wait(self._start_delay):
+        if self._start_delay and self._stop_event.wait(self._start_delay):
             return
 
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             # Paused (hidden behind a focused tile): hold no capture, idle cheaply.
             if not self._active.is_set():
-                if self._stop.wait(0.2):
+                if self._stop_event.wait(0.2):
                     break
                 continue
             # Pinned URL first (fast reconnect); otherwise try all candidates.
             idxs = [self._pin] if self._pin is not None else list(range(len(self.urls)))
             streamed = False
             for i in idxs:
-                if self._stop.is_set():
+                if self._stop_event.is_set():
                     return
                 cap = self._open(self.urls[i])
                 if cap is None:
@@ -276,13 +277,13 @@ class _CameraReader(threading.Thread):
                 streamed = True
                 break
 
-            if self._stop.is_set():
+            if self._stop_event.is_set():
                 break
             # RTSP failed → try the browser-style HTTP snapshot fallback before
             # giving up (the camera may serve a picture over HTTP but no RTSP).
             if not streamed and self._snapshot_urls:
                 streamed = self._consume_snapshot()
-            if self._stop.is_set():
+            if self._stop_event.is_set():
                 break
             if not streamed:
                 # Nothing worked this round. Un-pin so the next round re-tries
@@ -298,7 +299,7 @@ class _CameraReader(threading.Thread):
             else:
                 self.status = _RECONNECTING
                 self.detail = "Холболт тасарсан — дахин холбож байна…"
-            if self._stop.wait(2.0):
+            if self._stop_event.wait(2.0):
                 break
 
     def _open(self, url: str) -> object | None:
@@ -337,7 +338,7 @@ class _CameraReader(threading.Thread):
                         )
                 return cast("object", cap)
             cap.release()
-            if self._stop.is_set() or not self._active.is_set():
+            if self._stop_event.is_set() or not self._active.is_set():
                 return None
         return None
 
@@ -347,7 +348,7 @@ class _CameraReader(threading.Thread):
         first frame so the tile lights up immediately."""
         deadline = time.monotonic() + _PRIME_TIMEOUT_SEC
         while time.monotonic() < deadline:
-            if self._stop.is_set() or not self._active.is_set():
+            if self._stop_event.is_set() or not self._active.is_set():
                 return False  # stopped or paused mid-prime → drop this attempt
             ok, frame = cap.read()  # type: ignore[attr-defined]
             if ok and frame is not None:
@@ -361,7 +362,7 @@ class _CameraReader(threading.Thread):
     def _consume(self, cap: object) -> None:
         """Pump frames until the stream drops (then the caller reconnects)."""
         fails = 0
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             if not self._active.is_set():
                 return  # paused → drop the capture; run() idles until resumed
             ok, frame = cap.read()  # type: ignore[attr-defined]
@@ -444,7 +445,7 @@ class _CameraReader(threading.Thread):
             else list(range(len(self._snapshot_urls)))
         )
         for i in idxs:
-            if self._stop.is_set() or not self._active.is_set():
+            if self._stop_event.is_set() or not self._active.is_set():
                 return False
             if not _grab(self._snapshot_urls[i]):
                 continue
@@ -454,7 +455,7 @@ class _CameraReader(threading.Thread):
             # Pump this pinned endpoint until it stops/fails repeatedly, then
             # return so run() re-tries RTSP first on the next round.
             fails = 0
-            while not self._stop.wait(_SNAPSHOT_INTERVAL_SEC) and self._active.is_set():
+            while not self._stop_event.wait(_SNAPSHOT_INTERVAL_SEC) and self._active.is_set():
                 if _grab(self._snapshot_urls[i]):
                     fails = 0
                 else:
@@ -513,6 +514,18 @@ class _Tile(ctk.CTkFrame):
             fg="gray60", font=("Segoe UI", 12),
         )
         self._video.pack(fill="both", expand=True)
+
+    def bind_double_click(self, handler: Callable[..., object]) -> None:
+        """Route a double-click anywhere on the tile to `handler`.
+
+        Binding only the outer frame is dead: the inner video Label + holder fill
+        the tile and swallow the event (Tk doesn't propagate <Double-Button-1> to
+        the parent), so double-clicking the actual video area did nothing. Bind
+        the frame AND every child that covers it so the whole tile is clickable.
+        """
+        self.bind("<Double-Button-1>", handler)
+        self._holder.bind("<Double-Button-1>", handler)
+        self._video.bind("<Double-Button-1>", handler)
 
     def set_video_size(self, w: int, h: int) -> None:
         w, h = max(80, int(w)), max(45, int(h))
@@ -611,7 +624,10 @@ class LocalLiveView(ctk.CTkToplevel):
             reader.start()
             self._readers.append(reader)
             tile = _Tile(self._scroll, reader)
-            tile.bind("<Double-Button-1>", lambda _e, t=tile: self._toggle_focus(t))
+            # Bind the frame AND its video Label/holder so a double-click on the
+            # actual video area focuses the tile (the children would otherwise
+            # swallow the event — Tk doesn't bubble it to the parent frame).
+            tile.bind_double_click(lambda _e, t=tile: self._toggle_focus(t))
             self._tiles.append(tile)
 
         self._focused: _Tile | None = None
@@ -722,6 +738,16 @@ class LocalLiveView(ctk.CTkToplevel):
         self._closed = True
         for reader in self._readers:
             reader.stop()
+        # Join the reader threads (bounded) so each VideoCapture/ffmpeg session is
+        # released promptly instead of lingering after the window is gone. Cap the
+        # TOTAL wait so a wedged capture can't hang the UI on close — a 0.4s read
+        # in progress will wake on the stop Event well within budget.
+        deadline = time.monotonic() + 1.5
+        for reader in self._readers:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break  # budget spent — let the daemon thread die with the process
+            reader.join(timeout=remaining)
         self.destroy()
 
 

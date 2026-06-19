@@ -40,6 +40,11 @@ def _slugify(text: str) -> str:
     return s or "cam"
 
 
+def _fmt_res(width: int | None, height: int | None) -> str:
+    """'WxH' when known, else '' — a probe may report a codec without resolution."""
+    return f" {width}x{height}" if width and height else ""
+
+
 def _next_mediamtx_path(prefix: str, existing: set[str]) -> str:
     """Allocate a unique slug like 'cam3_hik' avoiding existing names."""
     i = 1
@@ -135,6 +140,10 @@ def discover(
             keep = typer.confirm(f"  Бүртгэх үү ({dev.ip})?", default=True)
             if not keep:
                 state.ignored_devices.append(dev.ip)
+                # Persist the decline NOW — otherwise (if no later camera is
+                # registered) save_state never runs and the user is re-prompted
+                # for the same device on the next run.
+                save_state(state)
                 continue
 
         username = typer.prompt(
@@ -170,7 +179,7 @@ def discover(
             console.print(f"[red]RTSP probe амжилтгүй: {probe_result.error}[/red]")
             continue
         console.print(
-            f"[green]✅ {probe_result.codec} {probe_result.width}x{probe_result.height}[/green]",
+            f"[green]✅ {probe_result.codec}{_fmt_res(probe_result.width, probe_result.height)}[/green]",
         )
 
         brand_hint = _slugify(dev.manufacturer or "cam")[:8]
@@ -276,10 +285,13 @@ def add_manual() -> None:
         )
         raise typer.Exit(1)
     console.print(
-        f"[green]✅ {result.codec} {result.width}x{result.height} — {result.url}[/green]",
+        f"[green]✅ {result.codec}{_fmt_res(result.width, result.height)} — {result.url}[/green]",
     )
 
     stores = client.list_stores()
+    if not stores:
+        console.print("[red]Backend дээр store байхгүй байна.[/red]")
+        raise typer.Exit(1)
     store_id = stores[0]["id"]
     mediamtx_path = _next_mediamtx_path(template.key, existing_paths)
     name = f"{template.label} — {host}"

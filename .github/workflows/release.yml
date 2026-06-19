@@ -21,10 +21,13 @@ jobs:
   build-and-release:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      # Actions pinned to full commit SHAs (supply-chain: this pipeline
+      # auto-installs binaries on store PCs — a hijacked floating tag would ship
+      # to every machine). Trailing comment = the human-readable version.
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           python-version: "3.11"
 
@@ -42,6 +45,17 @@ jobs:
             Write-Error "Tag '$tag' does not match __version__ '$code'. Bump src/sentry_agent_pc/__init__.py first."
             exit 1
           }
+
+      # Test gate — fail-fast BEFORE building/publishing, so a tag pushed from an
+      # unverified branch can never ship untested code. Mirrors ci.yml's checks.
+      - name: Ruff — lint
+        run: uv run ruff check src tests
+
+      - name: Mypy — strict type-check
+        run: uv run mypy src/sentry_agent_pc
+
+      - name: Pytest — unit tests
+        run: uv run pytest tests/ -q
 
       - name: Build .exe
         shell: pwsh
@@ -80,7 +94,7 @@ jobs:
           Get-Item "dist\ChipmoSentryAgent-Setup.exe" | Select-Object Name, Length
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
             dist/ChipmoSentryAgent-Setup.exe

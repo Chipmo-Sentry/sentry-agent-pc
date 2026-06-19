@@ -23,14 +23,13 @@ import customtkinter as ctk
 
 from sentry_agent_pc.discovery import rtsp_probe
 from sentry_agent_pc.gui import widgets
+from sentry_agent_pc.gui.widgets import BRAND_ORANGE, BRAND_ORANGE_HOVER
 from sentry_agent_pc.logging_setup import get_logger
 from sentry_agent_pc.services import discovery_service as svc
 from sentry_agent_pc.settings import get_settings
 from sentry_agent_pc.state import CameraRecord
 
 log = get_logger("sentry_agent_pc.gui.edit")
-
-CHIPMO_ORANGE = "#FF8A1F"
 
 
 def parse_rtsp(url: str) -> dict[str, str]:
@@ -90,8 +89,8 @@ class EditCameraDialog(ctk.CTkToplevel):
             command=self.destroy,
         ).pack(side="right", padx=(8, 0))
         self.save_btn = ctk.CTkButton(
-            btn_row, text="Хадгалах", fg_color=CHIPMO_ORANGE,
-            hover_color="#E57A12", command=self._submit,
+            btn_row, text="Хадгалах", fg_color=BRAND_ORANGE,
+            hover_color=BRAND_ORANGE_HOVER, command=self._submit,
         )
         self.save_btn.pack(side="right")
 

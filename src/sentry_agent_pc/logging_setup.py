@@ -13,10 +13,13 @@ from sentry_agent_pc.settings import get_settings
 
 def configure_logging() -> None:
     settings = get_settings()
+    # Single source of truth for the level — keep basicConfig and structlog's
+    # filtering wrapper consistent so LOG_LEVEL=DEBUG actually shows DEBUG lines.
+    level = getattr(logging, settings.log_level.upper(), logging.INFO)
     logging.basicConfig(
         format="%(message)s",
         stream=sys.stdout,
-        level=getattr(logging, settings.log_level.upper(), logging.INFO),
+        level=level,
     )
     structlog.configure(
         processors=[
@@ -25,7 +28,7 @@ def configure_logging() -> None:
             structlog.processors.TimeStamper(fmt="iso", utc=True),
             structlog.dev.ConsoleRenderer(colors=False),
         ],
-        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+        wrapper_class=structlog.make_filtering_bound_logger(level),
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
     )

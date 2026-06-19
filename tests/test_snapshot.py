@@ -60,3 +60,24 @@ def test_fetch_snapshot_no_credentials() -> None:
     url = "http://cam/snap.jpg"
     respx.get(url).mock(return_value=httpx.Response(200, content=_JPEG))
     assert fetch_snapshot(url, None, None) == _JPEG
+
+
+@respx.mock
+def test_fetch_snapshot_basic_transport_error_falls_back_to_digest() -> None:
+    # #19: a Digest-only camera can reset/refuse the Basic attempt. The first
+    # httpx.HTTPError must NOT abort the loop — Digest should still be tried.
+    url = "http://cam/snapshot.jpg"
+
+    calls = {"n": 0}
+
+    def _side_effect(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # First attempt (Basic) is reset at the transport layer.
+            raise httpx.ConnectError("reset", request=request)
+        # Second attempt (Digest) succeeds.
+        return httpx.Response(200, content=_JPEG)
+
+    respx.get(url).mock(side_effect=_side_effect)
+    assert fetch_snapshot(url, "admin", "pw") == _JPEG
+    assert calls["n"] == 2  # both auth schemes were attempted

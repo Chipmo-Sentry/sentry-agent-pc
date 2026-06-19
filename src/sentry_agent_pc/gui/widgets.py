@@ -8,7 +8,13 @@ import customtkinter as ctk
 
 from sentry_agent_pc import resources
 
-CHIPMO_ORANGE = "#FF8A1F"
+# Canonical brand-orange accent, defined ONCE here and imported everywhere else
+# (dialogs, app header, spinner). Previously each gui file hardcoded its own
+# literal — #FF8A1F in most dialogs, #E68425 in the app header, #E57A12 hover —
+# which drifted independently. Unify on the majority value.
+BRAND_ORANGE = "#FF8A1F"
+BRAND_ORANGE_HOVER = "#E57A12"
+CHIPMO_ORANGE = BRAND_ORANGE  # alias kept for the existing call sites
 
 
 def setup_dialog(
