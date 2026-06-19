@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from sentry_agent_pc.gui.local_view import _CameraReader, _reader_urls, grid_dims
@@ -50,3 +52,53 @@ def test_grid_dims_layout() -> None:
 def test_grid_dims_custom_cols() -> None:
     assert grid_dims(6, max_cols=3) == (3, 2)
     assert grid_dims(2, max_cols=3) == (2, 1)
+
+
+def test_tile_double_click_binds_video_and_holder() -> None:
+    """The double-click handler must reach the inner video Label + holder, not
+    just the outer frame — otherwise clicking the actual video area does nothing
+    (the children swallow the event; Tk doesn't bubble it to the parent)."""
+    ctk = pytest.importorskip("customtkinter")
+    try:
+        root = ctk.CTk()
+    except Exception:  # noqa: BLE001 — no display (headless) → skip
+        pytest.skip("no Tk display available")
+    try:
+        root.withdraw()
+        reader = _CameraReader("cam", ["rtsp://x/1"])
+        from sentry_agent_pc.gui.local_view import _Tile
+
+        tile = _Tile(root, reader)
+        # Spy each covering widget's bind() — robust across Tk/CTk query-form
+        # quirks: we assert the sequence was actually bound, not introspect Tcl.
+        targets = (tile, tile._holder, tile._video)
+        seqs: list[list[str]] = [[] for _ in targets]
+
+        def make_spy(orig: object, sink: list[str]) -> object:
+            def spy(sequence: object = None, command: object = None, *a: object, **k: object) -> object:
+                if sequence is not None and command is not None:
+                    sink.append(str(sequence))
+                return orig(sequence, command, *a, **k)  # type: ignore[operator]
+            return spy
+
+        for w, sink in zip(targets, seqs, strict=True):
+            w.bind = make_spy(w.bind, sink)  # type: ignore[method-assign]
+        tile.bind_double_click(lambda _e: None)
+        # Every widget that covers the tile must carry the binding.
+        for sink in seqs:
+            assert "<Double-Button-1>" in sink
+    finally:
+        root.destroy()
+
+
+def test_reader_stops_and_joins_within_budget() -> None:
+    """stop() must let a running reader thread exit promptly so _on_close() can
+    join it (and release the VideoCapture) without hanging the UI on close."""
+    pytest.importorskip("cv2")  # run() imports cv2 before its loop
+    r = _CameraReader("cam", ["rtsp://127.0.0.1:1/none"])
+    r.pause()  # idle cheaply (no VideoCapture) so the test is deterministic + fast
+    r.start()
+    time.sleep(0.05)
+    r.stop()
+    r.join(timeout=1.5)  # mirrors _on_close()'s bounded join
+    assert not r.is_alive()

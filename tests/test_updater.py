@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -100,3 +101,54 @@ def test_verify_checksum_accepts_match(tmp_path) -> None:
     good = hashlib.sha256(b"data").hexdigest()
     updater._verify_checksum(_info(expected_sha256=good.upper()), good, f)  # no raise
     assert f.exists()  # left in place on success
+
+
+# --- robocopy /MIR mirror + safety guard (#14) ------------------------------
+
+
+def test_is_safe_mirror_dest_accepts_real_install_dir() -> None:
+    # A normal nested install dir (drive + ≥2 components) is safe to mirror.
+    assert updater._is_safe_mirror_dest(Path(r"C:\Users\Acer\AppData\Local\ChipmoSentryAgent"))
+
+
+def test_is_safe_mirror_dest_rejects_drive_root() -> None:
+    # A drive root would be catastrophic to purge with /MIR.
+    assert not updater._is_safe_mirror_dest(Path("C:\\"))
+
+
+def test_is_safe_mirror_dest_rejects_shallow_path() -> None:
+    # Drive + a single component is too shallow — refuse to mirror.
+    assert not updater._is_safe_mirror_dest(Path(r"C:\Foo"))
+
+
+def test_is_safe_mirror_dest_rejects_user_profile_root(monkeypatch) -> None:
+    profile = r"C:\Users\Acer"
+    monkeypatch.setenv("USERPROFILE", profile)
+    # The profile root itself and its parent (\Users) must never be mirrored.
+    assert not updater._is_safe_mirror_dest(Path(profile))
+    assert not updater._is_safe_mirror_dest(Path(profile).parent)
+
+
+def test_robocopy_line_uses_mir_for_safe_dest() -> None:
+    line = updater._robocopy_line(Path(r"C:\Users\Acer\AppData\Local\ChipmoSentryAgent"))
+    assert "/MIR" in line
+    assert "/E " not in line  # not the non-purging fallback
+    assert '"%SRC%" "%DST%"' in line
+
+
+def test_robocopy_line_falls_back_to_e_for_unsafe_dest() -> None:
+    # An unsafe DST must NOT mirror/purge — degrade to /E (copy, no purge).
+    line = updater._robocopy_line(Path("C:\\"))
+    assert "/MIR" not in line
+    assert "/E" in line
+
+
+def test_build_update_script_embeds_mir_for_real_install() -> None:
+    script = updater._build_update_script(
+        extract_dir=Path(r"C:\Temp\extract"),
+        install_dir=Path(r"C:\Users\Acer\AppData\Local\ChipmoSentryAgent"),
+        exe=Path(r"C:\Users\Acer\AppData\Local\ChipmoSentryAgent\ChipmoSentryAgent.exe"),
+        log_path=Path(r"C:\Temp\chipmo_update.log"),
+    )
+    assert "robocopy" in script
+    assert "/MIR" in script

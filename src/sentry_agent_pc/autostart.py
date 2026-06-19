@@ -45,10 +45,17 @@ def is_enabled() -> bool:
 
 
 def enable() -> bool:
-    """Register the agent to start on login. Returns True on success."""
+    """Register the agent to start on login. Returns True on success.
+
+    On non-Windows this is a clean no-op success (True) — auto-start isn't
+    applicable in dev, and callers should not read that as a failure.
+
+    Always (re)writes the CURRENT exe path, so if the install was relocated
+    (e.g. by a self-update) the Run entry is corrected on the next enable().
+    """
     if not _is_windows():
         log.info("autostart.skip_non_windows")
-        return False
+        return True
     import winreg
 
     try:
@@ -62,9 +69,13 @@ def enable() -> bool:
 
 
 def disable() -> bool:
-    """Remove the auto-start entry. Returns True if removed or already absent."""
+    """Remove the auto-start entry. Returns True if removed or already absent.
+
+    On non-Windows this is a clean no-op success (True): there's nothing to
+    remove, which is the desired "off" state — not a failure.
+    """
     if not _is_windows():
-        return False
+        return True
     import winreg
 
     try:

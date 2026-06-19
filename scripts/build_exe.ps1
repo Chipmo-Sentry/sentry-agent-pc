@@ -58,9 +58,12 @@ if (-not (Test-Path $ffExe)) {
     New-Item -ItemType Directory -Force -Path $mtxBinDir | Out-Null
     $ffZip = Join-Path $env:TEMP "ffmpeg_win.zip"
     # gyan.dev = the Windows build linked from ffmpeg.org; "essentials" includes
-    # libx264 (needed by the pusher's transcode path). Pin via the versioned
-    # packages URL if reproducibility is required.
-    $ffUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+    # libx264 (needed by the pusher's transcode path).
+    # PINNED to a versioned package (NOT the rolling ffmpeg-release-essentials.zip)
+    # so builds are reproducible — every release ships the exact same ffmpeg.
+    # To bump: pick a newer filename from https://www.gyan.dev/ffmpeg/builds/
+    # (the "packages/ffmpeg-<ver>-essentials_build.zip" link) and update below.
+    $ffUrl = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.0.1-essentials_build.zip"
     Write-Host "==> Downloading ffmpeg (essentials) ..." -ForegroundColor Cyan
     Invoke-WebRequest -Uri $ffUrl -OutFile $ffZip -UseBasicParsing
     $ffTmp = Join-Path $env:TEMP "ffmpeg_extract"

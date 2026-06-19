@@ -71,7 +71,10 @@ def fetch_snapshot(
         try:
             resp = httpx.get(url, auth=auth, timeout=timeout, follow_redirects=True)
         except httpx.HTTPError:
-            return None  # connection refused / timeout — no point trying the other auth
+            # This scheme's request failed at the transport level (refused/reset/
+            # timeout). A camera that only accepts Digest can reset the Basic
+            # attempt, so try the next auth scheme rather than giving up here.
+            continue
         if resp.status_code == 200 and resp.content[:2] == _JPEG_MAGIC:
             return resp.content
         if resp.status_code not in (401, 403):

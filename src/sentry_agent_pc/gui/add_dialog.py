@@ -17,13 +17,12 @@ import customtkinter as ctk
 from sentry_agent_pc.discovery import manual as manual_mod
 from sentry_agent_pc.discovery import rtsp_probe
 from sentry_agent_pc.gui import widgets
+from sentry_agent_pc.gui.widgets import BRAND_ORANGE, BRAND_ORANGE_HOVER
 from sentry_agent_pc.logging_setup import get_logger
 from sentry_agent_pc.services import discovery_service as svc
 from sentry_agent_pc.settings import get_settings
 
 log = get_logger("sentry_agent_pc.gui.add")
-
-CHIPMO_ORANGE = "#FF8A1F"
 
 
 class AddCameraDialog(ctk.CTkToplevel):
@@ -45,8 +44,8 @@ class AddCameraDialog(ctk.CTkToplevel):
         ctk.CTkButton(btn_row, text="Болих", fg_color="transparent", border_width=1,
                       command=self.destroy).pack(side="right", padx=(8, 0))
         self.add_btn = ctk.CTkButton(
-            btn_row, text="Шалгах ба нэмэх", fg_color=CHIPMO_ORANGE,
-            hover_color="#E57A12", command=self._submit,
+            btn_row, text="Шалгах ба нэмэх", fg_color=BRAND_ORANGE,
+            hover_color=BRAND_ORANGE_HOVER, command=self._submit,
         )
         self.add_btn.pack(side="right")
 
@@ -111,7 +110,13 @@ class AddCameraDialog(ctk.CTkToplevel):
             self.notes_lbl.configure(text="")
 
     def _submit(self) -> None:
-        brand = self.brand_by_label[self.brand_var.get()]
+        # .get() (not subscript) — a stale/unknown StringVar value must not raise
+        # KeyError in the button callback. Mirror _on_brand_change and fall back
+        # to the first brand if the label no longer matches a known brand.
+        brand = self.brand_by_label.get(self.brand_var.get())
+        if brand is None:
+            brand = self.brands[0]
+            self.brand_var.set(brand.label)
         host = self.ip_entry.get().strip()
         if not host:
             self._status("IP хаяг оруулна уу.", "#FF6B6B")

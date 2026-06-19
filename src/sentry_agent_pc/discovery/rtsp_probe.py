@@ -25,8 +25,18 @@ _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # Sample ffmpeg lines we care about:
 #   Stream #0:0: Video: h264 (Main), yuvj420p(pc, bt709), 1920x1080, 25 tbr, 90k tbn
 #   Stream #0:0: Video: hevc (Main), yuv420p(tv, bt709), 2688x1520, 20 fps, 50 tbr, 90k tbn
+# Codec detection is INDEPENDENT of resolution: some cameras print a Video line
+# whose codec we recognise but with no inline WxH token (e.g. mjpeg or a stream
+# that ffmpeg couldn't fully probe). We treat such a line as ok=True with
+# width/height = None rather than wrongly reporting "no Stream/Video line".
 _CODEC_RE = re.compile(
-    r"Video:\s+(h264|hevc|h265|mjpeg)\b.*?(\d{3,5})x(\d{3,5})",
+    r"Video:\s+(h264|hevc|h265|mjpeg)\b",
+    re.IGNORECASE,
+)
+# Resolution is parsed best-effort with a second, optional regex. The codec name
+# prefix anchors it to the Video line so we don't pick up an unrelated WxH token.
+_RES_RE = re.compile(
+    r"Video:\s+(?:h264|hevc|h265|mjpeg)\b.*?(\d{3,5})x(\d{3,5})",
     re.IGNORECASE,
 )
 
@@ -96,8 +106,14 @@ def probe(url: str, timeout_sec: int | None = None) -> ProbeResult:
         )
 
     codec = m.group(1).lower()
-    width = int(m.group(2))
-    height = int(m.group(3))
+    # Resolution is best-effort — a recognised codec is enough to call the probe
+    # ok; width/height stay None when the Video line carried no inline WxH token.
+    width: int | None = None
+    height: int | None = None
+    res = _RES_RE.search(stderr)
+    if res is not None:
+        width = int(res.group(1))
+        height = int(res.group(2))
     is_h264 = codec == "h264"
     return ProbeResult(
         ok=True,
@@ -128,7 +144,10 @@ def probe_first_h264(urls: list[str]) -> ProbeResult:
     If all are H.265, returns the FIRST H.265 result so caller can give a
     useful error message ("camera served H.265 — change codec in web UI").
     """
+    if not urls:
+        return ProbeResult(ok=False, url="", error="no candidate URLs")
     fallback: ProbeResult | None = None
+    r = ProbeResult(ok=False, url="", error="no candidate URLs")
     for url in urls:
         r = probe(url)
         if r.ok and r.is_h264:
@@ -138,4 +157,4 @@ def probe_first_h264(urls: list[str]) -> ProbeResult:
     if fallback is not None:
         return fallback
     # All failed entirely — return the last error
-    return r  # noqa: F821 — `r` defined in the loop
+    return r

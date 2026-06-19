@@ -36,6 +36,7 @@ from sentry_agent_pc.gui.update_dialog import (
     auto_update_in_background,
     check_in_background,
 )
+from sentry_agent_pc.gui.widgets import BRAND_ORANGE, BRAND_ORANGE_HOVER
 from sentry_agent_pc.logging_setup import get_logger
 from sentry_agent_pc.services import discovery_service as svc
 from sentry_agent_pc.settings import get_settings
@@ -51,8 +52,8 @@ ctk.set_default_color_theme("blue")
 # every unstyled button a bright generic blue that clashed with our orange CTAs.
 # Override the default button colour to brand navy so the app reads as one
 # coherent navy + orange scheme; explicit orange stays the primary-action accent.
-BRAND_ORANGE = "#E68425"
-BRAND_ORANGE_HOVER = "#CF7420"
+# The orange accent + hover live in widgets.py so every gui file shares one value
+# (the header used to carry its own slightly-different #E68425 tone).
 BRAND_NAVY = "#2A4A73"
 BRAND_NAVY_HOVER = "#36598A"
 CHIPMO_ORANGE = BRAND_ORANGE  # module-wide alias (kept for the existing call sites)
@@ -117,6 +118,13 @@ class AgentApp(ctk.CTk):
         # refresh). Updated by the periodic _tick_push_status loop.
         self._push_labels: dict[str, ctk.CTkLabel] = {}
 
+        # Teardown guard: set in quit_app() so a pending self-rescheduling `after`
+        # tick (or a background done() callback) can't touch a destroyed widget
+        # after destroy() (TclError). Each periodic loop stores its pending id here
+        # so quit_app() can cancel the in-flight tick too.
+        self._closing = False
+        self._after_ids: dict[str, str] = {}
+
         self._set_window_icon()
 
         self._build_header()
@@ -127,20 +135,22 @@ class AgentApp(ctk.CTk):
         self.refresh_cameras()
         self._check_backend_async()
         # First run / unpaired → guide the user straight to the pairing screen.
+        # Routed through _schedule so quit_app() cancels it — quitting within the
+        # 400ms must not pop a pairing dialog after the window is destroyed.
         if not load_state().is_paired:
-            self.after(400, self.open_pairing)
+            self._schedule("open_pairing", 400, self.open_pairing)
         # Self-update: silent check shortly after launch, then on a periodic timer.
         # With auto_update on (default) a newer release is downloaded + applied
         # automatically; this flag stops overlapping checks from stacking it.
         self._update_in_progress = False
-        self.after(2500, self._auto_check_update)
+        self._schedule("auto_check_update", 2500, self._auto_check_update)
         # Live push status indicators (5s) + periodic stream-config reconcile (30s).
-        self.after(5000, self._tick_push_status)
-        self.after(30000, self._tick_periodic_refresh)
+        self._schedule("push_status", 5000, self._tick_push_status)
+        self._schedule("periodic_refresh", 30000, self._tick_periodic_refresh)
         # Periodic heartbeat (30s) — keeps the computer "online" in the cloud. The
         # web UI marks it offline after 120s without a beat, so a one-time beat at
         # startup made the PC flip offline a couple minutes after launch.
-        self.after(30000, self._tick_heartbeat)
+        self._schedule("heartbeat", 30000, self._tick_heartbeat)
 
         # System tray icon + minimize-to-tray (closing hides instead of quitting).
         self._tray = TrayController(self)
@@ -223,7 +233,7 @@ class AgentApp(ctk.CTk):
             height=40,
             font=ctk.CTkFont(size=14, weight="bold"),
             fg_color=CHIPMO_ORANGE,
-            hover_color="#E57A12",
+            hover_color=BRAND_ORANGE_HOVER,
             command=self.open_add,
         ).pack(side="left", padx=(10, 0))
 
@@ -366,30 +376,43 @@ class AgentApp(ctk.CTk):
             daemon=True,
         ).start()
 
+    def _schedule(self, key: str, delay_ms: int, fn: Callable[[], None]) -> None:
+        """Record a self-rescheduling `after` so quit_app() can cancel the pending
+        tick. No-op once closing — keeps a final tick from re-arming itself."""
+        if self._closing:
+            return
+        self._after_ids[key] = self.after(delay_ms, fn)
+
     def _tick_push_status(self) -> None:
         """Refresh the per-camera push indicators from the StreamPusher state."""
+        if self._closing:
+            return
         try:
             self._update_push_indicators()
         finally:
-            self.after(5000, self._tick_push_status)
+            self._schedule("push_status", 5000, self._tick_push_status)
 
     def _tick_periodic_refresh(self) -> None:
         """Periodically reconcile relays so backend stream-config changes
         (push toggled, creds rotated) propagate without a manual refresh."""
+        if self._closing:
+            return
         try:
             self._refresh_streaming()
         finally:
-            self.after(30000, self._tick_periodic_refresh)
+            self._schedule("periodic_refresh", 30000, self._tick_periodic_refresh)
 
     def _tick_heartbeat(self) -> None:
         """Periodic heartbeat so the cloud keeps this computer marked online.
         _check_backend_async() POSTs /api/v1/agent/heartbeat (and refreshes the
         header label). Runs while minimized to tray — only quitting stops it."""
+        if self._closing:
+            return
         try:
             if load_state().is_paired:
                 self._check_backend_async()
         finally:
-            self.after(30000, self._tick_heartbeat)
+            self._schedule("heartbeat", 30000, self._tick_heartbeat)
 
     def _update_push_indicators(self) -> None:
         ctrl = get_stream_controller()
@@ -521,6 +544,10 @@ class AgentApp(ctk.CTk):
             return {"ok": True, "alive": alive, "changed": changed}
 
         def done(result: Any) -> None:
+            # Refresh FIRST: refresh_cameras() → _render_camera_list() resets the
+            # status to "{n} камер бүртгэлтэй", so the confirmation must be set
+            # AFTER it or the user never sees it.
+            self.refresh_cameras()
             if isinstance(result, dict) and not result.get("ok", True):
                 self.set_status(f"⚠ Дахин холбож чадсангүй: {str(result.get('error', ''))[:60]}")
             elif result.get("changed"):
@@ -531,7 +558,6 @@ class AgentApp(ctk.CTk):
                 self.set_status(
                     "⚠ Камер хариу өгсөнгүй — IP/тэжээл/сүлжээгээ шалгаад дахин оролдоно уу"
                 )
-            self.refresh_cameras()
 
         self._run_bg(work, done, status="Дахин холбож байна…")
 
@@ -560,11 +586,13 @@ class AgentApp(ctk.CTk):
             return {"ok": True}
 
         def done(result: Any) -> None:
+            # Refresh FIRST so the deleted row disappears, THEN set the
+            # confirmation — refresh_cameras() resets the status text otherwise.
+            self.refresh_cameras()
             if isinstance(result, dict) and not result.get("ok", True):
                 self.set_status(f"⚠ Устгаж чадсангүй: {result.get('error', '')[:60]}")
             else:
                 self.set_status("Камер устгагдлаа")
-            self.refresh_cameras()
 
         self._run_bg(work, done, status="Устгаж байна…")
 
@@ -641,7 +669,15 @@ class AgentApp(ctk.CTk):
         self.focus_force()
 
     def quit_app(self) -> None:
-        """Fully exit: stop tray + stream relays, then destroy the window."""
+        """Fully exit: stop tray + stream relays, then destroy the window.
+
+        Sets _closing FIRST and cancels every pending self-rescheduling `after`
+        tick so none fire after destroy() and touch a dead widget (TclError)."""
+        self._closing = True
+        for after_id in self._after_ids.values():
+            with contextlib.suppress(tk.TclError):
+                self.after_cancel(after_id)
+        self._after_ids.clear()
         try:
             get_stream_controller().stop()
         except Exception as e:  # noqa: BLE001
@@ -656,10 +692,14 @@ class AgentApp(ctk.CTk):
         it with only a tray toast, no click. Otherwise it falls back to the update
         dialog (manual apply / dev "download manually" link). Re-arms itself to
         re-check every `update_check_interval_hours`."""
+        if self._closing:
+            return
         # Re-arm the periodic check first, so a failure anywhere below can't stop
         # future checks. Floor the interval so a misconfig can't hammer GitHub.
         interval_h = max(0.25, get_settings().update_check_interval_hours)
-        self.after(int(interval_h * 3600 * 1000), self._auto_check_update)
+        self._schedule(
+            "auto_check_update", int(interval_h * 3600 * 1000), self._auto_check_update
+        )
 
         if self._update_in_progress:
             return  # a download/apply from a previous check is still underway
@@ -715,6 +755,10 @@ class AgentApp(ctk.CTk):
                 return {"ok": False, "error": str(e)}
 
         def done(result: dict[str, Any]) -> None:
+            # The heartbeat tick runs this on a thread; if the window was quit
+            # while it was in flight, configuring backend_label raises TclError.
+            if self._closing or not self.winfo_exists():
+                return
             if result.get("ok"):
                 self.backend_label.configure(
                     text=f"✅ {store}",
@@ -746,12 +790,20 @@ class AgentApp(ctk.CTk):
             except Exception as e:  # noqa: BLE001
                 log.exception("bg_task_failed")
                 result = {"ok": False, "error": str(e)}
-            self.after(0, lambda: on_done(result))
+            # The window may have been quit while this ran on a daemon thread —
+            # scheduling onto a destroyed widget raises TclError.
+            if self._closing:
+                return
+            with contextlib.suppress(tk.TclError):
+                self.after(0, lambda: on_done(result))
 
         threading.Thread(target=runner, daemon=True).start()
 
     def set_status(self, text: str) -> None:
-        self.status_label.configure(text=text)
+        if self._closing:
+            return
+        with contextlib.suppress(tk.TclError):
+            self.status_label.configure(text=text)
 
 
 class PairingDialog(ctk.CTkToplevel):
@@ -787,7 +839,7 @@ class PairingDialog(ctk.CTkToplevel):
             btn_row,
             text="Холбох",
             fg_color=CHIPMO_ORANGE,
-            hover_color="#E57A12",
+            hover_color=BRAND_ORANGE_HOVER,
             command=self._pair,
         )
         self.connect_btn.pack(side="right")

@@ -28,6 +28,7 @@ names.
 from __future__ import annotations
 
 import contextlib
+import os
 import subprocess
 import threading
 import time
@@ -208,7 +209,10 @@ class LocalMediaMTX:
         assert self._exe is not None
         # Truncate the log each start so it can't grow unbounded over a long run.
         self._logfile = self._log_path.open("wb")  # noqa: SIM115 — closed in _stop_proc
-        creationflags = _CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+        # Windows-only flag: guard on os.name, not hasattr — the attribute exists
+        # on every modern OS, so hasattr would set the flag on Linux/Mac too →
+        # Popen ValueError (bites dev/test).
+        creationflags = _CREATE_NO_WINDOW if os.name == "nt" else 0
         try:
             self._proc = subprocess.Popen(
                 [self._exe, str(self._config_path)],

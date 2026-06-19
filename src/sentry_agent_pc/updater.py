@@ -259,6 +259,49 @@ def _verify_checksum(info: UpdateInfo, actual_hex: str, dest: Path) -> None:
         )
 
 
+def _is_safe_mirror_dest(install_dir: Path) -> bool:
+    """True only when `install_dir` is safe to /MIR (mirror = purge) into.
+
+    `/MIR` deletes anything in the destination that isn't in the source, so an
+    accidentally-wrong DST (a drive root like ``C:\\``, the user-profile root, or
+    an empty path) would wipe far more than the app folder. We refuse to mirror
+    unless DST is a real, sufficiently-nested directory. The caller falls back to
+    a non-purging copy (``/E``) when this returns False — stale files are the
+    lesser evil versus nuking the wrong tree.
+    """
+    raw = str(install_dir).strip()
+    if not raw:
+        return False
+    resolved = install_dir.resolve()
+    # A drive root (C:\, D:\) or filesystem root has no parent of its own.
+    if resolved == resolved.parent:
+        return False
+    # The user-profile root (%USERPROFILE%) and its immediate parent (the
+    # \Users dir) must never be mirrored into.
+    profile = os.environ.get("USERPROFILE", "")
+    if profile:
+        profile_path = Path(profile).resolve()
+        if resolved == profile_path or resolved == profile_path.parent:
+            return False
+    # Require at least a drive + two path components (e.g. C:\A\B), so the real
+    # install dir (…\AppData\Local\ChipmoSentryAgent) passes but shallow paths
+    # (C:\, C:\Foo) are rejected.
+    return len(resolved.parts) >= 3
+
+
+def _robocopy_line(install_dir: Path) -> str:
+    """The single robocopy command for the update .bat.
+
+    Uses ``/MIR`` (mirror) so the install dir matches the new release EXACTLY —
+    files dropped in an older release are purged, killing version-skew. Because
+    ``/MIR`` purges, we only mirror when `_is_safe_mirror_dest` vouches for DST;
+    otherwise we fall back to ``/E`` (copy without purge) so a misdetected path
+    can never wipe the wrong tree.
+    """
+    mode = "/MIR" if _is_safe_mirror_dest(install_dir) else "/E"
+    return f'robocopy "%SRC%" "%DST%" {mode} /R:1 /W:1 /NFL /NDL /NJH /NJS /NP >nul'
+
+
 def _build_update_script(
     extract_dir: Path, install_dir: Path, exe: Path, log_path: Path
 ) -> str:
@@ -277,6 +320,10 @@ def _build_update_script(
       • The retry-`robocopy` loop IS the wait: while the app is running its
         .exe/DLLs are locked and robocopy returns ≥8; the instant the app exits
         the copy succeeds. (robocopy rc < 8 = success.)
+      • `/MIR` mirrors the new release over the install dir so files removed in
+        a newer release don't linger (version-skew) — but only when the DST is a
+        vetted, sufficiently-nested path (see `_is_safe_mirror_dest`), since
+        `/MIR` purges; otherwise we degrade to `/E` (copy, no purge).
       • If the copy ultimately fails we STILL relaunch the existing exe, so the
         app never just vanishes.
       • Everything is logged so a failed update is diagnosable.
@@ -297,7 +344,7 @@ ping -n 2 127.0.0.1 >nul
 
 set /a n=0
 :try
-robocopy "%SRC%" "%DST%" /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP >nul
+{_robocopy_line(install_dir)}
 if %errorlevel% lss 8 (
     echo [ok] copied after %n% retries rc=%errorlevel% >> "%LOG%"
     goto launch

@@ -7,6 +7,10 @@ in the encrypted state file after pairing.
 
 from __future__ import annotations
 
+import os
+import tempfile
+from pathlib import Path
+
 from sentry_agent_pc.settings import DEFAULT_CONFIG_DIR
 
 ENV_PATH = DEFAULT_CONFIG_DIR / ".env"
@@ -40,13 +44,30 @@ def frontend_url() -> str:
 
 
 def write_config(backend_url: str, frontend_url: str | None = None) -> None:
-    """Write BACKEND_URL (+ FRONTEND_URL) to the .env (overwrites whole file).
+    """Update BACKEND_URL (+ FRONTEND_URL) in the .env, PRESERVING other keys.
+
+    Reads the full existing key set (LOG_LEVEL, AUTO_UPDATE, DEV_TOKEN, …),
+    updates only BACKEND_URL/FRONTEND_URL, then re-emits ALL keys in their
+    original order (new keys appended). Writes atomically (tmp in same dir +
+    os.replace) so a crash mid-write can't truncate the file.
 
     If `frontend_url` is omitted, the existing/configured value is preserved.
     """
     DEFAULT_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    fe = (frontend_url or read_config().get("FRONTEND_URL") or DEFAULT_FRONTEND_URL).strip()
-    ENV_PATH.write_text(
-        f"BACKEND_URL={backend_url.strip()}\nFRONTEND_URL={fe}\n",
-        encoding="utf-8",
-    )
+    existing = read_config()  # full key set, not just BACKEND/FRONTEND
+    fe = (frontend_url or existing.get("FRONTEND_URL") or DEFAULT_FRONTEND_URL).strip()
+
+    merged = dict(existing)  # preserves insertion order from the file
+    merged["BACKEND_URL"] = backend_url.strip()
+    merged["FRONTEND_URL"] = fe
+
+    body = "".join(f"{key}={val}\n" for key, val in merged.items())
+
+    fd, tmp_name = tempfile.mkstemp(dir=str(DEFAULT_CONFIG_DIR), prefix=".env-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        Path(tmp_name).replace(ENV_PATH)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
