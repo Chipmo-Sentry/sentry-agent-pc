@@ -46,6 +46,38 @@ if (-not (Test-Path $mtxExe)) {
     Write-Host "==> MediaMTX already present at $mtxExe" -ForegroundColor Cyan
 }
 
+# --- Bundle ffmpeg (REQUIRED) -----------------------------------------------
+# The RTSP probe AND the cloud push relay both spawn ffmpeg, so the agent can do
+# NOTHING without it. Unlike MediaMTX (optional fan-out, non-fatal) a missing
+# ffmpeg must FAIL the build — shipping a release without it silently breaks
+# every non-ONVIF camera + all streaming on a clean store PC. Dropped into the
+# same bin\ dir that PyInstaller bundles via --add-data below.
+# $ErrorActionPreference=Stop above makes the download/extract failures fatal.
+$ffExe = Join-Path $mtxBinDir "ffmpeg.exe"
+if (-not (Test-Path $ffExe)) {
+    New-Item -ItemType Directory -Force -Path $mtxBinDir | Out-Null
+    $ffZip = Join-Path $env:TEMP "ffmpeg_win.zip"
+    # gyan.dev = the Windows build linked from ffmpeg.org; "essentials" includes
+    # libx264 (needed by the pusher's transcode path). Pin via the versioned
+    # packages URL if reproducibility is required.
+    $ffUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+    Write-Host "==> Downloading ffmpeg (essentials) ..." -ForegroundColor Cyan
+    Invoke-WebRequest -Uri $ffUrl -OutFile $ffZip -UseBasicParsing
+    $ffTmp = Join-Path $env:TEMP "ffmpeg_extract"
+    Remove-Item -Recurse -Force $ffTmp -ErrorAction SilentlyContinue
+    Expand-Archive -Path $ffZip -DestinationPath $ffTmp -Force
+    # Folder name carries the version (e.g. ffmpeg-7.1-essentials_build\bin) —
+    # locate the exe rather than hard-coding the path.
+    $ffSrc = Get-ChildItem -Path $ffTmp -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
+    if (-not $ffSrc) {
+        Write-Error "ffmpeg.exe not found in the downloaded archive — refusing to ship a build that cannot stream."
+    }
+    Copy-Item $ffSrc.FullName $ffExe -Force
+    Write-Host "==> ffmpeg bundled at $ffExe" -ForegroundColor Green
+} else {
+    Write-Host "==> ffmpeg already present at $ffExe" -ForegroundColor Cyan
+}
+
 # Resolve customtkinter package dir (contains assets/ themes the GUI loads)
 $ctkPath = uv run python -c "import customtkinter, os; print(os.path.dirname(customtkinter.__file__))"
 Write-Host "==> customtkinter at: $ctkPath" -ForegroundColor Cyan

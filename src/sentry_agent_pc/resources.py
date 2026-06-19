@@ -62,3 +62,31 @@ def resolve_mediamtx_exe(configured: str | None = None) -> str | None:
     if bundled is not None:
         return str(bundled)
     return shutil.which(configured or "mediamtx")
+
+
+def resolve_ffmpeg_exe(configured: str | None = None) -> str:
+    """Best path to an ffmpeg binary. ALWAYS returns a string (never None) so the
+    caller spawns it and surfaces a clear "not found" if it's truly absent.
+
+    Priority: an explicit absolute ``configured`` path (the founder's .env) → the
+    bundled binary (shipped in every release) → ``ffmpeg`` on PATH → the bare name
+    as a last resort.
+
+    Unlike MediaMTX (optional fan-out), ffmpeg is REQUIRED — the RTSP probe and the
+    cloud push relay both spawn it — so it is bundled with the build and this
+    resolver normally hits the bundled copy on a clean store PC.
+    """
+    if configured and configured not in ("", "ffmpeg") and Path(configured).exists():
+        return configured
+    bundled = bundled_binary("ffmpeg.exe")
+    if bundled is not None:
+        return str(bundled)
+    return shutil.which(configured or "ffmpeg") or (configured or "ffmpeg")
+
+
+def ffmpeg_available(configured: str | None = None) -> bool:
+    """True if an ffmpeg binary can actually be located (bundled, PATH, or an
+    explicit .env path). Lets callers give a precise "ffmpeg not installed"
+    message instead of a misleading "stream not found" when the binary is gone."""
+    exe = resolve_ffmpeg_exe(configured)
+    return Path(exe).exists() or shutil.which(exe) is not None
