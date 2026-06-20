@@ -8,6 +8,7 @@ thread via `self.after(...)` to avoid freezing the window.
 from __future__ import annotations
 
 import contextlib
+import os
 import platform
 import threading
 import tkinter as tk
@@ -26,6 +27,7 @@ from sentry_agent_pc.config_file import (
     read_config,
     write_config,
 )
+from sentry_agent_pc.edge.recorder import ClipRecord, ClipStore
 from sentry_agent_pc.gui import widgets
 from sentry_agent_pc.gui.add_dialog import AddCameraDialog
 from sentry_agent_pc.gui.edit_dialog import EditCameraDialog
@@ -128,9 +130,25 @@ class AgentApp(ctk.CTk):
         self._set_window_icon()
 
         self._build_header()
-        self._build_toolbar()
-        self._build_camera_list()
-        self._build_statusbar()
+        self._build_statusbar()  # bottom
+        # Body: a left sidebar (page nav) + a right content area holding the
+        # switchable pages. The camera table keeps its exact logic — it's just
+        # reparented into the "cameras" page.
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(side="top", fill="both", expand=True)
+        self._nav_buttons: dict[str, ctk.CTkButton] = {}
+        self._build_sidebar(body)
+        self._content = ctk.CTkFrame(body, fg_color="transparent")
+        self._content.pack(side="left", fill="both", expand=True)
+
+        self._pages: dict[str, ctk.CTkFrame] = {}
+        self._page_cameras = ctk.CTkFrame(self._content, fg_color="transparent")
+        self._build_toolbar(self._page_cameras)
+        self._build_camera_list(self._page_cameras)
+        self._pages["cameras"] = self._page_cameras
+        self._pages["alerts"] = self._build_alerts_page(self._content)
+        self._pages["settings"] = self._build_settings_page(self._content)
+        self._show_page("cameras")
 
         self.refresh_cameras()
         self._check_backend_async()
@@ -213,8 +231,8 @@ class AgentApp(ctk.CTk):
             text_color="gray50",
         ).pack(side="right", padx=4)
 
-    def _build_toolbar(self) -> None:
-        bar = ctk.CTkFrame(self, height=56, corner_radius=0, fg_color="transparent")
+    def _build_toolbar(self, parent: ctk.CTkBaseClass) -> None:
+        bar = ctk.CTkFrame(parent, height=56, corner_radius=0, fg_color="transparent")
         bar.pack(fill="x", padx=16, pady=(12, 4))
 
         ctk.CTkButton(
@@ -277,10 +295,10 @@ class AgentApp(ctk.CTk):
             frame.grid_columnconfigure(i, weight=weight, minsize=minsize)
         frame.grid_columnconfigure(len(self._COLUMNS), weight=0, minsize=self._ACTIONS_MINSIZE)
 
-    def _build_camera_list(self) -> None:
+    def _build_camera_list(self, parent: ctk.CTkBaseClass) -> None:
         # Column headers — grid with the shared weights. Extra right pad ≈ the
         # scrollable-frame scrollbar so the header lines up with the rows below.
-        head = ctk.CTkFrame(self, fg_color="gray20", height=34)
+        head = ctk.CTkFrame(parent, fg_color="gray20", height=34)
         head.pack(fill="x", padx=16, pady=(8, 0))
         head.pack_propagate(False)
         self._configure_grid(head)
@@ -300,7 +318,7 @@ class AgentApp(ctk.CTk):
             text_color="gray80",
         ).grid(row=0, column=len(self._COLUMNS), sticky="w", padx=6)
 
-        self.list_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.list_frame = ctk.CTkScrollableFrame(parent, fg_color="transparent")
         self.list_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
 
     def _build_statusbar(self) -> None:
@@ -314,6 +332,160 @@ class AgentApp(ctk.CTk):
             text_color="gray70",
         )
         self.status_label.pack(side="left", padx=16)
+
+    # === Sidebar navigation + pages ===
+
+    _NAV: tuple[tuple[str, str, str], ...] = (
+        ("cameras", "📷  Камерууд", "page"),
+        ("live", "📺  Шууд харах", "action"),
+        ("alerts", "⚠  Сэжигтэй", "page"),
+        ("settings", "⚙  Тохиргоо", "page"),
+    )
+
+    def _build_sidebar(self, parent: ctk.CTkBaseClass) -> None:
+        side = ctk.CTkFrame(parent, width=170, corner_radius=0, fg_color="gray17")
+        side.pack(side="left", fill="y")
+        side.pack_propagate(False)
+        for key, label, kind in self._NAV:
+            cmd = self.open_live_view if kind == "action" else self._page_cmd(key)
+            btn = ctk.CTkButton(
+                side, text=label, anchor="w", height=40, corner_radius=8,
+                fg_color="transparent", text_color="gray85", hover_color="gray25",
+                font=ctk.CTkFont(size=14), command=cmd,
+            )
+            btn.pack(fill="x", padx=10, pady=(10 if key == "cameras" else 2, 2))
+            if kind == "page":
+                self._nav_buttons[key] = btn
+        # Edge-AI status pinned to the bottom so "is the AI running" is always visible.
+        self._edge_status_label = ctk.CTkLabel(
+            side, text=self._edge_status_text(), anchor="w", justify="left",
+            font=ctk.CTkFont(size=11), text_color="gray60", wraplength=148,
+        )
+        self._edge_status_label.pack(side="bottom", fill="x", padx=12, pady=12)
+
+    def _page_cmd(self, key: str) -> Callable[[], None]:
+        """A nav-button command that shows `key`'s page (binds key, no loop closure bug)."""
+        return lambda: self._show_page(key)
+
+    def _show_page(self, name: str) -> None:
+        for page in self._pages.values():
+            page.pack_forget()
+        self._pages[name].pack(fill="both", expand=True)
+        for key, btn in self._nav_buttons.items():
+            btn.configure(fg_color=CHIPMO_ORANGE if key == name else "transparent")
+        if name == "alerts":
+            self._refresh_alerts()
+
+    def _edge_status_text(self) -> str:
+        """Human-readable edge-AI readiness for the sidebar / settings."""
+        if not get_settings().edge_ai_enabled:
+            return "AI: унтраалттай"
+        try:
+            import openvino  # noqa: F401
+
+            from sentry_agent_pc.edge.ov_lean import bundled_model_xml
+
+            if bundled_model_xml("yolo11n-pose_openvino_model") is None:
+                return "⚠ AI: модель алга"
+            return "🟢 AI: OpenVINO бэлэн"
+        except Exception:  # noqa: BLE001 — openvino not bundled → AI off, not a crash
+            return "⚠ AI: OpenVINO алга"
+
+    def _clip_store(self) -> ClipStore:
+        from sentry_agent_pc.settings import DEFAULT_CONFIG_DIR
+
+        return ClipStore(DEFAULT_CONFIG_DIR / "edge" / "clips.json")
+
+    def _build_alerts_page(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
+        page = ctk.CTkFrame(parent, fg_color="transparent")
+        bar = ctk.CTkFrame(page, fg_color="transparent")
+        bar.pack(fill="x", padx=16, pady=(14, 4))
+        ctk.CTkLabel(
+            bar, text="Сэжигтэй бичлэгүүд", font=ctk.CTkFont(size=16, weight="bold")
+        ).pack(side="left")
+        ctk.CTkButton(
+            bar, text="↻ Сэргээх", width=100, height=32, fg_color="transparent",
+            border_width=1, command=self._refresh_alerts,
+        ).pack(side="right")
+        self._alerts_frame = ctk.CTkScrollableFrame(page, fg_color="transparent")
+        self._alerts_frame.pack(fill="both", expand=True, padx=16, pady=(0, 10))
+        return page
+
+    def _refresh_alerts(self) -> None:
+        for w in self._alerts_frame.winfo_children():
+            w.destroy()
+        try:
+            clips = self._clip_store().records()
+        except Exception:  # noqa: BLE001 — a corrupt index must not break the page
+            clips = []
+        if not clips:
+            ctk.CTkLabel(
+                self._alerts_frame,
+                text="Сэжигтэй бичлэг алга.\n\nAI сэжигтэй үйлдэл илрүүлбэл\n[−3с … +3с] бичлэг энд гарч ирнэ.",
+                text_color="gray60", justify="center",
+            ).pack(pady=50)
+            return
+        for clip in sorted(clips, key=lambda r: r.created_at, reverse=True):
+            self._render_clip_row(clip)
+
+    def _render_clip_row(self, clip: ClipRecord) -> None:
+        import datetime
+
+        row = ctk.CTkFrame(self._alerts_frame, fg_color="gray17", corner_radius=8)
+        row.pack(fill="x", pady=4)
+        when = datetime.datetime.fromtimestamp(clip.started_at).strftime("%m-%d %H:%M:%S")
+        color = "#FF6B6B" if clip.risk_pct >= 70 else (CHIPMO_ORANGE if clip.risk_pct >= 40 else "gray70")
+        info = ctk.CTkFrame(row, fg_color="transparent")
+        info.pack(side="left", fill="x", expand=True, padx=12, pady=8)
+        ctk.CTkLabel(
+            info, text=f"{clip.camera_id} · {when}", anchor="w",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(anchor="w")
+        beh = ", ".join(clip.behaviors) or "—"
+        ctk.CTkLabel(
+            info, text=f"Risk {clip.risk_pct:.0f}%  ·  {beh}  ·  {clip.duration:.0f}с",
+            anchor="w", font=ctk.CTkFont(size=11), text_color=color,
+        ).pack(anchor="w")
+        ctk.CTkButton(
+            row, text="▶ Нээх", width=72, height=28, fg_color="transparent",
+            border_width=1, command=lambda p=clip.path: self._open_clip(p),
+        ).pack(side="right", padx=(4, 12), pady=8)
+
+    def _open_clip(self, path: str) -> None:
+        opener = getattr(os, "startfile", None)  # Windows default player (None elsewhere)
+        if opener is not None:
+            with contextlib.suppress(Exception):
+                opener(path)
+                self.set_status(f"Бичлэг нээж байна: {path}")
+                return
+        self.set_status(f"Бичлэг: {path}")
+
+    def _build_settings_page(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
+        page = ctk.CTkFrame(parent, fg_color="transparent")
+        ctk.CTkLabel(
+            page, text="Тохиргоо", font=ctk.CTkFont(size=16, weight="bold")
+        ).pack(anchor="w", padx=16, pady=(14, 8))
+        card = ctk.CTkFrame(page, fg_color="gray17", corner_radius=10)
+        card.pack(fill="x", padx=16, pady=4)
+
+        def _row(label: str, value: str) -> None:
+            r = ctk.CTkFrame(card, fg_color="transparent")
+            r.pack(fill="x", padx=14, pady=6)
+            ctk.CTkLabel(r, text=label, anchor="w", text_color="gray60", width=140).pack(side="left")
+            ctk.CTkLabel(r, text=value, anchor="w").pack(side="left")
+
+        st = load_state()
+        _row("Хувилбар", f"v{__version__}")
+        _row("Холболт", "холбогдсон" if st.is_paired else "холбогдоогүй")
+        _row("Edge AI", self._edge_status_text())
+        btns = ctk.CTkFrame(page, fg_color="transparent")
+        btns.pack(fill="x", padx=16, pady=10)
+        ctk.CTkButton(btns, text="🔗 Холболт", width=120, command=self.open_pairing).pack(side="left")
+        ctk.CTkButton(
+            btns, text="⬆ Шинэчлэл", width=120, fg_color="transparent",
+            border_width=1, command=self.open_update,
+        ).pack(side="left", padx=8)
+        return page
 
     # === Camera list rendering ===
 
