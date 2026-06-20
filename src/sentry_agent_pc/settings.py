@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     ffmpeg_path: str = "ffmpeg"
     rtsp_probe_timeout_sec: int = 5
     log_level: str = "INFO"
+    # Edge Stage-1 AI overlay in the offline live view: run YOLO + behaviour
+    # locally and draw mask/trail/wrist/risk when the bundled OpenVINO model is
+    # present. Off (or model missing) → plain decode, unchanged.
+    edge_ai_enabled: bool = True
 
     # Self-update (GitHub Releases). When on, the app silently downloads a newer
     # release in the background and restarts itself into it — no click needed —
