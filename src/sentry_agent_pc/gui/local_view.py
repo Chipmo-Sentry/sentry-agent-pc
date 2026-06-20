@@ -212,6 +212,10 @@ class _CameraReader(threading.Thread):
         self._box = (640, 360)
         self._pin: int | None = None  # index of the URL that's working
         self._hw_logged = -2.0  # last logged hwaccel value; log the path once per change
+        # Edge Stage-1 overlay (lazy, fail-safe): built on the reader thread on
+        # the first frame; None when disabled / no bundled model → plain decode.
+        self._edge_built = False
+        self._edge_pipe: object | None = None
         self.status = _CONNECTING
         self.detail = "Холбож байна…"
 
@@ -372,7 +376,35 @@ class _CameraReader(threading.Thread):
                     return  # stream dropped → reconnect
                 continue
             fails = 0
-            self._store(frame)
+            self._store(self._edge_process(frame))
+
+    def _edge_process(self, frame: object) -> object:
+        """Run the edge Stage-1 overlay on a BGR frame (lazy, fail-safe).
+
+        Returns the annotated frame, or the input unchanged when edge AI is
+        disabled, the bundled OpenVINO model is absent, or inference errors — the
+        live view must never break because of the optional overlay."""
+        if not self._edge_built:
+            self._edge_built = True
+            with contextlib.suppress(Exception):
+                from sentry_agent_pc.settings import get_settings
+
+                if get_settings().edge_ai_enabled:
+                    from sentry_agent_pc.edge.ov_lean import LeanOpenVinoDetector
+                    from sentry_agent_pc.edge.pipeline import EdgePipeline
+
+                    self._edge_pipe = EdgePipeline(
+                        self.cam_name, LeanOpenVinoDetector(), recorder=None
+                    )
+                    log.info("local_view.edge_on", cam=self.cam_name)
+            if self._edge_pipe is None:
+                log.info("local_view.edge_off", cam=self.cam_name)
+        if self._edge_pipe is None:
+            return frame
+        try:
+            return self._edge_pipe.process(frame, time.time())  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 — one bad inference must not stop the stream
+            return frame
 
     def _store(self, frame: object) -> None:
         """BGR frame → tile-sized RGB PIL image (off the UI thread).
