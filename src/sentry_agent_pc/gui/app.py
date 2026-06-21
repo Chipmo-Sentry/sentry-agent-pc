@@ -264,17 +264,9 @@ class AgentApp(ctk.CTk):
             border_width=1,
             command=self.refresh_cameras,
         ).pack(side="right")
-
-        ctk.CTkButton(
-            bar,
-            text="📺  Шууд харах",
-            width=160,
-            height=40,
-            font=ctk.CTkFont(size=14, weight="bold"),
-            fg_color="transparent",
-            border_width=1,
-            command=self.open_live_view,
-        ).pack(side="left", padx=(10, 0))
+        # NB: "Шууд харах" lives in the left sidebar nav (a global action) — no
+        # duplicate button here. The toolbar holds only camera-list actions
+        # (Scan / Add / Refresh).
 
     # Fluid data columns: (title, weight, minsize). Columns expand to fill the
     # window width on a wide screen and shrink (to minsize) on a narrow one —
@@ -1201,8 +1193,32 @@ class PairingDialog(ctk.CTkToplevel):
         self.destroy()
 
 
+# Stable per-app taskbar identity. Without an explicit AppUserModelID, Windows
+# derives one from the host process and shows a BLANK/generic taskbar icon for a
+# Tk window even though iconbitmap() sets the title-bar icon. Set once, before
+# any window is created, so Windows uses the window icon on the taskbar and
+# groups our windows (main + live-view child) under one button.
+_APP_USER_MODEL_ID = "Chipmo.Sentry.Agent"
+
+
+def set_app_user_model_id() -> None:
+    """Bind a stable Windows taskbar AppUserModelID (no-op off Windows)."""
+    import sys
+
+    if not sys.platform.startswith("win"):
+        return
+    import ctypes
+
+    with contextlib.suppress(Exception):  # cosmetic — never block startup
+        # getattr avoids a platform-dependent mypy ignore: ctypes.windll only
+        # exists on Windows, but this branch is only reached there.
+        windll = getattr(ctypes, "windll")  # noqa: B009
+        windll.shell32.SetCurrentProcessExplicitAppUserModelID(_APP_USER_MODEL_ID)
+
+
 def run(minimized: bool = False) -> None:
     """GUI entry point. `minimized=True` (auto-start) launches hidden in the tray."""
+    set_app_user_model_id()  # before the first Tk window → taskbar icon binds
     app = AgentApp()
     if minimized:
         app.after(0, app.hide_to_tray)
