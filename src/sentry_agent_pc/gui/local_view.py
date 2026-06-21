@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     import numpy as np
 
     from sentry_agent_pc.edge.pipeline import EdgePipeline
-    from sentry_agent_pc.edge.recorder import ClipStore, EdgeClipRecorder
+    from sentry_agent_pc.edge.recorder import ClipRecord, ClipStore, EdgeClipRecorder
 
 # One shared clip store across all camera readers — a single writer (its lock
 # serialises) so concurrent per-camera recorders never corrupt the index JSON.
@@ -49,6 +49,17 @@ def _shared_clip_store() -> ClipStore:
 
             _clip_store = ClipStore(DEFAULT_CONFIG_DIR / "edge" / "clips.json")
         return _clip_store
+
+
+def _resolve_camera_uuid(cam_name: str) -> str | None:
+    """The backend Camera uuid for a locally-viewed camera, or None when it isn't
+    registered yet — we can't upload an edge clip without a backend camera."""
+    from sentry_agent_pc.state import load_state
+
+    for c in load_state().cameras:
+        if c.name == cam_name and c.uuid:
+            return c.uuid
+    return None
 
 # RTSP over TCP is far more reliable than the UDP default on busy LANs. Must be
 # set before the first cv2 VideoCapture is created.
@@ -510,16 +521,38 @@ class _CameraReader(threading.Thread):
                 return None  # not the fan-out loopback → skip (avoid 2nd connection)
             from sentry_agent_pc.edge.recorder import EdgeClipRecorder
 
+            on_clip = self._make_clip_uploader()
             rec = EdgeClipRecorder(
-                self.cam_name, src, DEFAULT_CONFIG_DIR / "edge", _shared_clip_store()
+                self.cam_name,
+                src,
+                DEFAULT_CONFIG_DIR / "edge",
+                _shared_clip_store(),
+                on_clip=on_clip,
             )
             rec.start()
             self._edge_recorder = rec
-            log.info("local_view.edge_clips_on", cam=self.cam_name)
+            log.info("local_view.edge_clips_on", cam=self.cam_name, upload=on_clip is not None)
             return rec
         except Exception as e:  # noqa: BLE001 — recording is optional, never fatal
             log.info("local_view.edge_clips_off", cam=self.cam_name, reason=str(e)[:120])
             return None
+
+    def _make_clip_uploader(self) -> Callable[[ClipRecord], None] | None:
+        """on_clip that forwards each suspicious clip to the cloud (ADR-0029 B3),
+        ONLY for a registered camera (its backend uuid is needed) and when
+        EDGE_UPLOAD_ENABLED. None → record into the local gallery only."""
+        from sentry_agent_pc.settings import get_settings
+
+        if not getattr(get_settings(), "edge_upload_enabled", True):
+            return None
+        uuid = _resolve_camera_uuid(self.cam_name)
+        if not uuid:
+            log.info("local_view.edge_upload_skip_unregistered", cam=self.cam_name)
+            return None
+        from sentry_agent_pc.edge.uploader import make_clip_uploader
+
+        log.info("local_view.edge_upload_on", cam=self.cam_name)
+        return make_clip_uploader(uuid)
 
     def _edge_run(self) -> None:
         last_seq = -1
