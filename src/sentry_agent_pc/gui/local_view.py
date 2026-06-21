@@ -56,30 +56,32 @@ from sentry_agent_pc.state import load_state  # noqa: E402
 
 log = get_logger("sentry_agent_pc.gui.local_view")
 
-# Last edge-AI runtime error, surfaced to the main-app sidebar badge. Reader
-# threads (separate live-view window) record here; the sidebar polls it on its
-# periodic refresh, and a camera that recovers clears it (self-healing). Without
-# this, every edge build/infer failure was silent (no-overlay only).
+# Per-camera edge-AI runtime errors, surfaced to the main-app sidebar badge.
+# Reader threads (separate live-view window) record here keyed by camera; the
+# sidebar polls it on its periodic refresh, and a camera that recovers clears
+# ITS OWN entry (self-healing). Keyed by camera so one camera recovering can't
+# wipe another camera's live error. Without this, every edge build/infer failure
+# was silent (no-overlay only).
 _edge_err_lock = threading.Lock()
-_last_edge_error: str | None = None
+_edge_errors: dict[str, str] = {}
 
 
-def record_edge_error(message: str) -> None:
-    """Store the most recent edge-AI failure (thread-safe; called off-UI)."""
-    global _last_edge_error
+def record_edge_error(camera: str, message: str) -> None:
+    """Record an edge-AI failure for a camera (thread-safe; called off-UI)."""
     with _edge_err_lock:
-        _last_edge_error = message
+        _edge_errors[camera] = message
 
 
 def last_edge_error() -> str | None:
+    """Any one active edge error (for the single-line sidebar badge), or None."""
     with _edge_err_lock:
-        return _last_edge_error
+        return next(iter(_edge_errors.values()), None)
 
 
-def clear_edge_error() -> None:
-    global _last_edge_error
+def clear_edge_error(camera: str) -> None:
+    """Drop a camera's recorded error once it recovers."""
     with _edge_err_lock:
-        _last_edge_error = None
+        _edge_errors.pop(camera, None)
 
 # 12 fps reads as smooth-enough live monitoring while still throttling UI-thread
 # PhotoImage churn. We can afford more than the old 8 now that hardware decode
@@ -427,7 +429,10 @@ class _CameraReader(threading.Thread):
             fails = 0
             if self._edge_on and not self._edge_failed:
                 self._publish_raw(frame)
-                if self._edge_worker is None:
+                if self._edge_worker is None or not self._edge_worker.is_alive():
+                    # (Re)start if never started or the worker died — reset _ready
+                    # so decode paints raw until the fresh worker takes over.
+                    self._edge_ready = False
                     self._start_edge_worker()
                 # Decode keeps painting raw until the worker takes over — so the
                 # tile is never blank and the video stays live during model load.
@@ -459,13 +464,22 @@ class _CameraReader(threading.Thread):
         except Exception as e:  # noqa: BLE001 — no model/openvino → decode shows raw
             self._edge_failed = True
             self._edge_err = str(e)[:160]
-            record_edge_error(self._edge_err)
+            record_edge_error(self.cam_name, self._edge_err)
             log.info("local_view.edge_off", cam=self.cam_name, reason=self._edge_err)
             return
 
         last_seq = -1
         fail_count = 0
-        while not self._stop_event.is_set() and self._active.is_set():
+        # Gate on _stop_event ONLY — NOT _active. A paused tile (focus/minimize)
+        # just idles here; exiting would kill the worker, and the decode loop
+        # never restarts it (it's non-None), leaving _edge_ready=True so the tile
+        # freezes on its last annotated frame. Staying alive also avoids rebuilding
+        # the OpenVINO models on every resume.
+        while not self._stop_event.is_set():
+            if not self._active.is_set():
+                if self._stop_event.wait(0.05):
+                    break
+                continue
             with self._raw_lock:
                 seq, frame = self._raw_seq, self._raw_frame
             if frame is None or seq == last_seq:
@@ -483,7 +497,7 @@ class _CameraReader(threading.Thread):
                 annotated = pipe.process(self._fit_to_box(frame), time.time())
                 self._store(annotated)
                 if not self._edge_ready:
-                    clear_edge_error()  # recovered → drop any stale sidebar badge
+                    clear_edge_error(self.cam_name)  # recovered → drop stale badge
                 self._edge_ready = True
                 fail_count = 0
             except Exception as e:  # noqa: BLE001 — one bad infer must not kill edge
@@ -491,7 +505,7 @@ class _CameraReader(threading.Thread):
                 if fail_count >= 30:  # persistent failure → release models, show raw
                     self._edge_failed = True
                     self._edge_err = str(e)[:160]
-                    record_edge_error(self._edge_err)
+                    record_edge_error(self.cam_name, self._edge_err)
                     self._edge_pipe = None
                     log.warning("local_view.edge_giveup", cam=self.cam_name, reason=self._edge_err)
                     return

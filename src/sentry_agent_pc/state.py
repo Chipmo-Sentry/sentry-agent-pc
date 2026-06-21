@@ -84,6 +84,14 @@ class AgentState(BaseModel):
     def is_paired(self) -> bool:
         return bool(self.agent_jwt)
 
+    def clear_pairing(self) -> None:
+        """Null EVERY pairing field at once. One place so unpair can't drift from
+        pair and leave a stale store id from a previous store (cross-tenant risk)."""
+        self.agent_jwt = None
+        self.paired_org_id = None
+        self.default_store_id = None
+        self.store_name = None
+
 
 @functools.lru_cache(maxsize=1)
 def _machine_key() -> bytes:

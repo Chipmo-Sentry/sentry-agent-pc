@@ -6,7 +6,21 @@ import time
 
 import pytest
 
+from sentry_agent_pc.gui import local_view as lv
 from sentry_agent_pc.gui.local_view import _CameraReader, _reader_urls, grid_dims
+
+
+def test_edge_error_holder_is_per_camera() -> None:
+    """One camera recovering must not wipe another camera's live edge error."""
+    lv._edge_errors.clear()
+    lv.record_edge_error("camA", "boom A")
+    lv.record_edge_error("camB", "boom B")
+    assert lv.last_edge_error() in {"boom A", "boom B"}
+    lv.clear_edge_error("camA")  # A recovers
+    assert lv.last_edge_error() == "boom B"  # B's error survives
+    lv.clear_edge_error("camB")
+    assert lv.last_edge_error() is None
+    lv.clear_edge_error("camB")  # idempotent — clearing an absent key is fine
 
 
 def test_store_skips_corrupt_frame_without_crashing() -> None:
