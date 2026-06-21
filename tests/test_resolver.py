@@ -167,3 +167,24 @@ def test_reconcile_surfaces_backend_only_camera(monkeypatch) -> None:  # type: i
     assert changed is True
     assert len(cams) == 1
     assert cams[0].uuid == "X" and cams[0].rtsp_url == ""  # shown, but can't push
+
+
+def test_reconcile_syncs_compute_tier(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """ADR-0029 I8: a compute_tier change ALONE (no add/remove) is detected +
+    persisted, so the edge upload gate sees the camera flip cloud→edge_pc."""
+    from sentry_agent_pc.state import CameraRecord
+
+    local = _mk_state([CameraRecord(uuid="A", name="Cam A", ip="1.1.1.1", rtsp_url="rtsp://a")])
+    assert local.cameras[0].compute_tier == "cloud"  # default
+    saved = {}
+    monkeypatch.setattr(svc, "load_state", lambda: local)
+    monkeypatch.setattr(svc, "save_state", lambda s: saved.update(c=s.cameras))
+
+    class FakeBackend:
+        def agent_list_cameras(self):  # type: ignore[no-untyped-def]
+            return [{"id": "A", "name": "Cam A", "mediamtx_path": "a", "compute_tier": "edge_pc"}]
+
+    cams, changed = svc.reconcile_with_backend(backend=FakeBackend())  # type: ignore[arg-type]
+    assert changed is True  # tier-only change is caught by the pre-mutation snapshot
+    assert cams[0].compute_tier == "edge_pc"
+    assert saved["c"][0].compute_tier == "edge_pc"  # persisted

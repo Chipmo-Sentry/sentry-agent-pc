@@ -51,14 +51,13 @@ def _shared_clip_store() -> ClipStore:
         return _clip_store
 
 
-def _resolve_camera_uuid(cam_name: str) -> str | None:
-    """The backend Camera uuid for a locally-viewed camera, or None when it isn't
-    registered yet — we can't upload an edge clip without a backend camera."""
-    from sentry_agent_pc.state import load_state
+def _find_camera(cam_name: str) -> CameraRecord | None:
+    """The local registry record for a locally-viewed camera name, or None.
 
+    Carries the backend uuid + compute_tier the edge clip upload gate needs."""
     for c in load_state().cameras:
-        if c.name == cam_name and c.uuid:
-            return c.uuid
+        if c.name == cam_name:
+            return c
     return None
 
 # RTSP over TCP is far more reliable than the UDP default on busy LANs. Must be
@@ -80,7 +79,7 @@ from PIL import Image, ImageTk  # noqa: E402
 
 from sentry_agent_pc.gui import widgets  # noqa: E402
 from sentry_agent_pc.logging_setup import get_logger  # noqa: E402
-from sentry_agent_pc.state import load_state  # noqa: E402
+from sentry_agent_pc.state import CameraRecord, load_state  # noqa: E402
 
 log = get_logger("sentry_agent_pc.gui.local_view")
 
@@ -539,20 +538,26 @@ class _CameraReader(threading.Thread):
 
     def _make_clip_uploader(self) -> Callable[[ClipRecord], None] | None:
         """on_clip that forwards each suspicious clip to the cloud (ADR-0029 B3),
-        ONLY for a registered camera (its backend uuid is needed) and when
-        EDGE_UPLOAD_ENABLED. None → record into the local gallery only."""
+        ONLY for a registered EDGE_PC camera and when EDGE_UPLOAD_ENABLED. None →
+        record into the local gallery only (a `cloud` camera is handled by the
+        central pipeline, NOT the edge upload — I8 topology gate)."""
         from sentry_agent_pc.settings import get_settings
 
         if not getattr(get_settings(), "edge_upload_enabled", True):
             return None
-        uuid = _resolve_camera_uuid(self.cam_name)
-        if not uuid:
+        cam = _find_camera(self.cam_name)
+        if cam is None or not cam.uuid:
             log.info("local_view.edge_upload_skip_unregistered", cam=self.cam_name)
+            return None
+        if cam.compute_tier != "edge_pc":
+            log.info(
+                "local_view.edge_upload_skip_not_edge", cam=self.cam_name, tier=cam.compute_tier
+            )
             return None
         from sentry_agent_pc.edge.uploader import make_clip_uploader
 
         log.info("local_view.edge_upload_on", cam=self.cam_name)
-        return make_clip_uploader(uuid)
+        return make_clip_uploader(cam.uuid)
 
     def _edge_run(self) -> None:
         last_seq = -1
@@ -872,10 +877,12 @@ class LocalLiveView(ctk.CTkToplevel):
         self._last_w = 0
         self._closed = False
         self._minimized = False
+        self._edge_cfg_version = -1  # forces the first poll to apply (I7)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._scroll.bind("<Configure>", self._on_resize)
         self.after(50, self._relayout)
         self._tick()
+        self._tick_edge_config()
 
     def _empty(self) -> None:
         ctk.CTkLabel(
@@ -970,6 +977,25 @@ class LocalLiveView(ctk.CTkToplevel):
                 with contextlib.suppress(Exception):
                     tile.paint()
         self.after(int(1000 / _TARGET_FPS), self._tick)
+
+    def _tick_edge_config(self) -> None:
+        """I7: every 30 s, hot-apply the backend's edge tunables to the running
+        pipelines. The network fetch runs OFF the UI thread; re-applies only on a
+        version change (no-op until the backend serves per-store config)."""
+        if self._closed:
+            return
+        pipes = [r._edge_pipe for r in self._readers]
+
+        def work() -> None:
+            from sentry_agent_pc.backend_client import BackendClient
+            from sentry_agent_pc.edge.config_poller import poll_and_apply
+
+            self._edge_cfg_version = poll_and_apply(
+                BackendClient(), pipes, self._edge_cfg_version
+            )
+
+        threading.Thread(target=work, name="edge-config-poll", daemon=True).start()
+        self.after(30000, self._tick_edge_config)
 
     def _on_close(self) -> None:
         self._closed = True

@@ -69,6 +69,10 @@ class CameraRecord(BaseModel):
     codec: str | None = None
     resolution: tuple[int, int] | None = None
     last_probe_ok_at: str | None = None
+    # Backend compute_tier (ADR-0029): "cloud" (central Stage-1) | "edge_pc"
+    # (this PC runs Stage-1 + uploads suspicious clips) | "edge_device". Synced
+    # from the backend by reconcile_with_backend; gates the edge clip upload.
+    compute_tier: str = "cloud"
 
     def matches(self, other: CameraRecord) -> bool:
         """Identity match resilient to a not-yet-registered camera (uuid is None).
