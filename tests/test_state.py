@@ -14,6 +14,22 @@ def test_machine_key_is_stable_across_calls() -> None:
     assert state._machine_key() == state._machine_key()
 
 
+def test_clear_pairing_nulls_every_pairing_field() -> None:
+    s = state.AgentState(
+        agent_jwt="jwt",
+        paired_org_id="org",
+        default_store_id="store",
+        store_name="Дэлгүүр",
+    )
+    assert s.is_paired
+    s.clear_pairing()
+    assert not s.is_paired
+    # default_store_id used to survive unpair → stale cross-tenant id
+    assert (s.agent_jwt, s.paired_org_id, s.default_store_id, s.store_name) == (
+        None, None, None, None
+    )
+
+
 def test_machine_secret_does_not_use_network_identifier(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     # If anything ever reintroduces uuid.getnode(), this changing value would
     # leak into the secret. Assert the secret ignores it.

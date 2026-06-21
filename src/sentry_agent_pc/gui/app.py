@@ -854,6 +854,8 @@ class AgentApp(ctk.CTk):
 
         Sets _closing FIRST and cancels every pending self-rescheduling `after`
         tick so none fire after destroy() and touch a dead widget (TclError)."""
+        if self._closing:
+            return  # re-entrant (tray "Гарах" + window-close race) → no double destroy()
         self._closing = True
         for after_id in self._after_ids.values():
             with contextlib.suppress(tk.TclError):
@@ -886,6 +888,10 @@ class AgentApp(ctk.CTk):
             return  # a download/apply from a previous check is still underway
 
         def on_available(info: updater.UpdateInfo) -> None:
+            # This fires from a background thread via after(0); the user may have
+            # quit in the meantime — don't build a dialog on a dead root.
+            if self._closing or not self.winfo_exists():
+                return
             if get_settings().auto_update and updater.is_frozen():
                 self._update_in_progress = True
                 self.set_status(f"Шинэ хувилбар v{info.version} — автоматаар суулгаж байна…")
@@ -896,7 +902,13 @@ class AgentApp(ctk.CTk):
                     if not ok:
                         self._update_in_progress = False
 
-                auto_update_in_background(self, info, on_done=_done)
+                # If the launch itself throws (before its worker thread starts),
+                # clear the flag so a stuck True can't freeze all future updates.
+                try:
+                    auto_update_in_background(self, info, on_done=_done)
+                except Exception:  # noqa: BLE001
+                    self._update_in_progress = False
+                    raise
             else:
                 # Auto-update off OR dev (non-frozen) build → prompt via the dialog.
                 self.set_status(f"Шинэ хувилбар бэлэн: v{info.version}")
@@ -1164,11 +1176,17 @@ class PairingDialog(ctk.CTkToplevel):
                 out: dict[str, Any] = {"ok": True, "store": result.get("store_name")}
             except (BackendError, KeyError) as e:
                 out = {"ok": False, "error": str(e)}
-            self.after(0, lambda: self._pair_done(out))
+            # The dialog can be closed mid-request (pairing hits the network and
+            # can take seconds) — guard against after() on a destroyed Toplevel.
+            with contextlib.suppress(tk.TclError):
+                if self.winfo_exists():
+                    self.after(0, lambda: self._pair_done(out))
 
         threading.Thread(target=runner, daemon=True).start()
 
     def _pair_done(self, result: dict[str, Any]) -> None:
+        if not self.winfo_exists():
+            return
         self.connect_btn.configure(state="normal")
         if result.get("ok"):
             self.status_lbl.configure(
@@ -1185,9 +1203,7 @@ class PairingDialog(ctk.CTkToplevel):
 
     def _unpair(self) -> None:
         state = load_state()
-        state.agent_jwt = None
-        state.paired_org_id = None
-        state.store_name = None
+        state.clear_pairing()  # nulls jwt + org + store_id + store_name together
         save_state(state)
         self.on_saved()
         self.destroy()
