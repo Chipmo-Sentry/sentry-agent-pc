@@ -33,6 +33,7 @@ class StreamController:
     def __init__(self) -> None:
         self._pusher: StreamPusher | None = None
         self._push_enabled = False
+        self._stopped = False  # set by stop() → refresh() can't resurrect relays
         self._lock = threading.Lock()
         s = get_settings()
         self._local: LocalMediaMTX | None = None
@@ -76,6 +77,11 @@ class StreamController:
                 log.warning("stream_controller.refresh_failed", error=str(e))
 
     def _refresh_locked(self) -> None:
+        if self._stopped:
+            # quit_app() already tore down; a refresh() thread that was parked on
+            # the lock must NOT rebuild relays/MediaMTX after stop() — that orphans
+            # ffmpeg/mediamtx still pushing to the cloud after the GUI exits.
+            return
         state = load_state()
         if not state.is_paired:
             self._teardown()
@@ -135,6 +141,7 @@ class StreamController:
 
     def stop(self) -> None:
         with self._lock:
+            self._stopped = True
             self._teardown()
 
     def _teardown(self) -> None:

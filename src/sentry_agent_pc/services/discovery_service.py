@@ -22,7 +22,13 @@ from sentry_agent_pc.discovery.rtsp_paths import RTSP_PATHS, RTSP_PATHS_PRIORITY
 from sentry_agent_pc.logging_setup import get_logger
 from sentry_agent_pc.resources import ffmpeg_available
 from sentry_agent_pc.settings import get_settings
-from sentry_agent_pc.state import CameraRecord, load_state, save_state
+from sentry_agent_pc.state import (
+    AgentState,
+    CameraRecord,
+    load_state,
+    mutate_state,
+    save_state,
+)
 
 log = get_logger("sentry_agent_pc.services.discovery")
 
@@ -557,20 +563,19 @@ def register_camera(
     cam_uuid = str(created.get("id"))
     mediamtx_path = created.get("mediamtx_path")
 
-    # Persist locally
-    state = load_state()
-    state.cameras.append(
-        CameraRecord(
-            uuid=cam_uuid,
-            name=name,
-            ip=ip,
-            rtsp_url=rtsp_url,
-            mediamtx_path=mediamtx_path,
-            codec=probe.codec,
-            resolution=(probe.width or 0, probe.height or 0),
-        ),
+    # Persist locally — mutate_state so the append is serialised against the
+    # heartbeat/reconcile writers (a bare load→append→save_state loses a
+    # concurrent write, silently dropping a camera).
+    record = CameraRecord(
+        uuid=cam_uuid,
+        name=name,
+        ip=ip,
+        rtsp_url=rtsp_url,
+        mediamtx_path=mediamtx_path,
+        codec=probe.codec,
+        resolution=(probe.width or 0, probe.height or 0),
     )
-    save_state(state)
+    mutate_state(lambda s: s.cameras.append(record))
 
     return RegisterResult(
         ok=True,
@@ -624,18 +629,26 @@ def update_camera_connection(
         except BackendError as e:
             return RegisterResult(ok=False, error=str(e))
 
-    # Apply to local state.
-    if name is not None:
-        target.name = name
-    if ip:
-        target.ip = ip
-    if rtsp_url is not None:
-        target.rtsp_url = rtsp_url
-    if resolved is not None and resolved.ok:
-        target.codec = resolved.codec or target.codec
-        if resolved.width and resolved.height:
-            target.resolution = (resolved.width, resolved.height)
-    save_state(state)
+    # Apply to local state under mutate_state — re-find the target INSIDE the
+    # lock (it may have been deleted since the snapshot above) so the read-
+    # modify-write is atomic vs the heartbeat/reconcile writers.
+    def _apply(s: AgentState) -> None:
+        t = next((c for c in s.cameras if c.uuid == camera_uuid), None)
+        if t is None:
+            return
+        if name is not None:
+            t.name = name
+        if ip:
+            t.ip = ip
+        if rtsp_url is not None:
+            t.rtsp_url = rtsp_url
+        if resolved is not None and resolved.ok:
+            t.codec = resolved.codec or t.codec
+            if resolved.width and resolved.height:
+                t.resolution = (resolved.width, resolved.height)
+
+    saved = mutate_state(_apply)
+    target = next((c for c in saved.cameras if c.uuid == camera_uuid), target)
 
     return RegisterResult(
         ok=True,
