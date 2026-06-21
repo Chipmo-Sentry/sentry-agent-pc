@@ -32,6 +32,23 @@ if TYPE_CHECKING:
     import numpy as np
 
     from sentry_agent_pc.edge.pipeline import EdgePipeline
+    from sentry_agent_pc.edge.recorder import ClipStore, EdgeClipRecorder
+
+# One shared clip store across all camera readers — a single writer (its lock
+# serialises) so concurrent per-camera recorders never corrupt the index JSON.
+_clip_store: ClipStore | None = None
+_clip_store_lock = threading.Lock()
+
+
+def _shared_clip_store() -> ClipStore:
+    global _clip_store
+    with _clip_store_lock:
+        if _clip_store is None:
+            from sentry_agent_pc.edge.recorder import ClipStore
+            from sentry_agent_pc.settings import DEFAULT_CONFIG_DIR
+
+            _clip_store = ClipStore(DEFAULT_CONFIG_DIR / "edge" / "clips.json")
+        return _clip_store
 
 # RTSP over TCP is far more reliable than the UDP default on busy LANs. Must be
 # set before the first cv2 VideoCapture is created.
@@ -253,6 +270,7 @@ class _CameraReader(threading.Thread):
         self._edge_failed = False  # build/inference gave up → decode shows raw
         self._edge_err: str | None = None
         self._edge_worker: threading.Thread | None = None
+        self._edge_recorder: EdgeClipRecorder | None = None
         self._raw_frame: object | None = None
         self._raw_seq = 0
         self._raw_lock = threading.Lock()
@@ -459,8 +477,7 @@ class _CameraReader(threading.Thread):
             from sentry_agent_pc.edge.ov_lean import LeanOpenVinoDetector
             from sentry_agent_pc.edge.pipeline import EdgePipeline
 
-            self._edge_pipe = EdgePipeline(self.cam_name, LeanOpenVinoDetector(), recorder=None)
-            log.info("local_view.edge_on", cam=self.cam_name)
+            detector = LeanOpenVinoDetector()
         except Exception as e:  # noqa: BLE001 — no model/openvino → decode shows raw
             self._edge_failed = True
             self._edge_err = str(e)[:160]
@@ -468,6 +485,43 @@ class _CameraReader(threading.Thread):
             log.info("local_view.edge_off", cam=self.cam_name, reason=self._edge_err)
             return
 
+        recorder = self._build_clip_recorder()
+        self._edge_pipe = EdgePipeline(self.cam_name, detector, recorder=recorder)
+        log.info("local_view.edge_on", cam=self.cam_name, clips=recorder is not None)
+        try:
+            self._edge_run()
+        finally:
+            if recorder is not None:
+                with contextlib.suppress(Exception):
+                    recorder.stop()
+
+    def _build_clip_recorder(self) -> EdgeClipRecorder | None:
+        """A −3s…+3s clip recorder for this camera — ONLY when reading off the
+        local MediaMTX fan-out (loopback), so it never opens a 2nd direct camera
+        connection. None otherwise (no clips, no risk)."""
+        try:
+            from sentry_agent_pc.settings import DEFAULT_CONFIG_DIR, get_settings
+
+            if not getattr(get_settings(), "edge_clips_enabled", True):
+                return None
+            pin = self._pin if self._pin is not None and self._pin < len(self.urls) else 0
+            src = self.urls[pin] if self.urls else ""
+            if "127.0.0.1" not in src and "localhost" not in src:
+                return None  # not the fan-out loopback → skip (avoid 2nd connection)
+            from sentry_agent_pc.edge.recorder import EdgeClipRecorder
+
+            rec = EdgeClipRecorder(
+                self.cam_name, src, DEFAULT_CONFIG_DIR / "edge", _shared_clip_store()
+            )
+            rec.start()
+            self._edge_recorder = rec
+            log.info("local_view.edge_clips_on", cam=self.cam_name)
+            return rec
+        except Exception as e:  # noqa: BLE001 — recording is optional, never fatal
+            log.info("local_view.edge_clips_off", cam=self.cam_name, reason=str(e)[:120])
+            return None
+
+    def _edge_run(self) -> None:
         last_seq = -1
         fail_count = 0
         # Gate on _stop_event ONLY — NOT _active. A paused tile (focus/minimize)

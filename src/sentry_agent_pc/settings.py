@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     # locally and draw mask/trail/wrist/risk when the bundled OpenVINO model is
     # present. Off (or model missing) → plain decode, unchanged.
     edge_ai_enabled: bool = True
+    # Record −3s…+3s clips for suspicious episodes into the "Сэжигтэй" gallery.
+    # Only records off the local MediaMTX fan-out (loopback) so it NEVER opens a
+    # second direct camera connection (Hikvision/connection-limit safe); when the
+    # fan-out isn't serving the camera, no clip is recorded.
+    edge_clips_enabled: bool = True
 
     # Self-update (GitHub Releases). When on, the app silently downloads a newer
     # release in the background and restarts itself into it — no click needed —
