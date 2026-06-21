@@ -47,7 +47,13 @@ class CameraRegistration(BaseModel):
 
 
 class BackendError(RuntimeError):
-    pass
+    """A backend call failed. ``status`` is the HTTP status code for a non-OK
+    response, or ``None`` for a transport/network failure (no response arrived).
+    Callers (e.g. the edge clip uploader) use it to retry 429/5xx but not 4xx."""
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def _agent_jwt_from_state() -> str | None:
@@ -138,7 +144,8 @@ class BackendClient:
             raise BackendError(scrub_credentials(f"{method} {path} → {last_exc}"))
         if r.status_code not in ok_codes:
             raise BackendError(
-                scrub_credentials(f"{method} {path} → {r.status_code} {r.text[:300]}")
+                scrub_credentials(f"{method} {path} → {r.status_code} {r.text[:300]}"),
+                status=r.status_code,
             )
         return r
 

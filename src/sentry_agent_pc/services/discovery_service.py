@@ -435,6 +435,10 @@ def reconcile_with_backend(
         return state.cameras, False
 
     remote_by_id = {str(c.get("id")): c for c in remote if c.get("id")}
+    # Signature captured BEFORE the in-place mutation below — the records in
+    # `kept` are the SAME objects as in state.cameras, so a compute_tier change
+    # (not just add/remove) is only detectable against this pre-mutation snapshot.
+    before = [(c.uuid, c.compute_tier) for c in state.cameras]
     kept: list[CameraRecord] = []
     for cam in state.cameras:
         rc = remote_by_id.pop(cam.uuid, None) if cam.uuid else None
@@ -442,6 +446,7 @@ def reconcile_with_backend(
             continue  # deleted on the web → drop locally
         cam.name = str(rc.get("name") or cam.name)
         cam.mediamtx_path = rc.get("mediamtx_path") or cam.mediamtx_path
+        cam.compute_tier = str(rc.get("compute_tier") or cam.compute_tier)  # ADR-0029
         kept.append(cam)
     # Backend cameras we have no local record for: show them (no creds to push).
     for rc in remote_by_id.values():
@@ -452,10 +457,11 @@ def reconcile_with_backend(
                 ip="",
                 rtsp_url="",
                 mediamtx_path=rc.get("mediamtx_path"),
+                compute_tier=str(rc.get("compute_tier") or "cloud"),
             )
         )
 
-    changed = [c.uuid for c in kept] != [c.uuid for c in state.cameras]
+    changed = [(c.uuid, c.compute_tier) for c in kept] != before
     if changed:
         state.cameras = kept
         save_state(state)

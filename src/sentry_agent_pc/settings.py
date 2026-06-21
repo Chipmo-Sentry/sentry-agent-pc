@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     # second direct camera connection (Hikvision/connection-limit safe); when the
     # fan-out isn't serving the camera, no clip is recorded.
     edge_clips_enabled: bool = True
+    # Forward each recorded suspicious clip to the cloud (POST /agent/edge/clips →
+    # sentry-ai VLM → alert), in addition to keeping it in the local gallery. The
+    # clip is already persisted locally, so a failed upload is never lost — the
+    # uploader retries 429/5xx/transport with backoff (ADR-0029 §12 / B3). Off →
+    # clips stay local only (no cloud alert from the edge path).
+    edge_upload_enabled: bool = True
 
     # Self-update (GitHub Releases). When on, the app silently downloads a newer
     # release in the background and restarts itself into it — no click needed —
