@@ -156,9 +156,16 @@ class StreamPusher:
                 if path not in wanted:
                     self._stop_locked(path)
             # Start relays not yet running (or restart if source changed).
+            # Compare codec too: a re-probe can flip h264↔hevc with the SAME URL,
+            # which changes copy-vs-transcode in build_relay_cmd — without this the
+            # relay keeps the wrong argv and the stream silently won't play.
             for path, target in wanted.items():
                 st = self._states.get(path)
-                if st is not None and st.target.lan_rtsp == target.lan_rtsp:
+                if (
+                    st is not None
+                    and st.target.lan_rtsp == target.lan_rtsp
+                    and st.target.codec == target.codec
+                ):
                     continue
                 if st is not None:
                     self._stop_locked(path)

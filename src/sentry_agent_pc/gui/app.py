@@ -709,17 +709,22 @@ class AgentApp(ctk.CTk):
                         log.info("reconnect.resolve_error", ip=cam.ip, error=str(e))
                         rs = None
                     if rs is not None and rs.rtsp_url:
-                        state = load_state()
-                        for c in state.cameras:
-                            if c.uuid == cam.uuid:
-                                c.rtsp_url = rs.rtsp_url
-                                c.codec = rs.codec or c.codec
-                                if rs.width and rs.height:
-                                    c.resolution = (rs.width, rs.height)
-                                changed = True
-                        if changed:
-                            save_state(state)
-                            alive = True
+                        from sentry_agent_pc.state import mutate_state
+
+                        hit = {"matched": False}
+
+                        def _apply(s: Any, rs: Any = rs, hit: Any = hit) -> None:
+                            for c in s.cameras:
+                                if c.matches(cam):
+                                    c.rtsp_url = rs.rtsp_url
+                                    c.codec = rs.codec or c.codec
+                                    if rs.width and rs.height:
+                                        c.resolution = (rs.width, rs.height)
+                                    hit["matched"] = True
+
+                        mutate_state(_apply)
+                        changed = hit["matched"]
+                        alive = changed
             # 3. Restart the push relay (if any) from the latest state.
             get_stream_controller().refresh()
             return {"ok": True, "alive": alive, "changed": changed}
@@ -758,12 +763,16 @@ class AgentApp(ctk.CTk):
             # needs a user session, so an agent token gets a 403 there.
             if cam.uuid:
                 BackendClient().agent_delete_camera(cam.uuid)  # raises on real failure
-            # Backend ok (or no uuid) → drop from local state
-            from sentry_agent_pc.state import save_state
+            # Backend ok (or no uuid) → drop from local state. mutate_state keeps
+            # the read-modify-write atomic vs the heartbeat/reconcile writers, and
+            # cam.matches() avoids wiping every uuid=None camera.
+            from sentry_agent_pc.state import mutate_state
 
-            state = load_state()
-            state.cameras = [x for x in state.cameras if x.uuid != cam.uuid]
-            save_state(state)
+            mutate_state(
+                lambda s: setattr(
+                    s, "cameras", [x for x in s.cameras if not x.matches(cam)]
+                )
+            )
             return {"ok": True}
 
         def done(result: Any) -> None:

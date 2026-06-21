@@ -68,8 +68,14 @@ def _patch_state(monkeypatch, cameras: list[CameraRecord]):  # type: ignore[no-u
     def fake_save(s: AgentState) -> None:
         saved["state"] = s
 
+    def fake_mutate(fn):  # type: ignore[no-untyped-def]
+        fn(state)
+        saved["state"] = state
+        return state
+
     monkeypatch.setattr(svc, "load_state", lambda: state)
     monkeypatch.setattr(svc, "save_state", fake_save)
+    monkeypatch.setattr(svc, "mutate_state", fake_mutate)
     return state, saved
 
 

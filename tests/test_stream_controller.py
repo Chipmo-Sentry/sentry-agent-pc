@@ -69,6 +69,26 @@ def test_relays_use_loopback_when_hub_healthy(monkeypatch) -> None:
     ]
 
 
+def test_stopped_controller_refresh_is_noop(monkeypatch) -> None:
+    """After stop(), a parked refresh() must NOT rebuild relays (orphan-after-quit)."""
+    cams = [_cam("Door", "cam1", "rtsp://u:p@10.0.0.1/1")]
+    monkeypatch.setattr(ctrl_mod, "load_state", lambda: _FakeState(cams))
+    cfg_calls = {"n": 0}
+
+    def _cfg(self) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        cfg_calls["n"] += 1
+        return {"push_enabled": True, "push_rtsp_base": "rtsp://cloud:8554"}
+
+    monkeypatch.setattr(ctrl_mod.BackendClient, "agent_stream_config", _cfg)
+
+    controller = StreamController()
+    controller._local = None
+    controller.stop()  # sets _stopped
+    controller.refresh()  # must bail before fetching config / building relays
+    assert cfg_calls["n"] == 0
+    assert controller._pusher is None
+
+
 def test_relays_use_direct_when_no_hub(monkeypatch) -> None:
     cams = [_cam("Door", "cam1", "rtsp://u:p@10.0.0.1/1")]
     monkeypatch.setattr(ctrl_mod, "load_state", lambda: _FakeState(cams))

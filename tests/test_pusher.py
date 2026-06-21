@@ -85,6 +85,27 @@ def test_sync_starts_and_stops_relays(monkeypatch) -> None:
     assert "cam1" in started and "cam2" in started
 
 
+def test_sync_restarts_relay_on_codec_change(monkeypatch) -> None:
+    """Same URL but a flipped codec (h264↔hevc) must restart the relay so the
+    copy-vs-transcode argv is rebuilt — else the stream silently won't play."""
+    started: list[tuple[str, str | None]] = []
+    release = threading.Event()
+
+    def fake_relay(self, st) -> None:  # noqa: ANN001
+        started.append((st.target.mediamtx_path, st.target.codec))
+        st.running = True
+        release.wait(2.0)
+
+    monkeypatch.setattr(StreamPusher, "_run_relay", fake_relay)
+
+    pusher = StreamPusher("rtsp://mtx:8554")
+    pusher.sync([PushTarget("cam1", "rtsp://lan/1", codec="h264")])
+    pusher.sync([PushTarget("cam1", "rtsp://lan/1", codec="hevc")])  # same URL, new codec
+    release.set()
+    pusher.stop_all()
+    assert started == [("cam1", "h264"), ("cam1", "hevc")]  # restarted, not skipped
+
+
 # ── credential scrubbing (#8) ───────────────────────────────────────────────
 
 

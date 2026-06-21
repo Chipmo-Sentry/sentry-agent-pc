@@ -14,6 +14,20 @@ def test_machine_key_is_stable_across_calls() -> None:
     assert state._machine_key() == state._machine_key()
 
 
+def test_camera_record_matches_by_uuid_or_rtsp_url() -> None:
+    a = state.CameraRecord(uuid="u1", name="A", ip="1.1.1.1", rtsp_url="rtsp://a/1")
+    a2 = state.CameraRecord(uuid="u1", name="A renamed", ip="9.9.9.9", rtsp_url="rtsp://x/9")
+    b = state.CameraRecord(uuid="u2", name="B", ip="2.2.2.2", rtsp_url="rtsp://b/2")
+    assert a.matches(a2)  # same uuid → match despite other fields differing
+    assert not a.matches(b)
+    # Two UNREGISTERED cameras (uuid=None) must NOT all match each other — fall
+    # back to rtsp_url so a None-uuid delete can't wipe every unregistered camera.
+    n1 = state.CameraRecord(name="N1", ip="3.3.3.3", rtsp_url="rtsp://n/1")
+    n2 = state.CameraRecord(name="N2", ip="4.4.4.4", rtsp_url="rtsp://n/2")
+    assert not n1.matches(n2)
+    assert n1.matches(state.CameraRecord(name="dup", ip="x", rtsp_url="rtsp://n/1"))
+
+
 def test_clear_pairing_nulls_every_pairing_field() -> None:
     s = state.AgentState(
         agent_jwt="jwt",

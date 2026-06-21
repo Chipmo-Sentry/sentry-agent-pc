@@ -8,7 +8,9 @@ Flow:
 
 from __future__ import annotations
 
+import contextlib
 import threading
+import tkinter as tk
 from collections.abc import Callable
 from typing import Any
 
@@ -192,6 +194,10 @@ class AddCameraDialog(ctk.CTkToplevel):
             except Exception as e:  # noqa: BLE001
                 log.exception("add_bg_failed")
                 result = {"ok": False, "error": str(e)}
-            self.after(0, lambda: on_done(result))
+            # The probe/resolve can run several seconds; the user may have closed
+            # the dialog meanwhile → guard the after() on a destroyed Toplevel.
+            with contextlib.suppress(tk.TclError):
+                if self.winfo_exists():
+                    self.after(0, lambda: on_done(result))
 
         threading.Thread(target=runner, daemon=True).start()

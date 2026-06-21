@@ -70,6 +70,18 @@ class CameraRecord(BaseModel):
     resolution: tuple[int, int] | None = None
     last_probe_ok_at: str | None = None
 
+    def matches(self, other: CameraRecord) -> bool:
+        """Identity match resilient to a not-yet-registered camera (uuid is None).
+
+        Prefer the backend uuid; fall back to the (per-camera unique) RTSP URL.
+        Without this, matching by ``uuid == other.uuid`` when both are None hits
+        EVERY unregistered camera — a delete would wipe them all, an edit/
+        reconnect would act on the wrong one.
+        """
+        if self.uuid is not None and other.uuid is not None:
+            return self.uuid == other.uuid
+        return self.rtsp_url == other.rtsp_url
+
 
 class AgentState(BaseModel):
     schema_version: int = SCHEMA_VERSION
