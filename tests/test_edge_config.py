@@ -32,3 +32,18 @@ def test_from_dict_none_and_empty_give_defaults() -> None:
 def test_from_dict_ignores_bad_values() -> None:
     c = EdgeConfig.from_dict({"frame_skip": "not-a-number", "open_risk": None})
     assert c == EdgeConfig()  # both rejected → all defaults
+
+
+def test_from_dict_string_bools_parsed_by_content() -> None:
+    # plain bool("false") is True — make sure we parse the string content
+    assert EdgeConfig.from_dict({"upload_clips": "false"}).upload_clips is False
+    assert EdgeConfig.from_dict({"upload_clips": "off"}).upload_clips is False
+    assert EdgeConfig.from_dict({"upload_clips": "true"}).upload_clips is True
+    assert EdgeConfig.from_dict({"upload_clips": "on"}).upload_clips is True
+    # garbage bool string → rejected, keeps default (True)
+    assert EdgeConfig.from_dict({"upload_clips": "maybe"}).upload_clips is True
+
+
+def test_from_dict_int_tolerates_float_strings() -> None:
+    assert EdgeConfig.from_dict({"frame_skip": "5.0"}).frame_skip == 5
+    assert EdgeConfig.from_dict({"max_clips": 7.9}).max_clips == 7

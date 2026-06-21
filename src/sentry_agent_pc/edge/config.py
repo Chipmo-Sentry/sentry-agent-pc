@@ -11,6 +11,13 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from typing import Any
 
+from sentry_agent_pc.logging_setup import get_logger
+
+log = get_logger("sentry_agent_pc.edge.config")
+
+_TRUE_STRINGS = {"1", "true", "yes", "on"}
+_FALSE_STRINGS = {"0", "false", "no", "off"}
+
 
 @dataclass(frozen=True, slots=True)
 class EdgeConfig:
@@ -57,17 +64,31 @@ class EdgeConfig:
             try:
                 kwargs[key] = _coerce(known[key], value)
             except (TypeError, ValueError):
+                log.warning("edge_config.reject_value", key=key, value=repr(value))
                 continue
         return cls(**kwargs)
 
 
 def _coerce(type_str: Any, value: Any) -> Any:
-    """Best-effort coerce a JSON value to the field's annotated scalar type."""
+    """Best-effort coerce a JSON value to the field's annotated scalar type.
+
+    Strings are parsed by content — ``"false"``/``"off"`` become ``False`` (a
+    plain ``bool("false")`` is ``True``, which would silently flip a knob).
+    Invalid values raise so ``from_dict`` rejects + logs them rather than
+    coercing to a wrong default.
+    """
     t = str(type_str)
     if "bool" in t:
+        if isinstance(value, str):
+            s = value.strip().lower()
+            if s in _TRUE_STRINGS:
+                return True
+            if s in _FALSE_STRINGS:
+                return False
+            raise ValueError(f"not a bool: {value!r}")
         return bool(value)
     if "int" in t:
-        return int(value)
+        return int(float(value))  # tolerate "5", "5.0", 5.0 → 5
     if "float" in t:
         return float(value)
     return value

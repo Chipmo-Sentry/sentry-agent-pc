@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -102,9 +103,13 @@ def _xywh_to_xyxy_scaled(
 
 def decode_pose_output(
     raw: NDArray[np.float32], scale: float, pad_x: float, pad_y: float,
-    *, conf: float = 0.35, iou: float = 0.5,
+    *, conf: float = 0.35, iou: float = 0.5, min_kp_conf: float = 0.30,
 ) -> list[PersonDet]:
-    """[1,56,N] (or [56,N]) → persons with COCO-17 keypoints, frame coords."""
+    """[1,56,N] (or [56,N]) → persons with COCO-17 keypoints, frame coords.
+
+    Keypoints below ``min_kp_conf`` are zeroed so downstream consumers
+    (overlay.kp_point's x>1/y>1 gate) treat them as undetected — this is where
+    the EdgeConfig.min_kp_conf knob actually bites."""
     arr = np.squeeze(raw)
     if arr.ndim != 2 or arr.shape[0] < 56:
         return []
@@ -122,6 +127,7 @@ def decode_pose_output(
         kp = arr[idx, 5:56].reshape(17, 3).astype(np.float32).copy()
         kp[:, 0] = (kp[:, 0] - pad_x) / scale
         kp[:, 1] = (kp[:, 1] - pad_y) / scale
+        kp[kp[:, 2] < min_kp_conf] = 0.0  # drop low-confidence keypoints
         out.append(PersonDet(tuple(xyxy[idx].tolist()), float(scores[idx]), kp))
     return out
 
@@ -165,6 +171,7 @@ class LeanOpenVinoDetector:
         device: str = "GPU",
         person_conf: float = 0.35,
         item_conf: float = 0.40,
+        min_kp_conf: float = 0.30,
     ) -> None:
         import openvino as ov  # bundled at runtime — lazy so imports work in CI
 
@@ -174,16 +181,47 @@ class LeanOpenVinoDetector:
             raise FileNotFoundError("bundled OpenVINO model IR not found (build_exe must drop it in bin/)")
         core = ov.Core()
         dev = device if device in core.available_devices else "CPU"
-        log.info("ov_lean.loading", device=dev, pose=str(pose), item=str(item))
-        self._pose = core.compile_model(core.read_model(pose), dev)
-        self._item = core.compile_model(core.read_model(item), dev)
+        self._pose = self._compile(core, pose, dev)
+        self._item = self._compile(core, item, dev)
         self._person_conf = person_conf
         self._item_conf = item_conf
+        self._min_kp_conf = min_kp_conf
+
+    @staticmethod
+    def _compile(core: Any, xml: Path, dev: str) -> Any:
+        """Compile on `dev`, falling back to CPU if the GPU plugin/driver fails.
+
+        ``dev in available_devices`` isn't enough — compile_model can still throw
+        on a flaky iGPU driver or OOM. A silent crash would take edge AI down for
+        the whole store, so retry on CPU (slower but always present) and surface
+        which device actually loaded."""
+        try:
+            cm = core.compile_model(core.read_model(xml), dev)
+            log.info("ov_lean.loaded", device=dev, model=str(xml))
+            return cm
+        except Exception as e:  # noqa: BLE001 — any OV/driver error → CPU retry
+            if dev == "CPU":
+                log.error("ov_lean.compile_failed", device=dev, model=str(xml), error=str(e))
+                raise
+            log.warning("ov_lean.gpu_compile_failed_retry_cpu", model=str(xml), error=str(e))
+            cm = core.compile_model(core.read_model(xml), "CPU")
+            log.info("ov_lean.loaded", device="CPU", model=str(xml))
+            return cm
+
+    def apply_conf(
+        self, *, person_conf: float, item_conf: float, min_kp_conf: float
+    ) -> None:
+        """Hot-apply detection thresholds (config-poller → pipeline.apply_config)."""
+        self._person_conf = person_conf
+        self._item_conf = item_conf
+        self._min_kp_conf = min_kp_conf
 
     def detect(self, frame_bgr: NDArray[np.uint8]) -> DetectResult:
         blob, scale, pad_x, pad_y = letterbox(frame_bgr)
         pose_raw = np.asarray(self._pose(blob)[self._pose.output(0)], dtype=np.float32)
         item_raw = np.asarray(self._item(blob)[self._item.output(0)], dtype=np.float32)
-        persons = decode_pose_output(pose_raw, scale, pad_x, pad_y, conf=self._person_conf)
+        persons = decode_pose_output(
+            pose_raw, scale, pad_x, pad_y, conf=self._person_conf, min_kp_conf=self._min_kp_conf
+        )
         items = decode_det_output(item_raw, scale, pad_x, pad_y, conf=self._item_conf)
         return DetectResult(persons=persons, items=items)

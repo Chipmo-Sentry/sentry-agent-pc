@@ -26,10 +26,12 @@ import threading
 import time
 import tkinter as tk
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     import numpy as np
+
+    from sentry_agent_pc.edge.pipeline import EdgePipeline
 
 # RTSP over TCP is far more reliable than the UDP default on busy LANs. Must be
 # set before the first cv2 VideoCapture is created.
@@ -53,6 +55,31 @@ from sentry_agent_pc.logging_setup import get_logger  # noqa: E402
 from sentry_agent_pc.state import load_state  # noqa: E402
 
 log = get_logger("sentry_agent_pc.gui.local_view")
+
+# Last edge-AI runtime error, surfaced to the main-app sidebar badge. Reader
+# threads (separate live-view window) record here; the sidebar polls it on its
+# periodic refresh, and a camera that recovers clears it (self-healing). Without
+# this, every edge build/infer failure was silent (no-overlay only).
+_edge_err_lock = threading.Lock()
+_last_edge_error: str | None = None
+
+
+def record_edge_error(message: str) -> None:
+    """Store the most recent edge-AI failure (thread-safe; called off-UI)."""
+    global _last_edge_error
+    with _edge_err_lock:
+        _last_edge_error = message
+
+
+def last_edge_error() -> str | None:
+    with _edge_err_lock:
+        return _last_edge_error
+
+
+def clear_edge_error() -> None:
+    global _last_edge_error
+    with _edge_err_lock:
+        _last_edge_error = None
 
 # 12 fps reads as smooth-enough live monitoring while still throttling UI-thread
 # PhotoImage churn. We can afford more than the old 8 now that hardware decode
@@ -212,10 +239,21 @@ class _CameraReader(threading.Thread):
         self._box = (640, 360)
         self._pin: int | None = None  # index of the URL that's working
         self._hw_logged = -2.0  # last logged hwaccel value; log the path once per change
-        # Edge Stage-1 overlay (lazy, fail-safe): built on the reader thread on
-        # the first frame; None when disabled / no bundled model → plain decode.
-        self._edge_built = False
-        self._edge_pipe: object | None = None
+        # Edge Stage-1 overlay — runs on a SEPARATE worker thread so YOLO never
+        # blocks the decode loop (decode stays a tight, low-latency read). Decode
+        # publishes the newest raw frame into a depth-1 slot; the worker pulls the
+        # latest, runs detect+overlay on a tile-sized copy, and produces the shown
+        # image. Decode shows raw until the worker is ready / if edge is off/failed.
+        self._edge_pipe: EdgePipeline | None = None
+        self._edge_on = False  # decided lazily from settings on the first frame
+        self._edge_decided = False
+        self._edge_ready = False  # worker has produced an annotated frame
+        self._edge_failed = False  # build/inference gave up → decode shows raw
+        self._edge_err: str | None = None
+        self._edge_worker: threading.Thread | None = None
+        self._raw_frame: object | None = None
+        self._raw_seq = 0
+        self._raw_lock = threading.Lock()
         self.status = _CONNECTING
         self.detail = "Холбож байна…"
 
@@ -364,7 +402,18 @@ class _CameraReader(threading.Thread):
         return False
 
     def _consume(self, cap: object) -> None:
-        """Pump frames until the stream drops (then the caller reconnects)."""
+        """Pump frames until the stream drops (then the caller reconnects).
+
+        Stays a TIGHT loop: read → publish the newest raw frame for the edge
+        worker (cheap) and/or paint it directly. Inference NEVER runs here, so a
+        slow YOLO infer can't stall reads (the low-latency capture would drop
+        packets mid-GOP → smearing/lag)."""
+        if not self._edge_decided:
+            self._edge_decided = True
+            with contextlib.suppress(Exception):
+                from sentry_agent_pc.settings import get_settings
+
+                self._edge_on = bool(get_settings().edge_ai_enabled)
         fails = 0
         while not self._stop_event.is_set():
             if not self._active.is_set():
@@ -376,35 +425,90 @@ class _CameraReader(threading.Thread):
                     return  # stream dropped → reconnect
                 continue
             fails = 0
-            self._store(self._edge_process(frame))
+            if self._edge_on and not self._edge_failed:
+                self._publish_raw(frame)
+                if self._edge_worker is None:
+                    self._start_edge_worker()
+                # Decode keeps painting raw until the worker takes over — so the
+                # tile is never blank and the video stays live during model load.
+                if not self._edge_ready:
+                    self._store(frame)
+            else:
+                self._store(frame)
 
-    def _edge_process(self, frame: object) -> object:
-        """Run the edge Stage-1 overlay on a BGR frame (lazy, fail-safe).
+    def _publish_raw(self, frame: object) -> None:
+        with self._raw_lock:
+            self._raw_frame = frame
+            self._raw_seq += 1
 
-        Returns the annotated frame, or the input unchanged when edge AI is
-        disabled, the bundled OpenVINO model is absent, or inference errors — the
-        live view must never break because of the optional overlay."""
-        if not self._edge_built:
-            self._edge_built = True
-            with contextlib.suppress(Exception):
-                from sentry_agent_pc.settings import get_settings
+    def _start_edge_worker(self) -> None:
+        self._edge_worker = threading.Thread(
+            target=self._edge_loop, name=f"edge-{self.cam_name}", daemon=True
+        )
+        self._edge_worker.start()
 
-                if get_settings().edge_ai_enabled:
-                    from sentry_agent_pc.edge.ov_lean import LeanOpenVinoDetector
-                    from sentry_agent_pc.edge.pipeline import EdgePipeline
-
-                    self._edge_pipe = EdgePipeline(
-                        self.cam_name, LeanOpenVinoDetector(), recorder=None
-                    )
-                    log.info("local_view.edge_on", cam=self.cam_name)
-            if self._edge_pipe is None:
-                log.info("local_view.edge_off", cam=self.cam_name)
-        if self._edge_pipe is None:
-            return frame
+    def _edge_loop(self) -> None:
+        """Build the edge pipeline once, then continuously annotate the LATEST raw
+        frame (drop-old) on this thread — decoupled from decode."""
         try:
-            return self._edge_pipe.process(frame, time.time())  # type: ignore[attr-defined]
-        except Exception:  # noqa: BLE001 — one bad inference must not stop the stream
-            return frame
+            from sentry_agent_pc.edge.ov_lean import LeanOpenVinoDetector
+            from sentry_agent_pc.edge.pipeline import EdgePipeline
+
+            self._edge_pipe = EdgePipeline(self.cam_name, LeanOpenVinoDetector(), recorder=None)
+            log.info("local_view.edge_on", cam=self.cam_name)
+        except Exception as e:  # noqa: BLE001 — no model/openvino → decode shows raw
+            self._edge_failed = True
+            self._edge_err = str(e)[:160]
+            record_edge_error(self._edge_err)
+            log.info("local_view.edge_off", cam=self.cam_name, reason=self._edge_err)
+            return
+
+        last_seq = -1
+        fail_count = 0
+        while not self._stop_event.is_set() and self._active.is_set():
+            with self._raw_lock:
+                seq, frame = self._raw_seq, self._raw_frame
+            if frame is None or seq == last_seq:
+                if self._stop_event.wait(0.01):
+                    break
+                continue
+            last_seq = seq
+            pipe = self._edge_pipe
+            if pipe is None:
+                return
+            try:
+                # Detect + overlay on a TILE-sized copy (not full res) — YOLO
+                # letterboxes to 640 internally, so this loses no accuracy and
+                # avoids full-res draw/copy churn.
+                annotated = pipe.process(self._fit_to_box(frame), time.time())
+                self._store(annotated)
+                if not self._edge_ready:
+                    clear_edge_error()  # recovered → drop any stale sidebar badge
+                self._edge_ready = True
+                fail_count = 0
+            except Exception as e:  # noqa: BLE001 — one bad infer must not kill edge
+                fail_count += 1
+                if fail_count >= 30:  # persistent failure → release models, show raw
+                    self._edge_failed = True
+                    self._edge_err = str(e)[:160]
+                    record_edge_error(self._edge_err)
+                    self._edge_pipe = None
+                    log.warning("local_view.edge_giveup", cam=self.cam_name, reason=self._edge_err)
+                    return
+
+    def _fit_to_box(self, frame: object) -> Any:
+        """Downscale a BGR frame to fit the tile box (keep aspect), so edge work
+        runs at display resolution, not full decode resolution."""
+        import cv2
+
+        arr = cast("np.ndarray", frame)
+        ih, iw = arr.shape[:2]
+        box_w, box_h = self._get_box()
+        scale = min(box_w / max(1, iw), box_h / max(1, ih))
+        if scale >= 1.0:
+            return arr
+        nw, nh = max(1, int(iw * scale)), max(1, int(ih * scale))
+        return cv2.resize(arr, (nw, nh), interpolation=cv2.INTER_AREA)
 
     def _store(self, frame: object) -> None:
         """BGR frame → tile-sized RGB PIL image (off the UI thread).

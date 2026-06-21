@@ -387,9 +387,17 @@ class AgentApp(ctk.CTk):
 
             if bundled_model_xml("yolo11n-pose_openvino_model") is None:
                 return "⚠ AI: модель алга"
-            return "🟢 AI: OpenVINO бэлэн"
         except Exception:  # noqa: BLE001 — openvino not bundled → AI off, not a crash
             return "⚠ AI: OpenVINO алга"
+        # A runtime failure recorded by a live-view reader thread (build/infer
+        # gave up) — surface it instead of a misleading "ready" so a silently
+        # dark edge AI is visible.
+        from sentry_agent_pc.gui.local_view import last_edge_error
+
+        err = last_edge_error()
+        if err:
+            return f"⚠ AI алдаа: {err[:60]}"
+        return "🟢 AI: OpenVINO бэлэн"
 
     def _clip_store(self) -> ClipStore:
         from sentry_agent_pc.settings import DEFAULT_CONFIG_DIR
@@ -571,8 +579,17 @@ class AgentApp(ctk.CTk):
             return
         try:
             self._refresh_streaming()
+            self._refresh_edge_status()
         finally:
             self._schedule("periodic_refresh", 30000, self._tick_periodic_refresh)
+
+    def _refresh_edge_status(self) -> None:
+        """Repaint the sidebar edge-AI badge so a live-view runtime failure (or a
+        recovery) shows without restarting the app."""
+        label = getattr(self, "_edge_status_label", None)
+        if label is not None:
+            with contextlib.suppress(Exception):
+                label.configure(text=self._edge_status_text())
 
     def _tick_heartbeat(self) -> None:
         """Periodic heartbeat so the cloud keeps this computer marked online.

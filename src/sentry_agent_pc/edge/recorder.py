@@ -37,6 +37,11 @@ log = get_logger("sentry_agent_pc.edge.recorder")
 _SEG_PREFIX = "seg_"
 _SEG_FMT = "%Y%m%d_%H%M%S"  # strftime — 1s granularity
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# No suspicious episode realistically runs longer than this. A protect floor
+# older than keep_sec + this is treated as a LEAK (pipeline died mid-episode
+# without clearing it) and self-expires, so prune can't be pinned forever →
+# unbounded disk growth on an 8GB store PC.
+_MAX_EPISODE_SEC = 300.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,12 +251,14 @@ class SegmentRecorder:
         *,
         segment_sec: float = 1.0,
         keep_sec: float = 45.0,
+        max_episode_sec: float = _MAX_EPISODE_SEC,
     ) -> None:
         self.camera_id = camera_id
         self.src_url = src_url
         self.seg_dir = Path(seg_dir)
         self.segment_sec = segment_sec
         self.keep_sec = keep_sec
+        self.max_episode_sec = max_episode_sec
         self._proc: subprocess.Popen[bytes] | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -265,6 +272,8 @@ class SegmentRecorder:
         self._protect_floor = floor_ts
 
     def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return  # already running — don't spawn a second ffmpeg ring
         self.seg_dir.mkdir(parents=True, exist_ok=True)
         self._stop.clear()
         self._thread = threading.Thread(
@@ -296,7 +305,11 @@ class SegmentRecorder:
         ref = now if now is not None else time.time()
         cutoff = ref - self.keep_sec
         floor = self._protect_floor
-        if floor is not None:
+        # Honour the pre-roll pin ONLY while it's plausibly a live episode. A
+        # floor older than keep_sec + max_episode means the episode that set it
+        # never closed (pipeline died) — self-expire so prune isn't pinned
+        # forever and disk stays bounded.
+        if floor is not None and floor >= ref - (self.keep_sec + self.max_episode_sec):
             cutoff = min(cutoff, floor)
         removed = 0
         for s in list_segments(self.seg_dir, duration=self.segment_sec):
@@ -363,6 +376,10 @@ class EdgeClipRecorder:
         # or grow memory on an 8GB store PC.
         self._queue: queue.Queue[SuspiciousEpisode | None] = queue.Queue(maxsize=16)
         self._worker: threading.Thread | None = None
+        # Set in stop(): makes submit() a no-op so its drop-oldest eviction can
+        # never discard the shutdown sentinel from a full queue (which would
+        # hang the join).
+        self._stopping = threading.Event()
 
     def set_protect_floor(self, oldest_open_start: float | None) -> None:
         """Pin pre-roll: protect segments from (oldest open episode start − pre)."""
@@ -371,6 +388,8 @@ class EdgeClipRecorder:
 
     def submit(self, episode: SuspiciousEpisode) -> None:
         """Queue a closed episode for off-thread clip extraction (non-blocking)."""
+        if self._stopping.is_set():
+            return  # shutting down — don't risk evicting the sentinel
         try:
             self._queue.put_nowait(episode)
         except queue.Full:
@@ -399,6 +418,7 @@ class EdgeClipRecorder:
             self._worker.start()
 
     def stop(self) -> None:
+        self._stopping.set()  # block further submits before queuing the sentinel
         self._recorder.stop()
         if self._worker is not None:
             self._queue.put(None)  # sentinel

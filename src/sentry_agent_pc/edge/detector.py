@@ -15,7 +15,7 @@ replacement — no ultralytics/torch, for the shipped lean installer — is P5.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -53,6 +53,19 @@ class ItemDet:
 class DetectResult:
     persons: list[PersonDet] = field(default_factory=list)
     items: list[ItemDet] = field(default_factory=list)
+
+
+@runtime_checkable
+class ConfTunable(Protocol):
+    """Optional detector mixin: lets the pipeline hot-apply EdgeConfig thresholds.
+
+    Detectors that implement this get person/item/keypoint confidences pushed on
+    construction + every config-poller apply; those that don't keep their own
+    defaults (the pipeline checks ``isinstance(det, ConfTunable)``)."""
+
+    def apply_conf(
+        self, *, person_conf: float, item_conf: float, min_kp_conf: float
+    ) -> None: ...
 
 
 class Detector(Protocol):
@@ -93,6 +106,12 @@ def synthetic_person_kp(cx: float, top: float, person_h: float) -> NDArray[np.fl
 class DummyDetector:
     """Deterministic synthetic detector — one standing person + one item near the
     right wrist. No model/GPU; used by tests and the loop-overhead benchmark."""
+
+    def apply_conf(
+        self, *, person_conf: float, item_conf: float, min_kp_conf: float
+    ) -> None:
+        """No-op: synthetic output is fixed. Implemented so the contract holds
+        and the pipeline's conf push is a uniform code path."""
 
     def detect(self, frame_bgr: NDArray[np.uint8]) -> DetectResult:
         h, w = frame_bgr.shape[:2]
@@ -143,6 +162,14 @@ class OpenVinoYoloDetector:
         self._item_conf = item_conf
         self._imgsz = imgsz
         self._item_classes = list(COCO_ITEM_CLASSES.keys())
+
+    def apply_conf(
+        self, *, person_conf: float, item_conf: float, min_kp_conf: float  # noqa: ARG002
+    ) -> None:
+        """Hot-apply detection thresholds. min_kp_conf is unused here (ultralytics
+        returns its own keypoint confidences); accepted to honour the contract."""
+        self._person_conf = person_conf
+        self._item_conf = item_conf
 
     def detect(self, frame_bgr: NDArray[np.uint8]) -> DetectResult:
         persons = self._detect_persons(frame_bgr)
