@@ -131,6 +131,37 @@ def test_prune_respects_protect_floor(tmp_path: Path) -> None:
     assert rec.prune(now=float(now)) == 50  # now all aged-out segments go
 
 
+def test_protect_floor_self_expires_when_stale(tmp_path: Path) -> None:
+    """A leaked protect floor (pipeline died mid-episode without clearing it)
+    must NOT pin segments forever — once it's older than keep_sec + max_episode
+    the prune ignores it and disk stays bounded."""
+    rec = SegmentRecorder(
+        "cam01", "rtsp://x", tmp_path, segment_sec=1.0, keep_sec=10.0, max_episode_sec=60.0
+    )
+    now = int(datetime(2026, 6, 19, 14, 0, 0).timestamp())
+    _touch_segments(tmp_path, now - 200, 50)  # all far older than keep_sec
+    # floor 200s old > keep_sec(10) + max_episode(60) → treated as a leak, ignored
+    rec.set_protect_floor(float(now - 200))
+    assert rec.prune(now=float(now)) == 50  # self-expired → all aged-out pruned
+
+
+def test_submit_no_op_after_stop_protects_sentinel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sentry_agent_pc.edge import recorder as rm
+
+    monkeypatch.setattr(rm.SegmentRecorder, "start", lambda self: None)
+    monkeypatch.setattr(rm.SegmentRecorder, "stop", lambda self: None)
+    rec = rm.EdgeClipRecorder(
+        "cam01", "rtsp://x", tmp_path, rm.ClipStore(tmp_path / "i.json")
+    )
+    rec.start()
+    rec.stop()  # sets the shutdown flag, drains the worker
+    before = rec._queue.qsize()
+    rec.submit(rm.SuspiciousEpisode("cam01", 0.0, 1.0, 80.0))  # must be a no-op
+    assert rec._queue.qsize() == before  # nothing queued post-stop
+
+
 def test_submit_processes_episode_off_thread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

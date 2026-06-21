@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from sentry_agent_pc.edge.config import EdgeConfig
 from sentry_agent_pc.edge.detector import DetectResult, DummyDetector, ItemDet, PersonDet
 from sentry_agent_pc.edge.pipeline import EdgePipeline
 from sentry_agent_pc.edge.recorder import EdgeClipRecorder, SuspiciousEpisode
@@ -48,6 +49,30 @@ class _SpyRecorder(EdgeClipRecorder):
 
     def set_protect_floor(self, oldest_open_start: float | None) -> None:
         self.floors.append(oldest_open_start)
+
+
+class _ConfDetector:
+    """ConfTunable detector — records the thresholds the pipeline pushes in."""
+
+    def __init__(self) -> None:
+        self.pushed: list[tuple[float, float, float]] = []
+
+    def apply_conf(
+        self, *, person_conf: float, item_conf: float, min_kp_conf: float
+    ) -> None:
+        self.pushed.append((person_conf, item_conf, min_kp_conf))
+
+    def detect(self, frame_bgr: np.ndarray) -> DetectResult:
+        return DetectResult()
+
+
+def test_pipeline_pushes_conf_to_detector_on_init_and_apply() -> None:
+    det = _ConfDetector()
+    EdgePipeline("cam01", det, config=EdgeConfig(person_conf=0.5, item_conf=0.6, min_kp_conf=0.2))
+    assert det.pushed[-1] == (0.5, 0.6, 0.2)  # threaded on construction
+    pipe = EdgePipeline("cam01", det)
+    pipe.apply_config(EdgeConfig(person_conf=0.9, item_conf=0.8, min_kp_conf=0.7))
+    assert det.pushed[-1] == (0.9, 0.8, 0.7)  # hot-applied, no longer dead
 
 
 def test_pipeline_frame_skip_and_overlay_shape() -> None:

@@ -230,7 +230,15 @@ class BackendClient:
     def agent_edge_config(self) -> dict[str, Any]:
         """GET /api/v1/agent/edge-config → tunables to hot-apply (no release)."""
         r = self._request("GET", "/api/v1/agent/edge-config", ok_codes=(200,))
-        return r.json()  # type: ignore[no-any-return]
+        # A proxy/tunnel can return 200 with a non-JSON body (HTML error page);
+        # r.json() would then raise a raw ValueError that bubbles up unscrubbed
+        # and crashes the poller loop. Convert to a scrubbed BackendError.
+        try:
+            return r.json()  # type: ignore[no-any-return]
+        except ValueError as e:
+            raise BackendError(
+                scrub_credentials(f"GET /api/v1/agent/edge-config → bad JSON: {e}")
+            ) from e
 
     def agent_upload_clip(
         self,

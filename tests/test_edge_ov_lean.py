@@ -78,6 +78,23 @@ def test_decode_det_keeps_only_item_classes() -> None:
     assert abs(items[0].box[0] - 185) < 1
 
 
+def test_decode_pose_zeros_low_confidence_keypoints() -> None:
+    raw = np.zeros((1, 56, 2), dtype=np.float32)  # 2 anchors so squeeze keeps 2-D
+    raw[0, 0, 0], raw[0, 1, 0], raw[0, 2, 0], raw[0, 3, 0] = 100, 100, 40, 120
+    raw[0, 4, 0] = 0.9
+    # keypoint 0 confident (v=0.8), keypoint 1 below threshold (v=0.1)
+    raw[0, 5, 0], raw[0, 6, 0], raw[0, 7, 0] = 110, 90, 0.8
+    raw[0, 8, 0], raw[0, 9, 0], raw[0, 10, 0] = 120, 95, 0.1
+    raw[0, 4, 1] = 0.1  # anchor 1 below conf → dropped
+
+    persons = decode_pose_output(raw, 1.0, 0.0, 0.0, conf=0.35, min_kp_conf=0.30)
+    assert len(persons) == 1
+    kp = persons[0].keypoints
+    assert kp is not None
+    assert kp[0, 0] != 0.0  # confident keypoint kept
+    assert tuple(kp[1]) == (0.0, 0.0, 0.0)  # low-conf keypoint zeroed out
+
+
 def test_decode_handles_empty_and_malformed() -> None:
     assert decode_pose_output(np.zeros((1, 56, 4), np.float32), 1.0, 0.0, 0.0, conf=0.9) == []
     assert decode_det_output(np.zeros((1, 84, 4), np.float32), 1.0, 0.0, 0.0, conf=0.9) == []

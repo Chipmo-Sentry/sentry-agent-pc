@@ -86,26 +86,56 @@ if (-not (Test-Path $ffExe)) {
 # bundled OpenVINO runtime — so the SINGLE installer is self-contained: a clean
 # store PC just runs the .exe, no pip / no model export by the user. Export is
 # done HERE at build time (needs ultralytics+openvino on the BUILD machine only;
-# the product never ships ultralytics). Non-fatal: if export fails we WARN and
-# ship without edge AI — the scan/push agent still works; the detector raises a
-# clear error and edge AI stays off until a build includes the models.
+# the product never ships ultralytics).
+#
+# FATAL (NOT non-fatal): edge Stage-1 IS the product now. A release that
+# silently ships without the models boots, looks fine, and leaves every store PC
+# with edge AI dark — the worst failure mode (looks shipped, isn't). So any
+# export/normalize failure must fail the build. $ErrorActionPreference=Stop +
+# the explicit asserts below enforce that.
+#
+# ov_lean.bundled_model_xml() loads bin/<dir>/<dir>.xml, but `yolo export` names
+# the inner IR after the MODEL (yolo11n-pose.xml), not the dir
+# (yolo11n-pose_openvino_model.xml). Normalize the inner .xml/.bin to the dir
+# name so the runtime contract holds regardless of ultralytics' convention.
+function Normalize-OvModel {
+    param([string]$Dir, [string]$Name)
+    # Find the single IR .xml the exporter produced inside $Dir and rename it
+    # (+ its sibling .bin) to "$Name.xml"/"$Name.bin" so it matches what
+    # ov_lean.bundled_model_xml() loads: <Dir>/<Name>.xml.
+    $targetXml = Join-Path $Dir "$Name.xml"
+    if (Test-Path $targetXml) { return }  # already normalized
+    $srcXml = Get-ChildItem -Path $Dir -Filter "*.xml" | Select-Object -First 1
+    if (-not $srcXml) { throw "no .xml found in exported model dir $Dir" }
+    $srcBin = [System.IO.Path]::ChangeExtension($srcXml.FullName, ".bin")
+    if (-not (Test-Path $srcBin)) { throw "no .bin sibling for $($srcXml.Name) in $Dir" }
+    Move-Item -Force $srcXml.FullName $targetXml
+    Move-Item -Force $srcBin (Join-Path $Dir "$Name.bin")
+}
+
 $poseModel = Join-Path $mtxBinDir "yolo11n-pose_openvino_model"
 $itemModel = Join-Path $mtxBinDir "yolo11n_openvino_model"
-if (-not (Test-Path (Join-Path $poseModel "yolo11n-pose_openvino_model.xml"))) {
-    try {
-        Write-Host "==> Exporting YOLO11 models to OpenVINO IR ..." -ForegroundColor Cyan
-        uv pip install "ultralytics>=8.4,<9.0" "openvino>=2024.0"
-        uv run yolo export model=yolo11n-pose.pt format=openvino imgsz=640
-        uv run yolo export model=yolo11n.pt      format=openvino imgsz=640
-        Move-Item -Force "yolo11n-pose_openvino_model" $poseModel
-        Move-Item -Force "yolo11n_openvino_model" $itemModel
-        Write-Host "==> Edge models bundled under $mtxBinDir" -ForegroundColor Green
-    } catch {
-        Write-Warning "YOLO OpenVINO export failed — building WITHOUT edge AI: $_"
-    }
+$poseXml = Join-Path $poseModel "yolo11n-pose_openvino_model.xml"
+$itemXml = Join-Path $itemModel "yolo11n_openvino_model.xml"
+if (-not ((Test-Path $poseXml) -and (Test-Path $itemXml))) {
+    Write-Host "==> Exporting YOLO11 models to OpenVINO IR ..." -ForegroundColor Cyan
+    uv pip install "ultralytics>=8.4,<9.0" "openvino>=2024.0"
+    uv run yolo export model=yolo11n-pose.pt format=openvino imgsz=640
+    uv run yolo export model=yolo11n.pt      format=openvino imgsz=640
+    Remove-Item -Recurse -Force $poseModel -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force $itemModel -ErrorAction SilentlyContinue
+    Move-Item -Force "yolo11n-pose_openvino_model" $poseModel
+    Move-Item -Force "yolo11n_openvino_model" $itemModel
+    Normalize-OvModel -Dir $poseModel -Name "yolo11n-pose_openvino_model"
+    Normalize-OvModel -Dir $itemModel -Name "yolo11n_openvino_model"
+    Write-Host "==> Edge models bundled under $mtxBinDir" -ForegroundColor Green
 } else {
     Write-Host "==> Edge models already present at $poseModel" -ForegroundColor Cyan
 }
+# Hard gate: refuse to ship a build whose runtime cannot find its models.
+if (-not (Test-Path $poseXml)) { Write-Error "Edge pose model missing: $poseXml — refusing to ship a build without edge AI." }
+if (-not (Test-Path $itemXml)) { Write-Error "Edge item model missing: $itemXml — refusing to ship a build without edge AI." }
+Write-Host "==> Verified both edge IR models present." -ForegroundColor Green
 
 # Resolve customtkinter package dir (contains assets/ themes the GUI loads)
 $ctkPath = uv run python -c "import customtkinter, os; print(os.path.dirname(customtkinter.__file__))"
@@ -127,31 +157,47 @@ $iconPath = "src\sentry_agent_pc\assets\icon.ico"
 # falls back to direct camera connections).
 New-Item -ItemType Directory -Force -Path $mtxBinDir | Out-Null
 
+# Resolve the OpenVINO plugin-DLL dir (openvino/libs) so the frozen .exe can
+# load the CPU/GPU inference plugins. --collect-all openvino grabs the python
+# package + most binaries, but the device plugin DLLs (openvino_intel_cpu_plugin
+# .dll etc.) sometimes land outside what PyInstaller hooks pick up; bundling
+# openvino/libs/* explicitly into openvino/libs is belt-and-suspenders so a clean
+# store PC never hits "Cannot load library openvino_intel_cpu_plugin".
+$ovLibs = uv run python -c "import openvino, os; p = os.path.join(os.path.dirname(openvino.__file__), 'libs'); print(p if os.path.isdir(p) else '')"
+if ($ovLibs) { Write-Host "==> openvino libs at: $ovLibs" -ForegroundColor Cyan } else { Write-Warning "openvino/libs not found — relying on --collect-all openvino only." }
+
 # --onedir (NOT --onefile): a one-file exe unpacks python311.dll + deps to a
 # temp _MEI dir at every launch; when the app self-updates (replaces its own
 # exe) that extraction races and fails with "Failed to load Python DLL". A
 # onedir build ships the DLLs alongside the exe (no runtime extraction), so
 # self-update is reliable and startup is faster. Output: dist\ChipmoSentryAgent\.
-uv run pyinstaller `
-    --name ChipmoSentryAgent `
-    --onedir `
-    --windowed `
-    --noconfirm `
-    --clean `
-    --icon "$iconPath" `
-    --add-data "$ctkPath;customtkinter" `
-    --add-data "$onvifPath;wsdl" `
-    --add-data "src\sentry_agent_pc\assets;assets" `
-    --add-data "src\sentry_agent_pc\bin;bin" `
-    --collect-submodules customtkinter `
-    --collect-submodules pystray `
-    --collect-all webview `
-    --collect-all clr_loader `
-    --collect-all cv2 `
-    --collect-all openvino `
-    --hidden-import PIL._tkinter_finder `
-    --hidden-import pystray._win32 `
-    src\sentry_agent_pc\gui_main.py
+# Built as an args array (NOT a backtick-continued line) so the optional
+# --add-binary for openvino libs can be appended conditionally.
+$piArgs = @(
+    "--name", "ChipmoSentryAgent",
+    "--onedir",
+    "--windowed",
+    "--noconfirm",
+    "--clean",
+    "--icon", "$iconPath",
+    "--add-data", "$ctkPath;customtkinter",
+    "--add-data", "$onvifPath;wsdl",
+    "--add-data", "src\sentry_agent_pc\assets;assets",
+    "--add-data", "src\sentry_agent_pc\bin;bin",
+    "--collect-submodules", "customtkinter",
+    "--collect-submodules", "pystray",
+    "--collect-all", "webview",
+    "--collect-all", "clr_loader",
+    "--collect-all", "cv2",
+    "--collect-all", "openvino",
+    "--hidden-import", "PIL._tkinter_finder",
+    "--hidden-import", "pystray._win32"
+)
+if ($ovLibs) {
+    $piArgs += @("--add-binary", "$ovLibs\*;openvino\libs")
+}
+$piArgs += "src\sentry_agent_pc\gui_main.py"
+uv run pyinstaller @piArgs
 
 Write-Host ""
 Write-Host "==> Done. Output: dist\ChipmoSentryAgent\ChipmoSentryAgent.exe (onedir folder)" -ForegroundColor Green
