@@ -25,6 +25,7 @@ from sentry_agent_pc.edge.config import EdgeConfig
 from sentry_agent_pc.edge.detector import ItemDet, PersonDet
 from sentry_agent_pc.edge.overlay import kp_point
 from sentry_agent_pc.edge.recorder import SuspiciousEpisode
+from sentry_agent_pc.edge.zones import CompiledZones, compile_zones, zones_at
 
 # COCO-17 indices used by the gate.
 _KP_L_WRI, _KP_R_WRI = 9, 10
@@ -49,6 +50,16 @@ class _Track:
     # suspicious-clip score breakdown ("which movement banked how much").
     ep_scores: dict[str, float] = field(default_factory=dict)
     ep_first_ts: dict[str, float] = field(default_factory=dict)
+    # docs/29 P1c (edge) zone state — TRACK-lifetime (NOT reset on episode close,
+    # only when the track is dropped): `concealed` latches once the person shows
+    # a concealment posture (so exit_after_concealment can fire later at the door);
+    # the shelf fields count distinct shelf entries; the *_scored flags make each
+    # zone criterion bank at most once per track (no re-pump).
+    concealed: bool = False
+    in_shelf: bool = False
+    shelf_visits: int = 0
+    shelf_scored: bool = False
+    exit_scored: bool = False
 
 
 @dataclass(slots=True)
@@ -83,7 +94,11 @@ def _band(risk_pct: float, *, yellow: float = 40.0, red: float = 70.0) -> str:
 
 
 def _wrist_on_item(
-    kp: NDArray[np.float32] | None, items: list[ItemDet], person_h: float, *, reach_frac: float = 0.35
+    kp: NDArray[np.float32] | None,
+    items: list[ItemDet],
+    person_h: float,
+    *,
+    reach_frac: float = 0.35,
 ) -> bool:
     if kp is None or not items:
         return False
@@ -153,9 +168,17 @@ def _frame_signal(
 class EdgeBehavior:
     """Light per-camera behaviour gate: detections → risk bands + episode events."""
 
-    def __init__(self, camera_id: str, config: EdgeConfig | None = None) -> None:
+    def __init__(
+        self,
+        camera_id: str,
+        config: EdgeConfig | None = None,
+        zones: list[dict[str, object]] | None = None,
+    ) -> None:
         self.camera_id = camera_id
         self.cfg = config or EdgeConfig()
+        # docs/29 P1c — per-camera detection zones (compiled once). From the local
+        # CameraRecord.zones, NOT the config poller (different granularity).
+        self._zones: CompiledZones = compile_zones(zones)
         self._tracks: dict[int, _Track] = {}
         self._next_id = 1
 
@@ -173,7 +196,11 @@ class EdgeBehavior:
         return min(starts) if starts else None
 
     def update(
-        self, persons: list[PersonDet], items: list[ItemDet], now: float
+        self,
+        persons: list[PersonDet],
+        items: list[ItemDet],
+        now: float,
+        frame_wh: tuple[int, int] | None = None,
     ) -> BehaviorFrame:
         matched = self._match(persons)
         bands: list[str] = []
@@ -191,6 +218,15 @@ class EdgeBehavior:
             signal, behaviors, frame_scores = _frame_signal(
                 person.keypoints, items, person_h, self.cfg
             )
+            # docs/29 P1c — latch concealment + add zone-aware signals (no-op when
+            # the camera has no zones or the frame size is unknown).
+            if behaviors & {"conceal", "wrist_to_torso"}:
+                tr.concealed = True
+            if self._zones and frame_wh is not None:
+                zsig, zbeh, zsc = self._zone_signal(tr, person.box, frame_wh)
+                signal += zsig
+                behaviors |= zbeh
+                frame_scores.update(zsc)
             tr.raw = tr.raw * self.cfg.decay + signal
             risk_pct = min(100.0, tr.raw)
             ep = self._advance_episode(tr, risk_pct, behaviors, frame_scores, now)
@@ -202,6 +238,41 @@ class EdgeBehavior:
 
         episodes.extend(self._drop_stale(now))
         return BehaviorFrame(bands=bands, trails=trails, episodes=episodes)
+
+    def _zone_signal(
+        self, tr: _Track, box: tuple[float, float, float, float], frame_wh: tuple[int, int]
+    ) -> tuple[float, set[str], dict[str, float]]:
+        """Zone-aware suspicion for one track this frame (docs/29 P1c). Mirrors the
+        cloud detectors: repeated_shelf_visit (distinct shelf entries → mild) and
+        exit_after_concealment (concealed, then enters an exit zone → strong). Each
+        banks at most once per track via the track-lifetime *_scored flags."""
+        w, h = frame_wh
+        foot_x = (box[0] + box[2]) / 2.0
+        in_zones = zones_at(foot_x / max(1, w), box[3] / max(1, h), self._zones)
+
+        sig = 0.0
+        beh: set[str] = set()
+        sc: dict[str, float] = {}
+
+        # repeated_shelf_visit — count distinct not-inside→inside shelf entries.
+        now_in_shelf = "shelf" in in_zones
+        if now_in_shelf and not tr.in_shelf:
+            tr.shelf_visits += 1
+            if tr.shelf_visits >= self.cfg.repeated_shelf_threshold and not tr.shelf_scored:
+                sig += self.cfg.w_repeated_shelf
+                beh.add("repeated_shelf_visit")
+                sc["repeated_shelf_visit"] = self.cfg.w_repeated_shelf
+                tr.shelf_scored = True
+        tr.in_shelf = now_in_shelf
+
+        # exit_after_concealment — concealed earlier, now standing in an exit zone.
+        if "exit" in in_zones and tr.concealed and not tr.exit_scored:
+            sig += self.cfg.w_exit_after_conceal
+            beh.add("exit_after_concealment")
+            sc["exit_after_concealment"] = self.cfg.w_exit_after_conceal
+            tr.exit_scored = True
+
+        return sig, beh, sc
 
     def _match(self, persons: list[PersonDet]) -> list[int]:
         """Greedy IoU match to existing tracks; unmatched → new track."""
@@ -219,8 +290,11 @@ class EdgeBehavior:
                 best_id = self._next_id
                 self._next_id += 1
                 self._tracks[best_id] = _Track(
-                    track_id=best_id, box=person.box, keypoints=person.keypoints,
-                    last_seen=0.0, trail=deque(maxlen=_TRAIL_MAXLEN),
+                    track_id=best_id,
+                    box=person.box,
+                    keypoints=person.keypoints,
+                    last_seen=0.0,
+                    trail=deque(maxlen=_TRAIL_MAXLEN),
                 )
             used.add(best_id)
             out.append(best_id)
@@ -286,7 +360,9 @@ class EdgeBehavior:
     def _drop_stale(self, now: float) -> list[SuspiciousEpisode]:
         """Drop tracks unseen too long; close any open episode at last_seen."""
         episodes: list[SuspiciousEpisode] = []
-        stale = [t for t, tr in self._tracks.items() if now - tr.last_seen > self.cfg.drop_after_sec]
+        stale = [
+            t for t, tr in self._tracks.items() if now - tr.last_seen > self.cfg.drop_after_sec
+        ]
         for tid in stale:
             tr = self._tracks.pop(tid)
             if tr.state == "suspicious":
