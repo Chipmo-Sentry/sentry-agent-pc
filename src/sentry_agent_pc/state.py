@@ -44,6 +44,7 @@ import tempfile
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 from pydantic import BaseModel, Field
@@ -73,6 +74,11 @@ class CameraRecord(BaseModel):
     # (this PC runs Stage-1 + uploads suspicious clips) | "edge_device". Synced
     # from the backend by reconcile_with_backend; gates the edge clip upload.
     compute_tier: str = "cloud"
+    # docs/29 — per-camera detection zones, drawn in the zone editor: a list of
+    # {"id","type","points":[[x,y],...]} with NORMALIZED 0-1 coords. None = none
+    # drawn yet. The editor loads these to edit; Save PATCHes them to the backend
+    # and persists here. Synced down by reconcile_with_backend (cross-PC).
+    zones: list[dict[str, Any]] | None = None
 
     def matches(self, other: CameraRecord) -> bool:
         """Identity match resilient to a not-yet-registered camera (uuid is None).
