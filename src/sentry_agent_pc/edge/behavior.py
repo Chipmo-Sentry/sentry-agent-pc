@@ -45,6 +45,10 @@ class _Track:
     ep_peak: float = 0.0
     last_active: float = 0.0
     ep_behaviors: set[str] = field(default_factory=set)
+    # Per-movement accumulated score + first-seen offset this episode → the
+    # suspicious-clip score breakdown ("which movement banked how much").
+    ep_scores: dict[str, float] = field(default_factory=dict)
+    ep_first_ts: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -122,23 +126,28 @@ def _frame_signal(
     items: list[ItemDet],
     person_h: float,
     cfg: EdgeConfig | None = None,
-) -> tuple[float, set[str]]:
-    """Instantaneous suspicion increment + active behaviour keys for this frame."""
+) -> tuple[float, set[str], dict[str, float]]:
+    """Instantaneous suspicion increment + active behaviour keys for this frame,
+    plus the per-movement score contribution (drives the episode breakdown)."""
     c = cfg or EdgeConfig()
     behaviors: set[str] = set()
+    scores: dict[str, float] = {}
     score = 0.0
     holding = _wrist_on_item(kp, items, person_h, reach_frac=c.reach_frac)
     if holding:
         behaviors.add("item_pickup")
         score += c.w_holding
+        scores["item_pickup"] = c.w_holding
     if _wrist_to_torso(kp, person_h, near_frac=c.near_frac):
         behaviors.add("wrist_to_torso")
         if holding:
             behaviors.add("conceal")
             score += c.w_conceal
+            scores["conceal"] = c.w_conceal
         else:
             score += c.w_wrist_torso
-    return score, behaviors
+            scores["wrist_to_torso"] = c.w_wrist_torso
+    return score, behaviors, scores
 
 
 class EdgeBehavior:
@@ -179,10 +188,12 @@ class EdgeBehavior:
             tr.trail.append((int((person.box[0] + person.box[2]) / 2), int(person.box[3])))
 
             person_h = max(1.0, person.box[3] - person.box[1])
-            signal, behaviors = _frame_signal(person.keypoints, items, person_h, self.cfg)
+            signal, behaviors, frame_scores = _frame_signal(
+                person.keypoints, items, person_h, self.cfg
+            )
             tr.raw = tr.raw * self.cfg.decay + signal
             risk_pct = min(100.0, tr.raw)
-            ep = self._advance_episode(tr, risk_pct, behaviors, now)
+            ep = self._advance_episode(tr, risk_pct, behaviors, frame_scores, now)
             if ep is not None:
                 episodes.append(ep)
 
@@ -216,19 +227,33 @@ class EdgeBehavior:
         return out
 
     def _advance_episode(
-        self, tr: _Track, risk_pct: float, behaviors: set[str], now: float
+        self,
+        tr: _Track,
+        risk_pct: float,
+        behaviors: set[str],
+        frame_scores: dict[str, float],
+        now: float,
     ) -> SuspiciousEpisode | None:
+        def bank() -> None:
+            for k, v in frame_scores.items():
+                tr.ep_scores[k] = tr.ep_scores.get(k, 0.0) + v
+                tr.ep_first_ts.setdefault(k, now)
+
         if tr.state == "normal":
             if risk_pct >= self.cfg.open_risk:
                 tr.state = "suspicious"
                 tr.ep_start = now
                 tr.ep_peak = risk_pct
                 tr.ep_behaviors = set(behaviors)
+                tr.ep_scores = {}
+                tr.ep_first_ts = {}
+                bank()
                 tr.last_active = now
             return None
         # suspicious
         tr.ep_peak = max(tr.ep_peak, risk_pct)
         tr.ep_behaviors |= behaviors
+        bank()
         if risk_pct >= self.cfg.close_risk:
             tr.last_active = now
         if now - tr.last_active >= self.cfg.post_quiet_sec:
@@ -236,15 +261,26 @@ class EdgeBehavior:
         return None
 
     def _close_episode(self, tr: _Track) -> SuspiciousEpisode:
+        detail = [
+            {
+                "key": k,
+                "offset_sec": round(max(0.0, tr.ep_first_ts.get(k, tr.ep_start) - tr.ep_start), 1),
+                "score": round(score, 1),
+            }
+            for k, score in tr.ep_scores.items()
+        ]
         ep = SuspiciousEpisode(
             camera_id=self.camera_id,
             start_ts=tr.ep_start,
             end_ts=tr.last_active,
             risk_pct=tr.ep_peak,
             behaviors=sorted(tr.ep_behaviors),
+            behavior_detail=detail,
         )
         tr.state = "normal"
         tr.ep_behaviors = set()
+        tr.ep_scores = {}
+        tr.ep_first_ts = {}
         return ep
 
     def _drop_stale(self, now: float) -> list[SuspiciousEpisode]:

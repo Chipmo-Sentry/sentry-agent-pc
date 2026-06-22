@@ -58,15 +58,18 @@ def test_signals_holding_and_conceal() -> None:
     kp[12] = (400.0, 300.0, 0.9)  # right hip at the wrist → wrist-to-torso
     assert _wrist_on_item(kp, items, person_h) is True
     assert _wrist_to_torso(kp, person_h) is True
-    score, behaviors = _frame_signal(kp, items, person_h)
+    score, behaviors, scores = _frame_signal(kp, items, person_h)
     assert score > 0
     assert {"item_pickup", "wrist_to_torso", "conceal"} <= behaviors
+    # the score map carries each movement's contribution
+    assert scores.get("item_pickup", 0.0) > 0
+    assert scores.get("conceal", 0.0) > 0
 
     # wrist far from any item / hip → no signal
     kp2 = np.zeros((17, 3), dtype=np.float32)
     kp2[10] = (50.0, 50.0, 0.9)
-    s2, b2 = _frame_signal(kp2, items, person_h)
-    assert s2 == 0.0 and b2 == set()
+    s2, b2, sc2 = _frame_signal(kp2, items, person_h)
+    assert s2 == 0.0 and b2 == set() and sc2 == {}
 
 
 def test_tracker_stable_and_new_ids() -> None:
@@ -104,6 +107,11 @@ def test_episode_opens_then_closes_with_metadata() -> None:
     assert ep.start_ts <= ep.end_ts
     assert ep.risk_pct >= 60.0
     assert "conceal" in ep.behaviors and "item_pickup" in ep.behaviors
+    # the per-movement score breakdown is banked for the gallery + cloud handoff
+    detail = {d["key"]: d for d in ep.behavior_detail}
+    assert "item_pickup" in detail and "conceal" in detail
+    assert detail["item_pickup"]["score"] > 0  # accumulated over the sustained frames
+    assert all("offset_sec" in d for d in ep.behavior_detail)
 
 
 def test_drop_stale_closes_open_episode() -> None:
