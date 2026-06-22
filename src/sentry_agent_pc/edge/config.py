@@ -32,6 +32,13 @@ class EdgeConfig:
     reach_frac: float = 0.35  # wrist→item proximity as a fraction of person height
     near_frac: float = 0.18  # wrist→hip (concealment) proximity fraction
     min_kp_conf: float = 0.30
+    # docs/29 P1c (edge parity) — zone-aware signals. exit_after_concealment is
+    # strong (a concealed person entering an exit zone should push the gate open
+    # so the clip is recorded + sent to the cloud VLM); repeated_shelf_visit is a
+    # mild dwell hint. No-op on a camera with no zones drawn.
+    w_exit_after_conceal: float = 40.0
+    w_repeated_shelf: float = 3.0
+    repeated_shelf_threshold: int = 3  # distinct shelf entries before it banks
     # Risk → episode FSM
     decay: float = 0.90
     open_risk: float = 60.0

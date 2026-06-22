@@ -31,11 +31,13 @@ class EdgePipeline:
         *,
         config: EdgeConfig | None = None,
         frame_skip: int | None = None,
+        zones: list[dict[str, object]] | None = None,
     ) -> None:
         self.camera_id = camera_id
         self.detector = detector
         self.cfg = config or EdgeConfig()
-        self.behavior = EdgeBehavior(camera_id, self.cfg)
+        # docs/29 P1c — per-camera detection zones (from the local CameraRecord).
+        self.behavior = EdgeBehavior(camera_id, self.cfg, zones=zones)
         self.recorder = recorder
         # explicit frame_skip overrides the config (tests/callers); else config.
         self.frame_skip = max(1, frame_skip if frame_skip is not None else self.cfg.frame_skip)
@@ -65,7 +67,10 @@ class EdgePipeline:
         """Run (or reuse) detection + behaviour for this frame, return the overlay."""
         if self._n % self.frame_skip == 0:
             self._last = self.detector.detect(frame_bgr)
-            self._frame = self.behavior.update(self._last.persons, self._last.items, now)
+            h, w = frame_bgr.shape[:2]
+            self._frame = self.behavior.update(
+                self._last.persons, self._last.items, now, frame_wh=(w, h)
+            )
             if self.recorder is not None:
                 # Protect pre-roll segments of any in-flight episode from pruning,
                 # then hand closed episodes to the recorder OFF this thread.

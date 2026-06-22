@@ -60,6 +60,7 @@ def _find_camera(cam_name: str) -> CameraRecord | None:
             return c
     return None
 
+
 # RTSP over TCP is far more reliable than the UDP default on busy LANs. Must be
 # set before the first cv2 VideoCapture is created.
 #
@@ -109,6 +110,7 @@ def clear_edge_error(camera: str) -> None:
     """Drop a camera's recorded error once it recovers."""
     with _edge_err_lock:
         _edge_errors.pop(camera, None)
+
 
 # 12 fps reads as smooth-enough live monitoring while still throttling UI-thread
 # PhotoImage churn. We can afford more than the old 8 now that hardware decode
@@ -188,15 +190,15 @@ def _redact_host(rtsp_url: str) -> str:
 _SUBSTREAM_RULES: tuple[tuple[str, str], ...] = (
     ("/Streaming/Channels/101", "/Streaming/Channels/102"),  # Hikvision main→sub
     ("/Streaming/Channels/1", "/Streaming/Channels/2"),
-    ("/stream1", "/stream2"),                                 # UNV / Skyworth / generic
-    ("subtype=0", "subtype=1"),                               # Dahua
+    ("/stream1", "/stream2"),  # UNV / Skyworth / generic
+    ("subtype=0", "subtype=1"),  # Dahua
     ("/cam/realmonitor?channel=1&subtype=0", "/cam/realmonitor?channel=1&subtype=1"),
-    ("/h264Preview_01_main", "/h264Preview_01_sub"),          # Reolink
+    ("/h264Preview_01_main", "/h264Preview_01_sub"),  # Reolink
     ("/live/main", "/live/sub"),
     ("/ch1/main", "/ch1/sub"),
     ("/main/av_stream", "/sub/av_stream"),
     ("/videoMain", "/videoSub"),
-    ("/media/video1", "/media/video2"),                       # Uniview / generic ONVIF
+    ("/media/video1", "/media/video2"),  # Uniview / generic ONVIF
     ("/media/video0", "/media/video1"),
     ("/video1", "/video2"),
 )
@@ -388,9 +390,7 @@ class _CameraReader(threading.Thread):
 
         attempts: list[list[int]] = []
         if _HWACCEL_ENABLED:
-            attempts.append(
-                [int(cv2.CAP_PROP_HW_ACCELERATION), int(cv2.VIDEO_ACCELERATION_ANY)]
-            )
+            attempts.append([int(cv2.CAP_PROP_HW_ACCELERATION), int(cv2.VIDEO_ACCELERATION_ANY)])
         attempts.append([])  # plain software open — always tried as the fallback
         for params in attempts:
             try:
@@ -405,7 +405,8 @@ class _CameraReader(threading.Thread):
                     if hw != self._hw_logged:
                         self._hw_logged = hw
                         log.info(
-                            "local_view.decode_path", cam=self.cam_name,
+                            "local_view.decode_path",
+                            cam=self.cam_name,
                             hwaccel="on" if hw > 0 else "software",
                         )
                 return cast("object", cap)
@@ -496,8 +497,17 @@ class _CameraReader(threading.Thread):
             return
 
         recorder = self._build_clip_recorder()
-        self._edge_pipe = EdgePipeline(self.cam_name, detector, recorder=recorder)
-        log.info("local_view.edge_on", cam=self.cam_name, clips=recorder is not None)
+        # docs/29 P1c (edge) — feed the camera's drawn zones to the edge engine so
+        # exit_after_concealment / repeated_shelf_visit fire locally too.
+        cam = _find_camera(self.cam_name)
+        zones = cam.zones if cam is not None else None
+        self._edge_pipe = EdgePipeline(self.cam_name, detector, recorder=recorder, zones=zones)
+        log.info(
+            "local_view.edge_on",
+            cam=self.cam_name,
+            clips=recorder is not None,
+            zones=len(zones) if zones else 0,
+        )
         try:
             self._edge_run()
         finally:
@@ -732,28 +742,43 @@ class _Tile(ctk.CTkFrame):
         bar = ctk.CTkFrame(self, fg_color="transparent")
         bar.pack(fill="x", padx=10, pady=(8, 4))
         ctk.CTkLabel(
-            bar, text=reader.cam_name, font=ctk.CTkFont(size=13, weight="bold"),
-            anchor="w", text_color="gray85",
+            bar,
+            text=reader.cam_name,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            anchor="w",
+            text_color="gray85",
         ).pack(side="left")
 
         self._badge = ctk.CTkLabel(
-            bar, text="", font=ctk.CTkFont(size=11, weight="bold"),
-            corner_radius=6, fg_color="#3B3320", text_color="gray90",
-            padx=8, pady=2,
+            bar,
+            text="",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            corner_radius=6,
+            fg_color="#3B3320",
+            text_color="gray90",
+            padx=8,
+            pady=2,
         )
         self._badge.pack(side="right")
 
         # Fixed-pixel container → the video Label never resizes the tile by text.
         self._holder = ctk.CTkFrame(
-            self, fg_color="#0E0E10", corner_radius=8,
-            width=self._vid_w, height=self._vid_h,
+            self,
+            fg_color="#0E0E10",
+            corner_radius=8,
+            width=self._vid_w,
+            height=self._vid_h,
         )
         self._holder.pack(padx=10, pady=(0, 10))
         self._holder.pack_propagate(False)
 
         self._video = tk.Label(
-            self._holder, bg="#0E0E10", bd=0, highlightthickness=0,
-            fg="gray60", font=("Segoe UI", 12),
+            self._holder,
+            bg="#0E0E10",
+            bd=0,
+            highlightthickness=0,
+            fg="gray60",
+            font=("Segoe UI", 12),
         )
         self._video.pack(fill="both", expand=True)
 
@@ -819,17 +844,23 @@ class LocalLiveView(ctk.CTkToplevel):
         title = ctk.CTkFrame(self, fg_color="transparent")
         title.pack(fill="x", padx=18, pady=(14, 0))
         ctk.CTkLabel(
-            title, text="Шууд харах", font=ctk.CTkFont(size=20, weight="bold"),
-            text_color="gray95", anchor="w",
+            title,
+            text="Шууд харах",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color="gray95",
+            anchor="w",
         ).pack(side="left")
         ctk.CTkLabel(
             title,
             text=(
                 f"{len(cams)} камер · LAN-аас шууд · интернэт шаардахгүй"
                 + (f" · {store}" if store else "")
-                if cams else "Камер алга"
+                if cams
+                else "Камер алга"
             ),
-            font=ctk.CTkFont(size=12), text_color="gray55", anchor="w",
+            font=ctk.CTkFont(size=12),
+            text_color="gray55",
+            anchor="w",
         ).pack(side="left", padx=12, pady=(6, 0))
 
         if not cams:
@@ -857,7 +888,8 @@ class LocalLiveView(ctk.CTkToplevel):
             parts = parse_rtsp(cam.rtsp_url)
             snaps = snapshot_urls(parts["host"]) if parts.get("host") else []
             reader = _CameraReader(
-                cam.name, _reader_urls(cam.rtsp_url, local),
+                cam.name,
+                _reader_urls(cam.rtsp_url, local),
                 start_delay=i * _CONNECT_STAGGER_SEC,
                 snapshot_urls=snaps,
                 snap_user=parts.get("user") or None,
@@ -889,7 +921,9 @@ class LocalLiveView(ctk.CTkToplevel):
             self,
             text="RTSP-тэй камер бүртгэгдээгүй байна.\n"
             "'Камер хайх (Scan)' эсвэл 'Камер нэмэх'-ээр камераа нэмнэ үү.",
-            font=ctk.CTkFont(size=14), text_color="gray55", justify="center",
+            font=ctk.CTkFont(size=14),
+            text_color="gray55",
+            justify="center",
         ).pack(expand=True)
 
     # ----- layout -------------------------------------------------------------
@@ -990,9 +1024,7 @@ class LocalLiveView(ctk.CTkToplevel):
             from sentry_agent_pc.backend_client import BackendClient
             from sentry_agent_pc.edge.config_poller import poll_and_apply
 
-            self._edge_cfg_version = poll_and_apply(
-                BackendClient(), pipes, self._edge_cfg_version
-            )
+            self._edge_cfg_version = poll_and_apply(BackendClient(), pipes, self._edge_cfg_version)
 
         threading.Thread(target=work, name="edge-config-poll", daemon=True).start()
         self.after(30000, self._tick_edge_config)
