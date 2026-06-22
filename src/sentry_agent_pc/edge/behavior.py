@@ -28,9 +28,21 @@ from sentry_agent_pc.edge.recorder import SuspiciousEpisode
 from sentry_agent_pc.edge.zones import CompiledZones, compile_zones, zones_at
 
 # COCO-17 indices used by the gate.
+_KP_L_SHO, _KP_R_SHO = 5, 6
 _KP_L_WRI, _KP_R_WRI = 9, 10
 _KP_L_HIP, _KP_R_HIP = 11, 12
 _TRAIL_MAXLEN = 32
+
+# Items a shopper carries that are NOT merchandise being picked up — holding your
+# own phone near your waist must not read as concealment (the #1 edge false
+# positive). A handbag/backpack is kept: reaching INTO one is the conceal vector.
+_PERSONAL_ITEM_LABELS = frozenset({"cell phone"})
+
+# Decay is applied in WALL-CLOCK time so a camera's frame rate / frame_skip can't
+# silently change sensitivity. `cfg.decay` is the retained fraction per ~1/REF_HZ
+# second, so at REF_HZ detections/sec the behaviour matches the old per-frame
+# decay exactly — only off-rate cameras change (and only to stay consistent).
+_DECAY_REF_HZ = 5.0
 
 
 @dataclass(slots=True)
@@ -100,14 +112,16 @@ def _wrist_on_item(
     *,
     reach_frac: float = 0.35,
 ) -> bool:
-    if kp is None or not items:
+    # A shopper's own carried items (phone) aren't merchandise being picked up.
+    merch = [it for it in items if it.label not in _PERSONAL_ITEM_LABELS]
+    if kp is None or not merch:
         return False
     reach = person_h * reach_frac
     for widx in (_KP_L_WRI, _KP_R_WRI):
         w = kp_point(kp, widx)
         if w is None:
             continue
-        for it in items:
+        for it in merch:
             ix1, iy1, ix2, iy2 = it.box
             nx = min(max(float(w[0]), ix1), ix2)
             ny = min(max(float(w[1]), iy1), iy2)
@@ -119,19 +133,34 @@ def _wrist_on_item(
 def _wrist_to_torso(
     kp: NDArray[np.float32] | None, person_h: float, *, near_frac: float = 0.18
 ) -> bool:
-    """A wrist pulled in to a hip/waist — the pocket/bag concealment posture."""
+    """A wrist pulled in to a hip/waist — the pocket/bag concealment posture.
+
+    Real hips win; when they're off-frame (overhead / upper-body store cameras)
+    estimate a waist line half a body-height below the shoulders so concealment
+    isn't silently dead on high-mounted cams (ports the cloud engine's fallback —
+    this was the #2 edge gap: w_conceal could never fire without hips)."""
     if kp is None:
         return False
     near = person_h * near_frac
+    hips: list[tuple[float, float]] = []
+    for hidx in (_KP_L_HIP, _KP_R_HIP):
+        h = kp_point(kp, hidx)
+        if h is not None:
+            hips.append((float(h[0]), float(h[1])))
+    if not hips:
+        shoulders = [kp_point(kp, s) for s in (_KP_L_SHO, _KP_R_SHO)]
+        valid = [s for s in shoulders if s is not None]
+        if len(valid) == 2:
+            waist_y = (float(valid[0][1]) + float(valid[1][1])) / 2.0 + person_h * 0.5
+            hips = [(float(s[0]), waist_y) for s in valid]
+    if not hips:
+        return False
     for widx in (_KP_L_WRI, _KP_R_WRI):
         w = kp_point(kp, widx)
         if w is None:
             continue
-        for hidx in (_KP_L_HIP, _KP_R_HIP):
-            h = kp_point(kp, hidx)
-            if h is None:
-                continue
-            if ((w[0] - h[0]) ** 2 + (w[1] - h[1]) ** 2) ** 0.5 <= near:
+        for hx, hy in hips:
+            if ((w[0] - hx) ** 2 + (w[1] - hy) ** 2) ** 0.5 <= near:
                 return True
     return False
 
@@ -209,6 +238,7 @@ class EdgeBehavior:
 
         for person, tid in zip(persons, matched, strict=True):
             tr = self._tracks[tid]
+            dt = max(0.0, now - tr.last_seen)  # wall-clock gap since last detection
             tr.box = person.box
             tr.keypoints = person.keypoints
             tr.last_seen = now
@@ -227,7 +257,9 @@ class EdgeBehavior:
                 signal += zsig
                 behaviors |= zbeh
                 frame_scores.update(zsc)
-            tr.raw = tr.raw * self.cfg.decay + signal
+            # Wall-clock decay (#20): retained fraction = decay ** (elapsed * REF_HZ),
+            # so sensitivity no longer rides on the camera's frame rate / frame_skip.
+            tr.raw = tr.raw * (self.cfg.decay ** (dt * _DECAY_REF_HZ)) + signal
             risk_pct = min(100.0, tr.raw)
             ep = self._advance_episode(tr, risk_pct, behaviors, frame_scores, now)
             if ep is not None:

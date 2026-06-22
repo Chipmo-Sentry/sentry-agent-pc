@@ -133,3 +133,51 @@ def test_update_returns_aligned_bands_and_trails() -> None:
     assert len(frame.bands) == len(persons)
     assert len(frame.trails) == len(persons)
     assert all(t.dtype == np.int32 for t in frame.trails)
+
+
+# === recall + precision fixes (2026-06-22) ===
+
+
+def test_wrist_to_torso_hip_fallback_when_hips_off_frame() -> None:
+    # Overhead camera: hips off-frame, but shoulders + wrist visible. The waist is
+    # estimated half a body-height below the shoulders so concealment still fires.
+    person_h = 300.0
+    kp = np.zeros((17, 3), dtype=np.float32)
+    kp[5] = (380.0, 150.0, 0.9)  # left shoulder
+    kp[6] = (420.0, 150.0, 0.9)  # right shoulder
+    kp[9] = (380.0, 300.0, 0.9)  # left wrist on the estimated waist (150 + 300*0.5)
+    assert _wrist_to_torso(kp, person_h) is True
+
+
+def test_hip_fallback_needs_both_shoulders() -> None:
+    person_h = 300.0
+    kp = np.zeros((17, 3), dtype=np.float32)
+    kp[5] = (380.0, 150.0, 0.9)  # only ONE shoulder, no hips → can't estimate waist
+    kp[9] = (380.0, 300.0, 0.9)
+    assert _wrist_to_torso(kp, person_h) is False
+
+
+def test_own_phone_does_not_count_as_holding() -> None:
+    # #1 edge false positive: holding your own phone near your waist must NOT read
+    # as picking up merchandise; a real store item still does.
+    person_h = 300.0
+    kp = np.zeros((17, 3), dtype=np.float32)
+    kp[10] = (400.0, 300.0, 0.9)  # wrist on the item
+    phone = [ItemDet("cell phone", (390.0, 290.0, 415.0, 315.0), 0.8)]
+    assert _wrist_on_item(kp, phone, person_h) is False
+    merch = [ItemDet("bottle", (390.0, 290.0, 415.0, 315.0), 0.8)]
+    assert _wrist_on_item(kp, merch, person_h) is True
+
+
+def test_decay_is_wall_clock_not_per_frame() -> None:
+    # A longer real-time gap decays the score more, so a camera's frame rate /
+    # frame_skip can't silently change sensitivity. Same conceal signal + one idle
+    # frame: the longer gap leaves the lower retained score.
+    persons, items = _conceal_frame()
+    fast, slow = EdgeBehavior("c"), EdgeBehavior("c")
+    fast.update(persons, items, now=0.0)
+    slow.update(persons, items, now=0.0)
+    seeded = fast._tracks[1].raw
+    fast.update([_person(_BOX)], [], now=0.2)  # short gap
+    slow.update([_person(_BOX)], [], now=0.6)  # 3x longer gap
+    assert slow._tracks[1].raw < fast._tracks[1].raw < seeded
