@@ -60,6 +60,14 @@ BRAND_NAVY = "#2A4A73"
 BRAND_NAVY_HOVER = "#36598A"
 CHIPMO_ORANGE = BRAND_ORANGE  # module-wide alias (kept for the existing call sites)
 
+# Edge behaviour-engine movement keys → Mongolian labels (mirrors the cloud
+# vocabulary). Drives the per-clip score breakdown in the «Сэжигтэй» gallery.
+_EDGE_BEHAVIOR_LABELS = {
+    "item_pickup": "Эд зүйл барих",
+    "wrist_to_torso": "Гар бие рүү (нуух хөдөлгөөн)",
+    "conceal": "Эд зүйл нуух",
+}
+
 
 def _theme(widget: str, key: str, value: object) -> None:
     """Set one ThemeManager colour, ignoring keys a CTk version doesn't have."""
@@ -446,6 +454,20 @@ class AgentApp(ctk.CTk):
             info, text=f"Risk {clip.risk_pct:.0f}%  ·  {beh}  ·  {clip.duration:.0f}с",
             anchor="w", font=ctk.CTkFont(size=11), text_color=color,
         ).pack(anchor="w")
+        # Which engine flagged it + the per-movement score breakdown it banked
+        # (so the founder sees *why* this clip became suspicious, not just a total).
+        ctk.CTkLabel(
+            info, text="⚙ Edge behaviour engine (agent-pc)", anchor="w",
+            font=ctk.CTkFont(size=10), text_color="gray55",
+        ).pack(anchor="w")
+        for d in clip.behavior_detail:
+            label = _EDGE_BEHAVIOR_LABELS.get(str(d.get("key", "")), str(d.get("key", "")))
+            score = float(d.get("score", 0) or 0)
+            offset = float(d.get("offset_sec", 0) or 0)
+            ctk.CTkLabel(
+                info, text=f"   • {label}: +{score:.0f} оноо  ({offset:.0f}с-т эхэлсэн)",
+                anchor="w", font=ctk.CTkFont(size=10), text_color="gray65",
+            ).pack(anchor="w")
         ctk.CTkButton(
             row, text="▶ Нээх", width=72, height=28, fg_color="transparent",
             border_width=1, command=lambda p=clip.path: self._open_clip(p),

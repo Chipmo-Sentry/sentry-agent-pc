@@ -64,6 +64,10 @@ class SuspiciousEpisode:
     end_ts: float  # wall-clock when it fully ended
     risk_pct: float
     behaviors: list[str] = field(default_factory=list)
+    # Per-movement score breakdown banked this episode: [{key, offset_sec, score}].
+    # Mirrors the cloud's triggered_behavior_detail so the same per-fire breakdown
+    # surfaces for edge-flagged clips.
+    behavior_detail: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -76,6 +80,7 @@ class ClipRecord:
     risk_pct: float
     behaviors: list[str]
     created_at: float
+    behavior_detail: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def duration(self) -> float:
@@ -146,6 +151,7 @@ def _record_from_dict(d: dict[str, Any]) -> ClipRecord:
         risk_pct=float(d["risk_pct"]),
         behaviors=[str(b) for b in d.get("behaviors", [])],
         created_at=float(d["created_at"]),
+        behavior_detail=list(d.get("behavior_detail", [])),
     )
 
 
@@ -195,6 +201,7 @@ def build_clip(
         clip_id=cid, camera_id=episode.camera_id, path=str(out_path),
         started_at=t0, ended_at=t1, risk_pct=episode.risk_pct,
         behaviors=list(episode.behaviors), created_at=time.time(),
+        behavior_detail=list(episode.behavior_detail),
     )
 
 

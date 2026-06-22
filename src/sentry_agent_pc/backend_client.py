@@ -11,6 +11,7 @@ Two auth modes:
 
 from __future__ import annotations
 
+import json
 import random
 import time
 from typing import Any
@@ -256,22 +257,31 @@ class BackendClient:
         behaviors: list[str],
         started_at: float,
         ended_at: float,
+        behavior_detail: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """POST a suspicious clip (multipart) to the cloud VLM host for a verdict.
 
         The edge already decided it's *worth looking at*; the server re-scores +
-        runs the VLM and creates the alert. Non-retriable (a real upload write)."""
+        runs the VLM and creates the alert. Non-retriable (a real upload write).
+
+        ``behavior_detail`` is the per-movement score breakdown the edge engine
+        banked for this episode ([{key, offset_sec, score}]); the backend stores it
+        as the alert's ``triggered_behavior_detail`` so the same per-fire breakdown
+        surfaces for edge-flagged clips."""
+        data = {
+            "camera_uuid": camera_uuid,
+            "risk_pct": str(risk_pct),
+            "behaviors": ",".join(behaviors),
+            "started_at": str(started_at),
+            "ended_at": str(ended_at),
+        }
+        if behavior_detail:
+            data["edge_behavior_detail"] = json.dumps(behavior_detail, ensure_ascii=False)
         with open(clip_path, "rb") as fh:  # noqa: PTH123 — httpx wants a file object
             r = self._request(
                 "POST",
                 "/api/v1/agent/edge/clips",
-                data={
-                    "camera_uuid": camera_uuid,
-                    "risk_pct": str(risk_pct),
-                    "behaviors": ",".join(behaviors),
-                    "started_at": str(started_at),
-                    "ended_at": str(ended_at),
-                },
+                data=data,
                 files={"clip": ("clip.mp4", fh, "video/mp4")},
                 ok_codes=(200, 201, 202),
             )
