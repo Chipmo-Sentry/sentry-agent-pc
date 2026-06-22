@@ -39,6 +39,7 @@ from sentry_agent_pc.gui.update_dialog import (
     check_in_background,
 )
 from sentry_agent_pc.gui.widgets import BRAND_ORANGE, BRAND_ORANGE_HOVER
+from sentry_agent_pc.gui.zone_editor import ZoneEditorDialog
 from sentry_agent_pc.logging_setup import get_logger
 from sentry_agent_pc.services import discovery_service as svc
 from sentry_agent_pc.settings import get_settings
@@ -663,6 +664,20 @@ class AgentApp(ctk.CTk):
             command=lambda c=cam: self._edit_camera(c),
         ).pack(side="left", padx=2)
 
+        # Draw detection zones (exit/shelf/…) on a freeze-frame (docs/29 P1a).
+        ctk.CTkButton(
+            actions,
+            text="▦ Зон",
+            width=64,
+            height=26,
+            fg_color="transparent",
+            border_width=1,
+            text_color=CHIPMO_ORANGE,
+            border_color=CHIPMO_ORANGE,
+            hover_color="gray25",
+            command=lambda c=cam: self._edit_zones(c),
+        ).pack(side="left", padx=2)
+
         # Manual repair: re-probe the camera and restart its relay. Recovers a
         # camera that was unplugged + came back (the auto-reconnect backoff can
         # be slow) or whose RTSP path drifted, without deleting + re-adding it.
@@ -811,6 +826,22 @@ class AgentApp(ctk.CTk):
             )
             return
         EditCameraDialog(self, cam, on_done=self.refresh_cameras)
+
+    def _edit_zones(self, cam: CameraRecord) -> None:
+        """Open the zone editor (docs/29 P1a) — draw exit/shelf polygons on a
+        freeze-frame. Needs a paired agent (to PATCH) + a local stream to grab a
+        frame; a camera registered on another PC has no rtsp_url here."""
+        if not self._require_paired():
+            return
+        if not cam.uuid:
+            self.set_status("⚠ Энэ камер бүртгэгдээгүй тул зон хадгалах боломжгүй.")
+            return
+        if not cam.rtsp_url:
+            self.set_status(
+                "⚠ Энэ камер өөр компьютероос бүртгэгдсэн — зураг авах стрим алга."
+            )
+            return
+        ZoneEditorDialog(self, cam, on_done=self.refresh_cameras)
 
     def open_pairing(self) -> None:
         PairingDialog(self, on_saved=self._on_pairing_saved)

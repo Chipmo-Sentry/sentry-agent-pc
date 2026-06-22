@@ -13,6 +13,7 @@ import urllib.parse
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
+from typing import Any
 
 from sentry_agent_pc.backend_client import BackendClient, BackendError
 from sentry_agent_pc.discovery import manual as manual_mod
@@ -436,9 +437,11 @@ def reconcile_with_backend(
 
     remote_by_id = {str(c.get("id")): c for c in remote if c.get("id")}
     # Signature captured BEFORE the in-place mutation below — the records in
-    # `kept` are the SAME objects as in state.cameras, so a compute_tier change
-    # (not just add/remove) is only detectable against this pre-mutation snapshot.
-    before = [(c.uuid, c.compute_tier) for c in state.cameras]
+    # `kept` are the SAME objects as in state.cameras, so a compute_tier/zones
+    # change (not just add/remove) is only detectable against this pre-mutation
+    # snapshot. zones is included so a zone edit on another PC syncs + persists
+    # here (docs/29); reassigning cam.zones below leaves this snapshot's old list.
+    before = [(c.uuid, c.compute_tier, c.zones) for c in state.cameras]
     kept: list[CameraRecord] = []
     for cam in state.cameras:
         rc = remote_by_id.pop(cam.uuid, None) if cam.uuid else None
@@ -447,6 +450,7 @@ def reconcile_with_backend(
         cam.name = str(rc.get("name") or cam.name)
         cam.mediamtx_path = rc.get("mediamtx_path") or cam.mediamtx_path
         cam.compute_tier = str(rc.get("compute_tier") or cam.compute_tier)  # ADR-0029
+        cam.zones = rc.get("zones")  # docs/29 — backend is source of truth
         kept.append(cam)
     # Backend cameras we have no local record for: show them (no creds to push).
     for rc in remote_by_id.values():
@@ -458,10 +462,11 @@ def reconcile_with_backend(
                 rtsp_url="",
                 mediamtx_path=rc.get("mediamtx_path"),
                 compute_tier=str(rc.get("compute_tier") or "cloud"),
+                zones=rc.get("zones"),
             )
         )
 
-    changed = [(c.uuid, c.compute_tier) for c in kept] != before
+    changed = [(c.uuid, c.compute_tier, c.zones) for c in kept] != before
     if changed:
         state.cameras = kept
         save_state(state)
@@ -656,6 +661,48 @@ def update_camera_connection(
     saved = mutate_state(_apply)
     target = next((c for c in saved.cameras if c.uuid == camera_uuid), target)
 
+    return RegisterResult(
+        ok=True,
+        camera_uuid=camera_uuid,
+        mediamtx_path=target.mediamtx_path,
+        codec=target.codec,
+        resolution=target.resolution,
+    )
+
+
+def save_camera_zones(
+    *,
+    camera_uuid: str,
+    zones: list[dict[str, Any]],
+    backend: BackendClient | None = None,
+) -> RegisterResult:
+    """Persist the zone editor's drawn polygons (docs/29 P1a).
+
+    PATCHes the backend FIRST (the source of truth) — only on success do we
+    update local state, so the desktop never diverges from the server. ``zones``
+    is the full replacement set in normalized 0-1 image space; ``[]`` clears all
+    zones. The backend caps polygon points (<=512) + zone count (<=64) and
+    rejects malformed polygons, surfaced here as a BackendError → ok=False.
+    """
+    target = next((c for c in load_state().cameras if c.uuid == camera_uuid), None)
+    if target is None:
+        return RegisterResult(ok=False, error="Камер дотоод бүртгэлд олдсонгүй.")
+
+    client = backend or BackendClient()
+    try:
+        client.agent_update_camera(camera_uuid, zones=zones)
+    except BackendError as e:
+        return RegisterResult(ok=False, error=str(e))
+
+    # Apply locally under the lock — re-find inside (it may have been deleted
+    # since the snapshot) so the read-modify-write is atomic vs other writers.
+    def _apply(s: AgentState) -> None:
+        t = next((c for c in s.cameras if c.uuid == camera_uuid), None)
+        if t is not None:
+            t.zones = zones or None  # [] = cleared → store None, matching the model
+
+    saved = mutate_state(_apply)
+    target = next((c for c in saved.cameras if c.uuid == camera_uuid), target)
     return RegisterResult(
         ok=True,
         camera_uuid=camera_uuid,

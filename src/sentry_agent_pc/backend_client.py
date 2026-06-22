@@ -206,11 +206,13 @@ class BackendClient:
         name: str | None = None,
         rtsp_url: str | None = None,
         risk_threshold: float | None = None,
+        zones: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """PATCH /api/v1/agent/cameras/{id} — edit name / connection / threshold.
+        """PATCH /api/v1/agent/cameras/{id} — edit name / connection / threshold / zones.
 
         Only non-None fields are sent (partial update). The backend re-points
-        the live worker at the new rtsp_url when it changes."""
+        the live worker at the new rtsp_url when it changes. For ``zones``,
+        ``None`` = leave unchanged (omitted), ``[]`` = clear all zones (docs/29)."""
         body: dict[str, Any] = {}
         if name is not None:
             body["name"] = name
@@ -218,6 +220,8 @@ class BackendClient:
             body["rtsp_url"] = rtsp_url
         if risk_threshold is not None:
             body["risk_threshold"] = risk_threshold
+        if zones is not None:
+            body["zones"] = zones
         r = self._request(
             "PATCH",
             f"/api/v1/agent/cameras/{camera_uuid}",
