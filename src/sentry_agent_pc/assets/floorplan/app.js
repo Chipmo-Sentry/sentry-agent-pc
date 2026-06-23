@@ -353,16 +353,27 @@ async function pickImage() {
 }
 // A ready-made EDITABLE starter plan (real walls/fixtures the user can use as-is
 // or tweak) — not a background image. Cameras stay as the user placed them.
+// Layout = a tidy convenience-store: outer wall, a back-wall display + two side
+// perimeter shelves, three centre gondola rows with even 80px aisles between
+// them, an Орц/Гарц door bottom-left and two checkout counters bottom-right
+// (so the shopper's path is enter ▸ aisles ▸ checkout ▸ exit).
 const TEMPLATE = {
   walls: [{ points: [[60, 60], [940, 60], [940, 740], [60, 740], [60, 60]] }],
   fixtures: [
-    { type: "exit", points: [[440, 710], [560, 710], [560, 740], [440, 740]] },
-    { type: "checkout", points: [[660, 600], [900, 600], [900, 700], [660, 700]] },
-    { type: "shelf", points: [[120, 150], [460, 150], [460, 230], [120, 230]] },
-    { type: "shelf", points: [[120, 300], [460, 300], [460, 380], [120, 380]] },
-    { type: "shelf", points: [[120, 450], [360, 450], [360, 530], [120, 530]] },
-    { type: "shelf", points: [[560, 150], [880, 150], [880, 230], [560, 230]] },
-    { type: "shelf", points: [[560, 300], [880, 300], [880, 380], [560, 380]] },
+    // entrance / exit door threshold (bottom-left)
+    { type: "exit", points: [[110, 700], [290, 700], [290, 740], [110, 740]] },
+    // checkout counters by the exit (bottom-right)
+    { type: "checkout", points: [[600, 630], [740, 630], [740, 700], [600, 700]] },
+    { type: "checkout", points: [[770, 630], [900, 630], [900, 700], [770, 700]] },
+    // back-wall display run (top)
+    { type: "shelf", points: [[120, 110], [880, 110], [880, 170], [120, 170]] },
+    // left + right perimeter shelves
+    { type: "shelf", points: [[80, 230], [150, 230], [150, 600], [80, 600]] },
+    { type: "shelf", points: [[850, 230], [920, 230], [920, 560], [850, 560]] },
+    // three centre gondola rows (even aisles)
+    { type: "shelf", points: [[230, 250], [770, 250], [770, 310], [230, 310]] },
+    { type: "shelf", points: [[230, 390], [770, 390], [770, 450], [230, 450]] },
+    { type: "shelf", points: [[230, 530], [680, 530], [680, 590], [230, 590]] },
   ],
 };
 function loadTemplate() {
