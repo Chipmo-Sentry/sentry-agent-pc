@@ -31,6 +31,7 @@ from sentry_agent_pc.edge.recorder import ClipRecord, ClipStore
 from sentry_agent_pc.gui import widgets
 from sentry_agent_pc.gui.add_dialog import AddCameraDialog
 from sentry_agent_pc.gui.edit_dialog import EditCameraDialog
+from sentry_agent_pc.gui.floor_plan import FloorPlanPage
 from sentry_agent_pc.gui.scan_dialog import ScanDialog
 from sentry_agent_pc.gui.tray import TrayController
 from sentry_agent_pc.gui.update_dialog import (
@@ -208,6 +209,8 @@ class AgentApp(ctk.CTk):
         self._build_toolbar(self._page_cameras)
         self._build_camera_list(self._page_cameras)
         self._pages["cameras"] = self._page_cameras
+        self._plan_page = FloorPlanPage(self._content, get_cameras=lambda: load_state().cameras)
+        self._pages["plan"] = self._plan_page
         self._pages["alerts"] = self._build_alerts_page(self._content)
         self._pages["behaviors"] = self._build_behaviors_page(self._content)
         self._pages["settings"] = self._build_settings_page(self._content)
@@ -392,6 +395,7 @@ class AgentApp(ctk.CTk):
 
     _NAV: tuple[tuple[str, str, str], ...] = (
         ("cameras", "📷  Камерууд", "page"),
+        ("plan", "🗺  Plan зураг", "page"),
         ("live", "📺  Шууд харах", "action"),
         ("alerts", "⚠  Сэжигтэй", "page"),
         ("behaviors", "🎯  Зан үйл", "page"),
@@ -405,17 +409,29 @@ class AgentApp(ctk.CTk):
         for key, label, kind in self._NAV:
             cmd = self.open_live_view if kind == "action" else self._page_cmd(key)
             btn = ctk.CTkButton(
-                side, text=label, anchor="w", height=40, corner_radius=8,
-                fg_color="transparent", text_color="gray85", hover_color="gray25",
-                font=ctk.CTkFont(size=14), command=cmd,
+                side,
+                text=label,
+                anchor="w",
+                height=40,
+                corner_radius=8,
+                fg_color="transparent",
+                text_color="gray85",
+                hover_color="gray25",
+                font=ctk.CTkFont(size=14),
+                command=cmd,
             )
             btn.pack(fill="x", padx=10, pady=(10 if key == "cameras" else 2, 2))
             if kind == "page":
                 self._nav_buttons[key] = btn
         # Edge-AI status pinned to the bottom so "is the AI running" is always visible.
         self._edge_status_label = ctk.CTkLabel(
-            side, text=self._edge_status_text(), anchor="w", justify="left",
-            font=ctk.CTkFont(size=11), text_color="gray60", wraplength=148,
+            side,
+            text=self._edge_status_text(),
+            anchor="w",
+            justify="left",
+            font=ctk.CTkFont(size=11),
+            text_color="gray60",
+            wraplength=148,
         )
         self._edge_status_label.pack(side="bottom", fill="x", padx=12, pady=12)
 
@@ -433,6 +449,8 @@ class AgentApp(ctk.CTk):
             self._refresh_alerts()
         elif name == "behaviors":
             self._refresh_behaviors()
+        elif name == "plan":
+            self._plan_page.on_show()
 
     def _edge_status_text(self) -> str:
         """Human-readable edge-AI readiness for the sidebar / settings."""
@@ -466,17 +484,24 @@ class AgentApp(ctk.CTk):
         page = ctk.CTkFrame(parent, fg_color="transparent")
         bar = ctk.CTkFrame(page, fg_color="transparent")
         bar.pack(fill="x", padx=16, pady=(14, 4))
-        ctk.CTkLabel(
-            bar, text="Сэжигтэй бичлэгүүд", font=ctk.CTkFont(size=16, weight="bold")
-        ).pack(side="left")
+        ctk.CTkLabel(bar, text="Сэжигтэй бичлэгүүд", font=ctk.CTkFont(size=16, weight="bold")).pack(
+            side="left"
+        )
         ctk.CTkButton(
-            bar, text="↻ Сэргээх", width=100, height=32, fg_color="transparent",
-            border_width=1, command=self._refresh_alerts,
+            bar,
+            text="↻ Сэргээх",
+            width=100,
+            height=32,
+            fg_color="transparent",
+            border_width=1,
+            command=self._refresh_alerts,
         ).pack(side="right")
         ctk.CTkLabel(
             page,
             text="Мөр дээр дарж тухайн тохиолдлын дэлгэрэнгүй (зан үйл·оноо·цаг) хараарай.",
-            anchor="w", font=ctk.CTkFont(size=11), text_color="gray55",
+            anchor="w",
+            font=ctk.CTkFont(size=11),
+            text_color="gray55",
         ).pack(anchor="w", padx=16, pady=(0, 6))
         # Column header — shares the row cell widths so columns line up.
         hdr = ctk.CTkFrame(page, fg_color="gray22", corner_radius=6)
@@ -489,8 +514,11 @@ class AgentApp(ctk.CTk):
             ("Хугацаа", _CLIP_COL_DUR, "e"),
         ):
             lbl = ctk.CTkLabel(
-                hdr, text=text, anchor=anchor,
-                font=ctk.CTkFont(size=11, weight="bold"), text_color="gray70",
+                hdr,
+                text=text,
+                anchor=anchor,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color="gray70",
                 **({"width": w} if w else {}),
             )
             lbl.pack(side="left", fill=("x" if not w else None), expand=(not w), padx=8, pady=5)
@@ -509,7 +537,8 @@ class AgentApp(ctk.CTk):
             ctk.CTkLabel(
                 self._alerts_frame,
                 text="Сэжигтэй бичлэг алга.\n\nAI сэжигтэй үйлдэл илрүүлбэл\n[−3с … +3с] бичлэг энд гарч ирнэ.",
-                text_color="gray60", justify="center",
+                text_color="gray60",
+                justify="center",
             ).pack(pady=50)
             return
         for clip in sorted(clips, key=lambda r: r.created_at, reverse=True):
@@ -523,35 +552,59 @@ class AgentApp(ctk.CTk):
         row.pack(fill="x", pady=2)
         when = datetime.datetime.fromtimestamp(clip.started_at).strftime("%Y-%m-%d %H:%M:%S")
         color = (
-            "#FF6B6B" if clip.risk_pct >= 70
+            "#FF6B6B"
+            if clip.risk_pct >= 70
             else (CHIPMO_ORANGE if clip.risk_pct >= 40 else "gray70")
         )
         labels = [_EDGE_BEHAVIOR_LABELS.get(b, b) for b in clip.behaviors]
         beh = " · ".join(labels) or "—"
 
         ctk.CTkLabel(
-            row, text=clip.camera_id, width=_CLIP_COL_CAM, anchor="w",
+            row,
+            text=clip.camera_id,
+            width=_CLIP_COL_CAM,
+            anchor="w",
             font=ctk.CTkFont(size=12, weight="bold"),
         ).pack(side="left", padx=8, pady=9)
         ctk.CTkLabel(
-            row, text=when, width=_CLIP_COL_WHEN, anchor="w",
-            font=ctk.CTkFont(size=11), text_color="gray75",
+            row,
+            text=when,
+            width=_CLIP_COL_WHEN,
+            anchor="w",
+            font=ctk.CTkFont(size=11),
+            text_color="gray75",
         ).pack(side="left", padx=8)
         ctk.CTkLabel(
-            row, text=f"{clip.risk_pct:.0f}%", width=_CLIP_COL_RISK, anchor="e",
-            font=ctk.CTkFont(size=12, weight="bold"), text_color=color,
+            row,
+            text=f"{clip.risk_pct:.0f}%",
+            width=_CLIP_COL_RISK,
+            anchor="e",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=color,
         ).pack(side="left", padx=8)
         ctk.CTkLabel(
-            row, text=beh, anchor="w", justify="left",
-            font=ctk.CTkFont(size=11), text_color="gray80",
+            row,
+            text=beh,
+            anchor="w",
+            justify="left",
+            font=ctk.CTkFont(size=11),
+            text_color="gray80",
         ).pack(side="left", fill="x", expand=True, padx=8)
         ctk.CTkLabel(
-            row, text=f"{clip.duration:.0f}с", width=_CLIP_COL_DUR, anchor="e",
-            font=ctk.CTkFont(size=11), text_color="gray65",
+            row,
+            text=f"{clip.duration:.0f}с",
+            width=_CLIP_COL_DUR,
+            anchor="e",
+            font=ctk.CTkFont(size=11),
+            text_color="gray65",
         ).pack(side="left", padx=8)
         ctk.CTkLabel(
-            row, text="›", width=18, anchor="e",
-            font=ctk.CTkFont(size=16), text_color="gray55",
+            row,
+            text="›",
+            width=18,
+            anchor="e",
+            font=ctk.CTkFont(size=16),
+            text_color="gray55",
         ).pack(side="left", padx=(0, 8))
 
         _bind_row_click(row, lambda: self._open_clip_detail(clip))
@@ -577,7 +630,9 @@ class AgentApp(ctk.CTk):
         head = ctk.CTkFrame(win, fg_color="transparent")
         head.pack(fill="x", padx=16, pady=(14, 6))
         ctk.CTkLabel(
-            head, text=f"{clip.camera_id}", anchor="w",
+            head,
+            text=f"{clip.camera_id}",
+            anchor="w",
             font=ctk.CTkFont(size=15, weight="bold"),
         ).pack(anchor="w")
         ctk.CTkLabel(
@@ -587,18 +642,27 @@ class AgentApp(ctk.CTk):
                 f"Дээд эрсдэл {clip.risk_pct:.0f}%  ·  {clip.duration:.0f}с  ·  "
                 "⚙ Edge behaviour engine"
             ),
-            anchor="w", font=ctk.CTkFont(size=11), text_color="gray65",
+            anchor="w",
+            font=ctk.CTkFont(size=11),
+            text_color="gray65",
         ).pack(anchor="w")
 
         # Column header
         hdr = ctk.CTkFrame(win, fg_color="gray20", corner_radius=6)
         hdr.pack(fill="x", padx=16, pady=(8, 0))
         for text, w, anchor in (
-            ("Цаг", 96, "w"), ("Зан үйл", 200, "w"), ("Оноо", 70, "e"), ("Эрсдэл", 70, "e")
+            ("Цаг", 96, "w"),
+            ("Зан үйл", 200, "w"),
+            ("Оноо", 70, "e"),
+            ("Эрсдэл", 70, "e"),
         ):
             ctk.CTkLabel(
-                hdr, text=text, width=w, anchor=anchor,
-                font=ctk.CTkFont(size=11, weight="bold"), text_color="gray80",
+                hdr,
+                text=text,
+                width=w,
+                anchor=anchor,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color="gray80",
             ).pack(side="left", padx=6, pady=4)
 
         # Footer pinned to the bottom FIRST (setup_dialog convention) so it never
@@ -621,15 +685,33 @@ class AgentApp(ctk.CTk):
                 line = ctk.CTkFrame(body, fg_color="transparent")
                 line.pack(fill="x", pady=1)
                 clock = datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else "—"
-                ctk.CTkLabel(line, text=clock, width=96, anchor="w",
-                             font=ctk.CTkFont(size=11), text_color="gray70").pack(side="left", padx=6)
-                ctk.CTkLabel(line, text=label, width=200, anchor="w",
-                             font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
-                ctk.CTkLabel(line, text=f"+{amount:.0f}", width=70, anchor="e",
-                             font=ctk.CTkFont(size=11, weight="bold"),
-                             text_color="#7CD992").pack(side="left", padx=6)
-                ctk.CTkLabel(line, text=f"{risk:.0f}%", width=70, anchor="e",
-                             font=ctk.CTkFont(size=11), text_color=tcol).pack(side="left", padx=6)
+                ctk.CTkLabel(
+                    line,
+                    text=clock,
+                    width=96,
+                    anchor="w",
+                    font=ctk.CTkFont(size=11),
+                    text_color="gray70",
+                ).pack(side="left", padx=6)
+                ctk.CTkLabel(
+                    line, text=label, width=200, anchor="w", font=ctk.CTkFont(size=11)
+                ).pack(side="left", padx=6)
+                ctk.CTkLabel(
+                    line,
+                    text=f"+{amount:.0f}",
+                    width=70,
+                    anchor="e",
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    text_color="#7CD992",
+                ).pack(side="left", padx=6)
+                ctk.CTkLabel(
+                    line,
+                    text=f"{risk:.0f}%",
+                    width=70,
+                    anchor="e",
+                    font=ctk.CTkFont(size=11),
+                    text_color=tcol,
+                ).pack(side="left", padx=6)
             note = (
                 f"Нийт {len(clip.events)} дохио  ·  цугларсан +{total:.0f} оноо.  "
                 "Дохио хооронд эрсдэл аажмаар буурдаг (decay)."
@@ -644,28 +726,55 @@ class AgentApp(ctk.CTk):
                 total += score
                 line = ctk.CTkFrame(body, fg_color="transparent")
                 line.pack(fill="x", pady=1)
-                ctk.CTkLabel(line, text=f"{offset:.0f}с-т", width=96, anchor="w",
-                             font=ctk.CTkFont(size=11), text_color="gray70").pack(side="left", padx=6)
-                ctk.CTkLabel(line, text=label, width=200, anchor="w",
-                             font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
-                ctk.CTkLabel(line, text=f"+{score:.0f}", width=70, anchor="e",
-                             font=ctk.CTkFont(size=11, weight="bold"),
-                             text_color="#7CD992").pack(side="left", padx=6)
-                ctk.CTkLabel(line, text="—", width=70, anchor="e",
-                             font=ctk.CTkFont(size=11), text_color="gray60").pack(side="left", padx=6)
+                ctk.CTkLabel(
+                    line,
+                    text=f"{offset:.0f}с-т",
+                    width=96,
+                    anchor="w",
+                    font=ctk.CTkFont(size=11),
+                    text_color="gray70",
+                ).pack(side="left", padx=6)
+                ctk.CTkLabel(
+                    line, text=label, width=200, anchor="w", font=ctk.CTkFont(size=11)
+                ).pack(side="left", padx=6)
+                ctk.CTkLabel(
+                    line,
+                    text=f"+{score:.0f}",
+                    width=70,
+                    anchor="e",
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    text_color="#7CD992",
+                ).pack(side="left", padx=6)
+                ctk.CTkLabel(
+                    line,
+                    text="—",
+                    width=70,
+                    anchor="e",
+                    font=ctk.CTkFont(size=11),
+                    text_color="gray60",
+                ).pack(side="left", padx=6)
             note = f"Цугларсан +{total:.0f} оноо (нэгтгэсэн — энэ бичлэг хугацааны задаргаагүй)."
         else:
             ctk.CTkLabel(
-                body, text="Онооны задаргаа алга.", text_color="gray60",
+                body,
+                text="Онооны задаргаа алга.",
+                text_color="gray60",
             ).pack(pady=20)
             note = "Энэ бичлэгт зан үйлийн задаргаа бүртгэгдээгүй."
 
         ctk.CTkLabel(
-            foot, text=note,
-            anchor="w", font=ctk.CTkFont(size=10), text_color="gray60", wraplength=380,
+            foot,
+            text=note,
+            anchor="w",
+            font=ctk.CTkFont(size=10),
+            text_color="gray60",
+            wraplength=380,
         ).pack(side="left")
         ctk.CTkButton(
-            foot, text="▶ Видео", width=80, height=30,
+            foot,
+            text="▶ Видео",
+            width=80,
+            height=30,
             command=lambda p=clip.path: self._open_clip(p),
         ).pack(side="right")
 
@@ -690,8 +799,13 @@ class AgentApp(ctk.CTk):
             bar, text="Зан үйлийн жагсаалт", font=ctk.CTkFont(size=16, weight="bold")
         ).pack(side="left")
         ctk.CTkButton(
-            bar, text="↻ Сэргээх", width=100, height=32, fg_color="transparent",
-            border_width=1, command=self._refresh_behaviors,
+            bar,
+            text="↻ Сэргээх",
+            width=100,
+            height=32,
+            fg_color="transparent",
+            border_width=1,
+            command=self._refresh_behaviors,
         ).pack(side="right")
         ctk.CTkLabel(
             page,
@@ -700,8 +814,11 @@ class AgentApp(ctk.CTk):
                 "тухайн хөдөлгөөн илрэхэд суспиц оноонд хэдэн оноо нэмэхийг заана — "
                 "superadmin-аас дэлгүүр тус бүрээр тааруулна."
             ),
-            anchor="w", justify="left", font=ctk.CTkFont(size=11),
-            text_color="gray60", wraplength=640,
+            anchor="w",
+            justify="left",
+            font=ctk.CTkFont(size=11),
+            text_color="gray60",
+            wraplength=640,
         ).pack(anchor="w", padx=16, pady=(0, 8))
         self._behaviors_version = ctk.CTkLabel(
             page, text="", anchor="w", font=ctk.CTkFont(size=10), text_color="gray55"
@@ -721,12 +838,14 @@ class AgentApp(ctk.CTk):
         # Header
         hdr = ctk.CTkFrame(self._behaviors_frame, fg_color="gray20", corner_radius=6)
         hdr.pack(fill="x", pady=(0, 4))
-        for text, width, anchor in (
-            ("Зан үйл", 190, "w"), ("Тайлбар", 360, "w"), ("Жин", 70, "e")
-        ):
+        for text, width, anchor in (("Зан үйл", 190, "w"), ("Тайлбар", 360, "w"), ("Жин", 70, "e")):
             ctk.CTkLabel(
-                hdr, text=text, width=width, anchor=anchor,
-                font=ctk.CTkFont(size=11, weight="bold"), text_color="gray80",
+                hdr,
+                text=text,
+                width=width,
+                anchor=anchor,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color="gray80",
             ).pack(side="left", padx=8, pady=5)
         # Rows — seed weights from local defaults; the live fetch overrides below.
         defaults = EdgeConfig()
@@ -734,19 +853,31 @@ class AgentApp(ctk.CTk):
             row = ctk.CTkFrame(self._behaviors_frame, fg_color="gray17", corner_radius=8)
             row.pack(fill="x", pady=2)
             ctk.CTkLabel(
-                row, text=b["label"], width=190, anchor="w",
+                row,
+                text=b["label"],
+                width=190,
+                anchor="w",
                 font=ctk.CTkFont(size=12, weight="bold"),
             ).pack(side="left", padx=8, pady=8)
             ctk.CTkLabel(
-                row, text=b["desc"], width=360, anchor="w", justify="left",
-                font=ctk.CTkFont(size=11), text_color="gray70", wraplength=350,
+                row,
+                text=b["desc"],
+                width=360,
+                anchor="w",
+                justify="left",
+                font=ctk.CTkFont(size=11),
+                text_color="gray70",
+                wraplength=350,
             ).pack(side="left", padx=8, pady=8)
             wkey = b.get("weight_key") or ""
             seed = getattr(defaults, wkey, None) if wkey else None
             lbl = ctk.CTkLabel(
-                row, text=(f"+{float(seed):.0f}" if seed is not None else "—"),
-                width=70, anchor="e",
-                font=ctk.CTkFont(size=12, weight="bold"), text_color=CHIPMO_ORANGE,
+                row,
+                text=(f"+{float(seed):.0f}" if seed is not None else "—"),
+                width=70,
+                anchor="e",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color=CHIPMO_ORANGE,
             )
             lbl.pack(side="left", padx=8, pady=8)
             if wkey:
@@ -790,16 +921,18 @@ class AgentApp(ctk.CTk):
 
     def _build_settings_page(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
         page = ctk.CTkFrame(parent, fg_color="transparent")
-        ctk.CTkLabel(
-            page, text="Тохиргоо", font=ctk.CTkFont(size=16, weight="bold")
-        ).pack(anchor="w", padx=16, pady=(14, 8))
+        ctk.CTkLabel(page, text="Тохиргоо", font=ctk.CTkFont(size=16, weight="bold")).pack(
+            anchor="w", padx=16, pady=(14, 8)
+        )
         card = ctk.CTkFrame(page, fg_color="gray17", corner_radius=10)
         card.pack(fill="x", padx=16, pady=4)
 
         def _row(label: str, value: str) -> None:
             r = ctk.CTkFrame(card, fg_color="transparent")
             r.pack(fill="x", padx=14, pady=6)
-            ctk.CTkLabel(r, text=label, anchor="w", text_color="gray60", width=140).pack(side="left")
+            ctk.CTkLabel(r, text=label, anchor="w", text_color="gray60", width=140).pack(
+                side="left"
+            )
             ctk.CTkLabel(r, text=value, anchor="w").pack(side="left")
 
         st = load_state()
@@ -808,10 +941,16 @@ class AgentApp(ctk.CTk):
         _row("Edge AI", self._edge_status_text())
         btns = ctk.CTkFrame(page, fg_color="transparent")
         btns.pack(fill="x", padx=16, pady=10)
-        ctk.CTkButton(btns, text="🔗 Холболт", width=120, command=self.open_pairing).pack(side="left")
+        ctk.CTkButton(btns, text="🔗 Холболт", width=120, command=self.open_pairing).pack(
+            side="left"
+        )
         ctk.CTkButton(
-            btns, text="⬆ Шинэчлэл", width=120, fg_color="transparent",
-            border_width=1, command=self.open_update,
+            btns,
+            text="⬆ Шинэчлэл",
+            width=120,
+            fg_color="transparent",
+            border_width=1,
+            command=self.open_update,
         ).pack(side="left", padx=8)
         return page
 
@@ -1111,9 +1250,7 @@ class AgentApp(ctk.CTk):
             from sentry_agent_pc.state import mutate_state
 
             mutate_state(
-                lambda s: setattr(
-                    s, "cameras", [x for x in s.cameras if not x.matches(cam)]
-                )
+                lambda s: setattr(s, "cameras", [x for x in s.cameras if not x.matches(cam)])
             )
             return {"ok": True}
 
@@ -1164,9 +1301,7 @@ class AgentApp(ctk.CTk):
             self.set_status("⚠ Энэ камер бүртгэгдээгүй тул зон хадгалах боломжгүй.")
             return
         if not cam.rtsp_url:
-            self.set_status(
-                "⚠ Энэ камер өөр компьютероос бүртгэгдсэн — зураг авах стрим алга."
-            )
+            self.set_status("⚠ Энэ камер өөр компьютероос бүртгэгдсэн — зураг авах стрим алга.")
             return
         ZoneEditorDialog(self, cam, on_done=self.refresh_cameras)
 
@@ -1247,9 +1382,7 @@ class AgentApp(ctk.CTk):
         # Re-arm the periodic check first, so a failure anywhere below can't stop
         # future checks. Floor the interval so a misconfig can't hammer GitHub.
         interval_h = max(0.25, get_settings().update_check_interval_hours)
-        self._schedule(
-            "auto_check_update", int(interval_h * 3600 * 1000), self._auto_check_update
-        )
+        self._schedule("auto_check_update", int(interval_h * 3600 * 1000), self._auto_check_update)
 
         if self._update_in_progress:
             return  # a download/apply from a previous check is still underway
