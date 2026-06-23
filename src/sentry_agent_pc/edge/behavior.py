@@ -44,6 +44,18 @@ _PERSONAL_ITEM_LABELS = frozenset({"cell phone"})
 # decay exactly — only off-rate cameras change (and only to stay consistent).
 _DECAY_REF_HZ = 5.0
 
+# Behaviour key → (interval EdgeConfig attr, min-duration EdgeConfig attr). Drives
+# the per-behaviour timing gate: a behaviour banks only after it's been active for
+# >= min-duration sec, then at most once per interval sec. Both default 0 (= the
+# old per-frame banking). Configured globally from superadmin.
+_BEHAVIOR_TIMING: dict[str, tuple[str, str]] = {
+    "item_pickup": ("interval_holding", "mindur_holding"),
+    "wrist_to_torso": ("interval_wrist_torso", "mindur_wrist_torso"),
+    "conceal": ("interval_conceal", "mindur_conceal"),
+    "repeated_shelf_visit": ("interval_repeated_shelf", "mindur_repeated_shelf"),
+    "exit_after_concealment": ("interval_exit_after_conceal", "mindur_exit_after_conceal"),
+}
+
 
 @dataclass(slots=True)
 class _Track:
@@ -77,6 +89,11 @@ class _Track:
     shelf_visits: int = 0
     shelf_scored: bool = False
     exit_scored: bool = False
+    # Per-behaviour TIMING-gate state: when each behaviour started being
+    # continuously active (reset when it goes inactive), and when it last banked
+    # (so `interval_*` debounces re-banking). Track-lifetime.
+    beh_active_since: dict[str, float] = field(default_factory=dict)
+    beh_last_bank: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -250,7 +267,7 @@ class EdgeBehavior:
             tr.trail.append((int((person.box[0] + person.box[2]) / 2), int(person.box[3])))
 
             person_h = max(1.0, person.box[3] - person.box[1])
-            signal, behaviors, frame_scores = _frame_signal(
+            _signal, behaviors, frame_scores = _frame_signal(
                 person.keypoints, items, person_h, self.cfg
             )
             # docs/29 P1c — latch concealment + add zone-aware signals (no-op when
@@ -258,15 +275,19 @@ class EdgeBehavior:
             if behaviors & {"conceal", "wrist_to_torso"}:
                 tr.concealed = True
             if self._zones and frame_wh is not None:
-                zsig, zbeh, zsc = self._zone_signal(tr, person.box, frame_wh)
-                signal += zsig
+                _zsig, zbeh, zsc = self._zone_signal(tr, person.box, frame_wh)
                 behaviors |= zbeh
                 frame_scores.update(zsc)
+            # Per-behaviour TIMING gate (founder): a behaviour banks its score only
+            # after it's been active >= min-duration sec, then once per interval sec.
+            # So the risk + the breakdown both reflect the gated banks (default 0/0 =
+            # the old per-frame banking, unchanged).
+            gated = self._apply_timing_gate(tr, frame_scores, now)
             # Wall-clock decay (#20): retained fraction = decay ** (elapsed * REF_HZ),
             # so sensitivity no longer rides on the camera's frame rate / frame_skip.
-            tr.raw = tr.raw * (self.cfg.decay ** (dt * _DECAY_REF_HZ)) + signal
+            tr.raw = tr.raw * (self.cfg.decay ** (dt * _DECAY_REF_HZ)) + sum(gated.values())
             risk_pct = min(100.0, tr.raw)
-            ep = self._advance_episode(tr, risk_pct, behaviors, frame_scores, now)
+            ep = self._advance_episode(tr, risk_pct, set(gated), gated, now)
             if ep is not None:
                 episodes.append(ep)
 
@@ -275,6 +296,37 @@ class EdgeBehavior:
 
         episodes.extend(self._drop_stale(now))
         return BehaviorFrame(bands=bands, trails=trails, episodes=episodes)
+
+    def _apply_timing_gate(
+        self, tr: _Track, frame_scores: dict[str, float], now: float
+    ) -> dict[str, float]:
+        """Filter this frame's per-behaviour scores by each behaviour's timing gate.
+
+        A behaviour banks only when it has been continuously active for at least
+        its ``mindur_*`` seconds, and then at most once per ``interval_*`` seconds.
+        Both default to 0 → every active frame banks (the old behaviour). Tracks
+        per-behaviour continuity + last-bank time on the track; a behaviour that
+        goes inactive resets so it re-banks promptly on return."""
+        gated: dict[str, float] = {}
+        for key, amount in frame_scores.items():
+            iv_attr, md_attr = _BEHAVIOR_TIMING.get(key, ("", ""))
+            interval = float(getattr(self.cfg, iv_attr, 0.0)) if iv_attr else 0.0
+            mindur = float(getattr(self.cfg, md_attr, 0.0)) if md_attr else 0.0
+            since = tr.beh_active_since.get(key)
+            if since is None:
+                since = now
+                tr.beh_active_since[key] = now
+            last = tr.beh_last_bank.get(key)
+            if (now - since) >= mindur and (last is None or (now - last) >= interval):
+                gated[key] = amount
+                tr.beh_last_bank[key] = now
+        # Reset continuity for behaviours not active this frame so the min-duration
+        # clock restarts (and a returning behaviour banks promptly).
+        for key in list(tr.beh_active_since):
+            if key not in frame_scores:
+                tr.beh_active_since.pop(key, None)
+                tr.beh_last_bank.pop(key, None)
+        return gated
 
     def _zone_signal(
         self, tr: _Track, box: tuple[float, float, float, float], frame_wh: tuple[int, int]

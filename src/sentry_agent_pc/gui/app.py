@@ -673,32 +673,46 @@ class AgentApp(ctk.CTk):
         body.pack(fill="both", expand=True, padx=16, pady=(2, 4))
         total = 0.0
         if clip.events:
-            # Per-fire timeline: one row per banking, time RELATIVE to the episode
-            # start (so the cadence — "+5 every 0.2с" — is obvious at a glance).
-            _hdr((("Хугацаа", 96, "w"), ("Зан үйл", 210, "w"), ("Оноо", 64, "e"), ("Эрсдэл", 64, "e")))
+            # Per-fire timeline: one row per banking. «Хугацаа» = seconds from the
+            # episode start (2 decimals); «Зай» = gap from the PREVIOUS bank in ms
+            # (founder: "тэр хооронд хэдэн мил.секунд болсон").
+            _hdr((
+                ("Хугацаа", 78, "w"), ("Зай", 66, "e"), ("Зан үйл", 170, "w"),
+                ("Оноо", 52, "e"), ("Эрсдэл", 52, "e"),
+            ))
+            prev_ts: float | None = None
             for ev in clip.events:
                 key = str(ev.get("key", ""))
                 label = _EDGE_BEHAVIOR_LABELS.get(key, key)
                 amount = float(ev.get("amount", 0) or 0)
                 risk = float(ev.get("risk", 0) or 0)
                 offset = float(ev.get("offset_sec", 0) or 0)
+                ts = float(ev.get("ts", 0) or 0)
+                if prev_ts is None or ts <= 0:
+                    gap = "—"
+                else:
+                    ms = (ts - prev_ts) * 1000.0
+                    gap = f"{ms:.0f}мс" if ms < 1000 else f"{ms / 1000:.1f}с"
+                prev_ts = ts
                 total += amount
                 tcol = "#FF6B6B" if risk >= 70 else (CHIPMO_ORANGE if risk >= 40 else "gray75")
                 line = ctk.CTkFrame(body, fg_color="transparent")
                 line.pack(fill="x", pady=1)
-                ctk.CTkLabel(line, text=f"+{offset:.1f}с", width=96, anchor="w",
+                ctk.CTkLabel(line, text=f"+{offset:.2f}с", width=78, anchor="w",
                             font=ctk.CTkFont(size=11), text_color="gray70").pack(side="left", padx=6)
-                ctk.CTkLabel(line, text=label, width=210, anchor="w",
+                ctk.CTkLabel(line, text=gap, width=66, anchor="e",
+                            font=ctk.CTkFont(size=11), text_color="gray55").pack(side="left", padx=6)
+                ctk.CTkLabel(line, text=label, width=170, anchor="w",
                             font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
-                ctk.CTkLabel(line, text=f"+{amount:.0f}", width=64, anchor="e",
+                ctk.CTkLabel(line, text=f"+{amount:.0f}", width=52, anchor="e",
                             font=ctk.CTkFont(size=11, weight="bold"),
                             text_color="#7CD992").pack(side="left", padx=6)
-                ctk.CTkLabel(line, text=f"{risk:.0f}%", width=64, anchor="e",
+                ctk.CTkLabel(line, text=f"{risk:.0f}%", width=52, anchor="e",
                             font=ctk.CTkFont(size=11), text_color=tcol).pack(side="left", padx=6)
             span = max(0.0, clip.duration)
             note = (
                 f"Нийт {len(clip.events)} дохио · {span:.0f}с дотор · цугларсан +{total:.0f} оноо. "
-                "«Хугацаа» = эхэлснээс хойшхи секунд; дохио хооронд эрсдэл буурдаг (decay)."
+                "«Зай» = өмнөх дохионоос хойшхи хугацаа (мс)."
             )
         elif clip.behavior_detail:
             # Older clip (no per-fire log): can't show the timeline, but we CAN say
