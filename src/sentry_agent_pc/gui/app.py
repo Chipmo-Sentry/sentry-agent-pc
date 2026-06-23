@@ -100,6 +100,9 @@ _EDGE_BEHAVIORS: tuple[dict[str, str], ...] = (
 )
 # Movement key → Mongolian label (the «Сэжигтэй» gallery + clip detail use this).
 _EDGE_BEHAVIOR_LABELS = {b["key"]: b["label"] for b in _EDGE_BEHAVIORS}
+# Movement key → its EdgeConfig weight field, so the clip detail can show
+# "+5 × N удаа" from an aggregate-only (old) clip.
+_BEHAVIOR_WEIGHT_KEY = {b["key"]: b["weight_key"] for b in _EDGE_BEHAVIORS if b.get("weight_key")}
 
 # «Сэжигтэй» table column widths (px) — header + every row share these so the
 # columns line up; the «Зан үйл» column takes the slack (expand).
@@ -647,119 +650,88 @@ class AgentApp(ctk.CTk):
             text_color="gray65",
         ).pack(anchor="w")
 
-        # Column header
-        hdr = ctk.CTkFrame(win, fg_color="gray20", corner_radius=6)
-        hdr.pack(fill="x", padx=16, pady=(8, 0))
-        for text, w, anchor in (
-            ("Цаг", 96, "w"),
-            ("Зан үйл", 200, "w"),
-            ("Оноо", 70, "e"),
-            ("Эрсдэл", 70, "e"),
-        ):
-            ctk.CTkLabel(
-                hdr,
-                text=text,
-                width=w,
-                anchor=anchor,
-                font=ctk.CTkFont(size=11, weight="bold"),
-                text_color="gray80",
-            ).pack(side="left", padx=6, pady=4)
+        from sentry_agent_pc.edge.config import EdgeConfig
 
         # Footer pinned to the bottom FIRST (setup_dialog convention) so it never
         # gets clipped by the expanding event list.
         foot = ctk.CTkFrame(win, fg_color="transparent")
         foot.pack(side="bottom", fill="x", padx=16, pady=(2, 12))
 
+        # Column header — meaning depends on the view (per-fire timeline vs the
+        # aggregated count for an older clip), so it's built per branch below.
+        hdr = ctk.CTkFrame(win, fg_color="gray20", corner_radius=6)
+        hdr.pack(fill="x", padx=16, pady=(8, 0))
+
+        def _hdr(cols: tuple[tuple[str, int, str], ...]) -> None:
+            for text, w, anchor in cols:
+                ctk.CTkLabel(
+                    hdr, text=text, width=w, anchor=anchor,
+                    font=ctk.CTkFont(size=11, weight="bold"), text_color="gray80",
+                ).pack(side="left", padx=6, pady=4)
+
         body = ctk.CTkScrollableFrame(win, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=16, pady=(2, 4))
         total = 0.0
         if clip.events:
+            # Per-fire timeline: one row per banking, time RELATIVE to the episode
+            # start (so the cadence — "+5 every 0.2с" — is obvious at a glance).
+            _hdr((("Хугацаа", 96, "w"), ("Зан үйл", 210, "w"), ("Оноо", 64, "e"), ("Эрсдэл", 64, "e")))
             for ev in clip.events:
                 key = str(ev.get("key", ""))
                 label = _EDGE_BEHAVIOR_LABELS.get(key, key)
                 amount = float(ev.get("amount", 0) or 0)
                 risk = float(ev.get("risk", 0) or 0)
-                ts = float(ev.get("ts", 0) or 0)
+                offset = float(ev.get("offset_sec", 0) or 0)
                 total += amount
                 tcol = "#FF6B6B" if risk >= 70 else (CHIPMO_ORANGE if risk >= 40 else "gray75")
                 line = ctk.CTkFrame(body, fg_color="transparent")
                 line.pack(fill="x", pady=1)
-                clock = datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else "—"
-                ctk.CTkLabel(
-                    line,
-                    text=clock,
-                    width=96,
-                    anchor="w",
-                    font=ctk.CTkFont(size=11),
-                    text_color="gray70",
-                ).pack(side="left", padx=6)
-                ctk.CTkLabel(
-                    line, text=label, width=200, anchor="w", font=ctk.CTkFont(size=11)
-                ).pack(side="left", padx=6)
-                ctk.CTkLabel(
-                    line,
-                    text=f"+{amount:.0f}",
-                    width=70,
-                    anchor="e",
-                    font=ctk.CTkFont(size=11, weight="bold"),
-                    text_color="#7CD992",
-                ).pack(side="left", padx=6)
-                ctk.CTkLabel(
-                    line,
-                    text=f"{risk:.0f}%",
-                    width=70,
-                    anchor="e",
-                    font=ctk.CTkFont(size=11),
-                    text_color=tcol,
-                ).pack(side="left", padx=6)
+                ctk.CTkLabel(line, text=f"+{offset:.1f}с", width=96, anchor="w",
+                            font=ctk.CTkFont(size=11), text_color="gray70").pack(side="left", padx=6)
+                ctk.CTkLabel(line, text=label, width=210, anchor="w",
+                            font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
+                ctk.CTkLabel(line, text=f"+{amount:.0f}", width=64, anchor="e",
+                            font=ctk.CTkFont(size=11, weight="bold"),
+                            text_color="#7CD992").pack(side="left", padx=6)
+                ctk.CTkLabel(line, text=f"{risk:.0f}%", width=64, anchor="e",
+                            font=ctk.CTkFont(size=11), text_color=tcol).pack(side="left", padx=6)
+            span = max(0.0, clip.duration)
             note = (
-                f"Нийт {len(clip.events)} дохио  ·  цугларсан +{total:.0f} оноо.  "
-                "Дохио хооронд эрсдэл аажмаар буурдаг (decay)."
+                f"Нийт {len(clip.events)} дохио · {span:.0f}с дотор · цугларсан +{total:.0f} оноо. "
+                "«Хугацаа» = эхэлснээс хойшхи секунд; дохио хооронд эрсдэл буурдаг (decay)."
             )
         elif clip.behavior_detail:
-            # Older clip recorded before the per-fire log: show the aggregated
-            # breakdown (одоо хүртэл цуглуулсан оноо хөдөлгөөн тус бүрээр).
+            # Older clip (no per-fire log): can't show the timeline, but we CAN say
+            # HOW MANY times each behaviour fired — count ≈ total ÷ the per-hit
+            # weight — which is the "+5 vs +165" the operator was confused by.
+            defaults = EdgeConfig()
+            _hdr((("Зан үйл", 240, "w"), ("Нэг удаад", 80, "e"), ("Удаа", 70, "e"), ("Нийт", 70, "e")))
             for d in clip.behavior_detail:
-                label = _EDGE_BEHAVIOR_LABELS.get(str(d.get("key", "")), str(d.get("key", "")))
+                key = str(d.get("key", ""))
+                label = _EDGE_BEHAVIOR_LABELS.get(key, key)
                 score = float(d.get("score", 0) or 0)
-                offset = float(d.get("offset_sec", 0) or 0)
                 total += score
+                wkey = _BEHAVIOR_WEIGHT_KEY.get(key, "")
+                unit = float(getattr(defaults, wkey, 0.0)) if wkey else 0.0
+                count = round(score / unit) if unit > 0 else 0
                 line = ctk.CTkFrame(body, fg_color="transparent")
                 line.pack(fill="x", pady=1)
-                ctk.CTkLabel(
-                    line,
-                    text=f"{offset:.0f}с-т",
-                    width=96,
-                    anchor="w",
-                    font=ctk.CTkFont(size=11),
-                    text_color="gray70",
-                ).pack(side="left", padx=6)
-                ctk.CTkLabel(
-                    line, text=label, width=200, anchor="w", font=ctk.CTkFont(size=11)
-                ).pack(side="left", padx=6)
-                ctk.CTkLabel(
-                    line,
-                    text=f"+{score:.0f}",
-                    width=70,
-                    anchor="e",
-                    font=ctk.CTkFont(size=11, weight="bold"),
-                    text_color="#7CD992",
-                ).pack(side="left", padx=6)
-                ctk.CTkLabel(
-                    line,
-                    text="—",
-                    width=70,
-                    anchor="e",
-                    font=ctk.CTkFont(size=11),
-                    text_color="gray60",
-                ).pack(side="left", padx=6)
-            note = f"Цугларсан +{total:.0f} оноо (нэгтгэсэн — энэ бичлэг хугацааны задаргаагүй)."
+                ctk.CTkLabel(line, text=label, width=240, anchor="w",
+                            font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
+                ctk.CTkLabel(line, text=(f"+{unit:.0f}" if unit else "—"), width=80, anchor="e",
+                            font=ctk.CTkFont(size=11), text_color="gray70").pack(side="left", padx=6)
+                ctk.CTkLabel(line, text=(f"~{count}" if count else "—"), width=70, anchor="e",
+                            font=ctk.CTkFont(size=11), text_color="gray75").pack(side="left", padx=6)
+                ctk.CTkLabel(line, text=f"+{score:.0f}", width=70, anchor="e",
+                            font=ctk.CTkFont(size=11, weight="bold"),
+                            text_color="#7CD992").pack(side="left", padx=6)
+            note = (
+                f"Цугларсан +{total:.0f} оноо. «Удаа» = хэдэн удаа давтагдсаны ОЙРОЛЦООГ "
+                "(нийт ÷ нэг удаагийн оноо). Хугацааны нарийн задаргаа шинэ бичлэгүүдэд гарна."
+            )
         else:
-            ctk.CTkLabel(
-                body,
-                text="Онооны задаргаа алга.",
-                text_color="gray60",
-            ).pack(pady=20)
+            _hdr((("Зан үйл", 240, "w"), ("Оноо", 70, "e")))
+            ctk.CTkLabel(body, text="Онооны задаргаа алга.", text_color="gray60").pack(pady=20)
             note = "Энэ бичлэгт зан үйлийн задаргаа бүртгэгдээгүй."
 
         ctk.CTkLabel(
