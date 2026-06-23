@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import deque
+
 import numpy as np
 
 from sentry_agent_pc.edge.behavior import (
@@ -9,10 +11,64 @@ from sentry_agent_pc.edge.behavior import (
     _band,
     _frame_signal,
     _iou,
+    _Track,
     _wrist_on_item,
     _wrist_to_torso,
 )
+from sentry_agent_pc.edge.config import EdgeConfig
 from sentry_agent_pc.edge.detector import ItemDet, PersonDet
+
+
+def _bare_track(tid: int = 1) -> _Track:
+    return _Track(
+        track_id=tid, box=(0.0, 0.0, 1.0, 1.0), keypoints=None,
+        last_seen=0.0, trail=deque(),
+    )
+
+
+def test_timing_gate_interval_debounces_banking() -> None:
+    # interval_conceal=1.0 → conceal banks at 0.0, skips within 1s, banks again at 1.0.
+    eng = EdgeBehavior("cam", EdgeConfig(interval_conceal=1.0))
+    tr = _bare_track()
+    fired = [
+        t
+        for t in (0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2)
+        if "conceal" in eng._apply_timing_gate(tr, {"conceal": 14.0}, t)
+    ]
+    assert fired == [0.0, 1.0]
+
+
+def test_timing_gate_min_duration_delays_first_bank() -> None:
+    # mindur_holding=0.5 → item_pickup banks only after 0.5s continuous activity.
+    eng = EdgeBehavior("cam", EdgeConfig(mindur_holding=0.5))
+    tr = _bare_track()
+    fired = [
+        t
+        for t in (0.0, 0.2, 0.4, 0.6, 0.8)
+        if "item_pickup" in eng._apply_timing_gate(tr, {"item_pickup": 5.0}, t)
+    ]
+    assert fired == [0.6, 0.8]  # 0.0-0.4 still under the 0.5s min-duration
+
+
+def test_timing_gate_default_zero_banks_every_frame() -> None:
+    # Default 0/0 preserves the old per-frame banking (backward compatible).
+    eng = EdgeBehavior("cam")
+    tr = _bare_track()
+    fired = [
+        t
+        for t in (0.0, 0.1, 0.2)
+        if "conceal" in eng._apply_timing_gate(tr, {"conceal": 14.0}, t)
+    ]
+    assert fired == [0.0, 0.1, 0.2]
+
+
+def test_timing_gate_resets_on_inactivity() -> None:
+    # A behaviour that goes inactive then returns re-banks promptly (continuity reset).
+    eng = EdgeBehavior("cam", EdgeConfig(interval_conceal=1.0))
+    tr = _bare_track()
+    assert "conceal" in eng._apply_timing_gate(tr, {"conceal": 14.0}, 0.0)  # bank
+    eng._apply_timing_gate(tr, {}, 0.3)  # inactive → resets
+    assert "conceal" in eng._apply_timing_gate(tr, {"conceal": 14.0}, 0.5)  # banks again
 
 _BOX = (300.0, 100.0, 500.0, 400.0)  # person_h = 300
 

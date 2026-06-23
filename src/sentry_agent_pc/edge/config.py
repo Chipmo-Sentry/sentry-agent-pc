@@ -39,6 +39,20 @@ class EdgeConfig:
     w_exit_after_conceal: float = 40.0
     w_repeated_shelf: float = 3.0
     repeated_shelf_threshold: int = 3  # distinct shelf entries before it banks
+    # Per-behaviour TIMING gates (founder request). Each behaviour banks its score
+    # only when it has been continuously active for >= its `mindur_*` seconds, and
+    # at most once per `interval_*` seconds thereafter. Default 0 = the old
+    # per-frame banking (no gate), so a fresh install is unchanged until tuned.
+    interval_holding: float = 0.0
+    mindur_holding: float = 0.0
+    interval_wrist_torso: float = 0.0
+    mindur_wrist_torso: float = 0.0
+    interval_conceal: float = 0.0
+    mindur_conceal: float = 0.0
+    interval_repeated_shelf: float = 0.0
+    mindur_repeated_shelf: float = 0.0
+    interval_exit_after_conceal: float = 0.0
+    mindur_exit_after_conceal: float = 0.0
     # Risk → episode FSM
     decay: float = 0.90
     open_risk: float = 60.0
