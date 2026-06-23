@@ -127,9 +127,7 @@ class BackendClient:
                 if attempt >= attempts:
                     # Scrub: the path may carry a camera UUID, the exception
                     # repr can echo a URL with embedded creds.
-                    raise BackendError(
-                        scrub_credentials(f"{method} {path} → network: {e}")
-                    ) from e
+                    raise BackendError(scrub_credentials(f"{method} {path} → network: {e}")) from e
                 # Exponential backoff with jitter before the next attempt.
                 delay = min(_BACKOFF_BASE_SEC * 2 ** (attempt - 1), _BACKOFF_MAX_SEC)
                 delay += random.uniform(0, _BACKOFF_BASE_SEC)  # noqa: S311 — jitter, not crypto
@@ -165,9 +163,7 @@ class BackendClient:
     # ── Agent-scoped (agent JWT) ────────────────────────────────────────
     def heartbeat(self) -> None:
         # Heartbeat is idempotent (just liveness) → retry transport blips.
-        self._request(
-            "POST", "/api/v1/agent/heartbeat", ok_codes=(204,), retriable=True
-        )
+        self._request("POST", "/api/v1/agent/heartbeat", ok_codes=(204,), retriable=True)
 
     def agent_list_cameras(self) -> list[dict[str, Any]]:
         r = self._request("GET", "/api/v1/agent/cameras", ok_codes=(200,))
@@ -176,6 +172,16 @@ class BackendClient:
     def agent_stream_config(self) -> dict[str, Any]:
         """GET /api/v1/agent/stream-config → where/whether to push streams."""
         r = self._request("GET", "/api/v1/agent/stream-config", ok_codes=(200,))
+        return r.json()  # type: ignore[no-any-return]
+
+    def agent_get_floor_plan(self) -> dict[str, Any]:
+        """GET /api/v1/agent/floor-plan → the store's plan (empty plan if none)."""
+        r = self._request("GET", "/api/v1/agent/floor-plan", ok_codes=(200,))
+        return r.json()  # type: ignore[no-any-return]
+
+    def agent_update_floor_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
+        """PATCH /api/v1/agent/floor-plan — full-document write (docs/30)."""
+        r = self._request("PATCH", "/api/v1/agent/floor-plan", json_body=plan, ok_codes=(200,))
         return r.json()  # type: ignore[no-any-return]
 
     def agent_register_camera(
@@ -311,6 +317,4 @@ class BackendClient:
         return r.json()  # type: ignore[no-any-return]
 
     def delete_camera(self, camera_uuid: str) -> None:
-        self._request(
-            "DELETE", f"/api/v1/cameras/{camera_uuid}", ok_codes=(200, 204, 404)
-        )
+        self._request("DELETE", f"/api/v1/cameras/{camera_uuid}", ok_codes=(200, 204, 404))
