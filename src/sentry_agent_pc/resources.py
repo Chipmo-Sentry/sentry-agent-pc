@@ -33,6 +33,12 @@ def logo_header_png() -> Path:
     return asset_path("logo_header.png")
 
 
+def floorplan_index() -> Path:
+    """The bundled floor-plan web editor entry HTML (docs/30). Its konva.min.js +
+    app.js sit beside it and load relatively, so pywebview resolves them."""
+    return asset_path("floorplan/index.html")
+
+
 def bundled_binary(name: str) -> Path | None:
     """Absolute path to a bundled ``bin/<name>``, or None if not present.
 

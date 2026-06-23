@@ -31,7 +31,7 @@ from sentry_agent_pc.edge.recorder import ClipRecord, ClipStore
 from sentry_agent_pc.gui import widgets
 from sentry_agent_pc.gui.add_dialog import AddCameraDialog
 from sentry_agent_pc.gui.edit_dialog import EditCameraDialog
-from sentry_agent_pc.gui.floor_plan import FloorPlanPage
+from sentry_agent_pc.gui.floor_plan_web import open_floor_plan
 from sentry_agent_pc.gui.scan_dialog import ScanDialog
 from sentry_agent_pc.gui.tray import TrayController
 from sentry_agent_pc.gui.update_dialog import (
@@ -212,8 +212,6 @@ class AgentApp(ctk.CTk):
         self._build_toolbar(self._page_cameras)
         self._build_camera_list(self._page_cameras)
         self._pages["cameras"] = self._page_cameras
-        self._plan_page = FloorPlanPage(self._content, get_cameras=lambda: load_state().cameras)
-        self._pages["plan"] = self._plan_page
         self._pages["alerts"] = self._build_alerts_page(self._content)
         self._pages["behaviors"] = self._build_behaviors_page(self._content)
         self._pages["settings"] = self._build_settings_page(self._content)
@@ -398,7 +396,7 @@ class AgentApp(ctk.CTk):
 
     _NAV: tuple[tuple[str, str, str], ...] = (
         ("cameras", "📷  Камерууд", "page"),
-        ("plan", "🗺  Plan зураг", "page"),
+        ("plan", "🗺  Plan зураг", "action"),
         ("live", "📺  Шууд харах", "action"),
         ("alerts", "⚠  Сэжигтэй", "page"),
         ("behaviors", "🎯  Зан үйл", "page"),
@@ -410,7 +408,7 @@ class AgentApp(ctk.CTk):
         side.pack(side="left", fill="y")
         side.pack_propagate(False)
         for key, label, kind in self._NAV:
-            cmd = self.open_live_view if kind == "action" else self._page_cmd(key)
+            cmd = self._action_cmd(key) if kind == "action" else self._page_cmd(key)
             btn = ctk.CTkButton(
                 side,
                 text=label,
@@ -442,6 +440,13 @@ class AgentApp(ctk.CTk):
         """A nav-button command that shows `key`'s page (binds key, no loop closure bug)."""
         return lambda: self._show_page(key)
 
+    def _action_cmd(self, key: str) -> Callable[[], None]:
+        """Nav-button command for an 'action' item — opens a separate window
+        (live view / floor-plan webview) instead of switching the in-app page."""
+        if key == "plan":
+            return self.open_floor_plan
+        return self.open_live_view
+
     def _show_page(self, name: str) -> None:
         for page in self._pages.values():
             page.pack_forget()
@@ -452,8 +457,6 @@ class AgentApp(ctk.CTk):
             self._refresh_alerts()
         elif name == "behaviors":
             self._refresh_behaviors()
-        elif name == "plan":
-            self._plan_page.on_show()
 
     def _edge_status_text(self) -> str:
         """Human-readable edge-AI readiness for the sidebar / settings."""
@@ -665,8 +668,12 @@ class AgentApp(ctk.CTk):
         def _hdr(cols: tuple[tuple[str, int, str], ...]) -> None:
             for text, w, anchor in cols:
                 ctk.CTkLabel(
-                    hdr, text=text, width=w, anchor=anchor,
-                    font=ctk.CTkFont(size=11, weight="bold"), text_color="gray80",
+                    hdr,
+                    text=text,
+                    width=w,
+                    anchor=anchor,
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    text_color="gray80",
                 ).pack(side="left", padx=6, pady=4)
 
         body = ctk.CTkScrollableFrame(win, fg_color="transparent")
@@ -676,10 +683,15 @@ class AgentApp(ctk.CTk):
             # Per-fire timeline: one row per banking. «Хугацаа» = seconds from the
             # episode start (2 decimals); «Зай» = gap from the PREVIOUS bank in ms
             # (founder: "тэр хооронд хэдэн мил.секунд болсон").
-            _hdr((
-                ("Хугацаа", 78, "w"), ("Зай", 66, "e"), ("Зан үйл", 170, "w"),
-                ("Оноо", 52, "e"), ("Эрсдэл", 52, "e"),
-            ))
+            _hdr(
+                (
+                    ("Хугацаа", 78, "w"),
+                    ("Зай", 66, "e"),
+                    ("Зан үйл", 170, "w"),
+                    ("Оноо", 52, "e"),
+                    ("Эрсдэл", 52, "e"),
+                )
+            )
             prev_ts: float | None = None
             for ev in clip.events:
                 key = str(ev.get("key", ""))
@@ -698,17 +710,41 @@ class AgentApp(ctk.CTk):
                 tcol = "#FF6B6B" if risk >= 70 else (CHIPMO_ORANGE if risk >= 40 else "gray75")
                 line = ctk.CTkFrame(body, fg_color="transparent")
                 line.pack(fill="x", pady=1)
-                ctk.CTkLabel(line, text=f"+{offset:.2f}с", width=78, anchor="w",
-                            font=ctk.CTkFont(size=11), text_color="gray70").pack(side="left", padx=6)
-                ctk.CTkLabel(line, text=gap, width=66, anchor="e",
-                            font=ctk.CTkFont(size=11), text_color="gray55").pack(side="left", padx=6)
-                ctk.CTkLabel(line, text=label, width=170, anchor="w",
-                            font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
-                ctk.CTkLabel(line, text=f"+{amount:.0f}", width=52, anchor="e",
-                            font=ctk.CTkFont(size=11, weight="bold"),
-                            text_color="#7CD992").pack(side="left", padx=6)
-                ctk.CTkLabel(line, text=f"{risk:.0f}%", width=52, anchor="e",
-                            font=ctk.CTkFont(size=11), text_color=tcol).pack(side="left", padx=6)
+                ctk.CTkLabel(
+                    line,
+                    text=f"+{offset:.2f}с",
+                    width=78,
+                    anchor="w",
+                    font=ctk.CTkFont(size=11),
+                    text_color="gray70",
+                ).pack(side="left", padx=6)
+                ctk.CTkLabel(
+                    line,
+                    text=gap,
+                    width=66,
+                    anchor="e",
+                    font=ctk.CTkFont(size=11),
+                    text_color="gray55",
+                ).pack(side="left", padx=6)
+                ctk.CTkLabel(
+                    line, text=label, width=170, anchor="w", font=ctk.CTkFont(size=11)
+                ).pack(side="left", padx=6)
+                ctk.CTkLabel(
+                    line,
+                    text=f"+{amount:.0f}",
+                    width=52,
+                    anchor="e",
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    text_color="#7CD992",
+                ).pack(side="left", padx=6)
+                ctk.CTkLabel(
+                    line,
+                    text=f"{risk:.0f}%",
+                    width=52,
+                    anchor="e",
+                    font=ctk.CTkFont(size=11),
+                    text_color=tcol,
+                ).pack(side="left", padx=6)
             span = max(0.0, clip.duration)
             note = (
                 f"Нийт {len(clip.events)} дохио · {span:.0f}с дотор · цугларсан +{total:.0f} оноо. "
@@ -719,7 +755,14 @@ class AgentApp(ctk.CTk):
             # HOW MANY times each behaviour fired — count ≈ total ÷ the per-hit
             # weight — which is the "+5 vs +165" the operator was confused by.
             defaults = EdgeConfig()
-            _hdr((("Зан үйл", 240, "w"), ("Нэг удаад", 80, "e"), ("Удаа", 70, "e"), ("Нийт", 70, "e")))
+            _hdr(
+                (
+                    ("Зан үйл", 240, "w"),
+                    ("Нэг удаад", 80, "e"),
+                    ("Удаа", 70, "e"),
+                    ("Нийт", 70, "e"),
+                )
+            )
             for d in clip.behavior_detail:
                 key = str(d.get("key", ""))
                 label = _EDGE_BEHAVIOR_LABELS.get(key, key)
@@ -730,15 +773,33 @@ class AgentApp(ctk.CTk):
                 count = round(score / unit) if unit > 0 else 0
                 line = ctk.CTkFrame(body, fg_color="transparent")
                 line.pack(fill="x", pady=1)
-                ctk.CTkLabel(line, text=label, width=240, anchor="w",
-                            font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
-                ctk.CTkLabel(line, text=(f"+{unit:.0f}" if unit else "—"), width=80, anchor="e",
-                            font=ctk.CTkFont(size=11), text_color="gray70").pack(side="left", padx=6)
-                ctk.CTkLabel(line, text=(f"~{count}" if count else "—"), width=70, anchor="e",
-                            font=ctk.CTkFont(size=11), text_color="gray75").pack(side="left", padx=6)
-                ctk.CTkLabel(line, text=f"+{score:.0f}", width=70, anchor="e",
-                            font=ctk.CTkFont(size=11, weight="bold"),
-                            text_color="#7CD992").pack(side="left", padx=6)
+                ctk.CTkLabel(
+                    line, text=label, width=240, anchor="w", font=ctk.CTkFont(size=11)
+                ).pack(side="left", padx=6)
+                ctk.CTkLabel(
+                    line,
+                    text=(f"+{unit:.0f}" if unit else "—"),
+                    width=80,
+                    anchor="e",
+                    font=ctk.CTkFont(size=11),
+                    text_color="gray70",
+                ).pack(side="left", padx=6)
+                ctk.CTkLabel(
+                    line,
+                    text=(f"~{count}" if count else "—"),
+                    width=70,
+                    anchor="e",
+                    font=ctk.CTkFont(size=11),
+                    text_color="gray75",
+                ).pack(side="left", padx=6)
+                ctk.CTkLabel(
+                    line,
+                    text=f"+{score:.0f}",
+                    width=70,
+                    anchor="e",
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    text_color="#7CD992",
+                ).pack(side="left", padx=6)
             note = (
                 f"Цугларсан +{total:.0f} оноо. «Удаа» = хэдэн удаа давтагдсаны ОЙРОЛЦООГ "
                 "(нийт ÷ нэг удаагийн оноо). Хугацааны нарийн задаргаа шинэ бичлэгүүдэд гарна."
@@ -1310,6 +1371,17 @@ class AgentApp(ctk.CTk):
 
         open_local_view(self)
         self.set_status("Шууд харах цонх нээгдэж байна (LAN-аас шууд)…")
+
+    def open_floor_plan(self) -> None:
+        """Open the «Plan зураг» floor-plan editor (docs/30) in a webview window.
+
+        Spawned as a separate process (pywebview owns its own loop) — the same
+        pattern as the live view. Needs a paired agent: the editor loads/saves the
+        store plan through the backend."""
+        if not self._require_paired():
+            return
+        open_floor_plan()
+        self.set_status("Plan зураг нээгдэж байна…")
 
     # === Window / tray lifecycle ===
 
