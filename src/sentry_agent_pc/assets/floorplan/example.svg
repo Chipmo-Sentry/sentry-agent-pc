@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="640" viewBox="0 0 900 640">
+  <!-- Жишээ дэлгүүрийн план — трейслэх suurь (docs/30). Бодит хэмжээ биш, загвар. -->
+  <rect x="0" y="0" width="900" height="640" fill="#f4f3ee"/>
+  <!-- Store outer walls -->
+  <rect x="40" y="40" width="820" height="560" fill="none" stroke="#3a3a3a" stroke-width="6"/>
+  <!-- Door gap (bottom): break the wall + label -->
+  <rect x="380" y="588" width="140" height="24" fill="#f4f3ee"/>
+  <text x="450" y="624" font-family="Segoe UI, sans-serif" font-size="20" fill="#b06a2a"
+        text-anchor="middle" font-weight="bold">ОРЦ / ГАРЦ</text>
+  <!-- Checkout counter near the door -->
+  <rect x="560" y="500" width="220" height="60" fill="#efe6d6" stroke="#8a7a55" stroke-width="3"/>
+  <text x="670" y="536" font-family="Segoe UI, sans-serif" font-size="18" fill="#7a6a45"
+        text-anchor="middle">Касс</text>
+  <!-- Shelves (gondolas) -->
+  <g fill="#e3eee6" stroke="#4a8a5e" stroke-width="3">
+    <rect x="110" y="130" width="320" height="70"/>
+    <rect x="110" y="270" width="320" height="70"/>
+    <rect x="110" y="410" width="220" height="70"/>
+    <rect x="520" y="130" width="280" height="70"/>
+    <rect x="520" y="270" width="280" height="70"/>
+  </g>
+  <g font-family="Segoe UI, sans-serif" font-size="16" fill="#3f6a4f" text-anchor="middle">
+    <text x="270" y="172">Тавиур 1</text>
+    <text x="270" y="312">Тавиур 2</text>
+    <text x="220" y="452">Тавиур 3</text>
+    <text x="660" y="172">Тавиур 4</text>
+    <text x="660" y="312">Тавиур 5</text>
+  </g>
+  <text x="70" y="70" font-family="Segoe UI, sans-serif" font-size="14" fill="#9a9a90">жишээ план</text>
+</svg>
