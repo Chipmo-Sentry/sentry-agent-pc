@@ -23,6 +23,10 @@ log = get_logger("sentry_agent_pc.gui.live_view")
 
 _LIVE_VIEW_FLAG = "--live-view"
 
+# The currently-running live-view child, if any — so repeated clicks reuse the
+# open window instead of spawning a fresh WebView2 process each time.
+_child: subprocess.Popen[bytes] | None = None
+
 
 def live_url() -> str:
     """The /live URL to load, from the configured (editable) frontend URL.
@@ -38,6 +42,10 @@ def open_live_view() -> None:
     Runs detached so the main GUI stays responsive and a webview crash can't
     take down the agent. No-op-safe: errors are logged, not raised.
     """
+    global _child
+    if _child is not None and _child.poll() is None:
+        log.info("live_view.already_open")
+        return
     url = live_url()
     if getattr(sys, "frozen", False):
         cmd = [sys.executable, _LIVE_VIEW_FLAG, url]
@@ -47,9 +55,10 @@ def open_live_view() -> None:
     if sys.platform == "win32":
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
     try:
-        subprocess.Popen(cmd, creationflags=creationflags, close_fds=True)
+        _child = subprocess.Popen(cmd, creationflags=creationflags, close_fds=True)
         log.info("live_view.spawned", url=url)
     except OSError as e:
+        _child = None
         log.error("live_view.spawn_failed", error=str(e))
 
 

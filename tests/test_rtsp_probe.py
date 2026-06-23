@@ -29,6 +29,22 @@ H264_NO_RES_STDERR = """\
 """
 
 
+def test_last_error_line_scrubs_credentials() -> None:
+    # ffmpeg echoes the full input URL (with the camera password) in its error
+    # lines; the returned hint must NEVER carry the credentials (C1 leak).
+    stderr = (
+        "[rtsp @ 0x..] method DESCRIBE failed: 401 Unauthorized\n"
+        "rtsp://admin:S3cr3t@192.168.1.64:554/Streaming: "
+        "Server returned 401 Unauthorized\n"
+    )
+    line = rtsp_probe._last_error_line(stderr)
+    assert line is not None
+    assert "S3cr3t" not in line
+    assert "admin" not in line
+    assert "***" in line  # credentials masked
+    assert "401" in line  # the useful diagnostic is preserved
+
+
 def test_codec_regex_h264() -> None:
     m = rtsp_probe._CODEC_RE.search(H264_STDERR)
     assert m is not None
@@ -70,10 +86,16 @@ def test_probe_first_h264_prefers_h264(monkeypatch) -> None:
     """Given a list of URLs, returns the first H.264 hit even if H.265 comes first."""
     results = {
         "rtsp://h265": rtsp_probe.ProbeResult(
-            ok=True, url="rtsp://h265", codec="hevc", is_h264=False,
+            ok=True,
+            url="rtsp://h265",
+            codec="hevc",
+            is_h264=False,
         ),
         "rtsp://h264": rtsp_probe.ProbeResult(
-            ok=True, url="rtsp://h264", codec="h264", is_h264=True,
+            ok=True,
+            url="rtsp://h264",
+            codec="h264",
+            is_h264=True,
         ),
     }
     monkeypatch.setattr(rtsp_probe, "probe", lambda url, **_: results[url])
@@ -86,7 +108,10 @@ def test_probe_first_h264_falls_back_to_h265(monkeypatch) -> None:
     """If no H.264, return the first OK (H.265) result so caller can warn."""
     results = {
         "rtsp://a": rtsp_probe.ProbeResult(
-            ok=True, url="rtsp://a", codec="hevc", is_h264=False,
+            ok=True,
+            url="rtsp://a",
+            codec="hevc",
+            is_h264=False,
         ),
     }
     monkeypatch.setattr(rtsp_probe, "probe", lambda url, **_: results[url])

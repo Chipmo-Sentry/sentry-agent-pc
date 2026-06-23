@@ -6,6 +6,7 @@ from __future__ import annotations
 import numpy as np
 
 from sentry_agent_pc.edge.behavior import EdgeBehavior
+from sentry_agent_pc.edge.config import EdgeConfig
 from sentry_agent_pc.edge.detector import ItemDet, PersonDet
 
 # A person whose box foot ((x1+x2)/2, y2) = (400, 400). With frame 800x600 that
@@ -52,6 +53,26 @@ def test_exit_after_concealment_fires_when_concealed_in_exit_zone() -> None:
     assert tr.concealed is True
     assert tr.exit_scored is True
     assert tr.raw >= 40.0  # the strong exit-after-conceal weight was added
+
+
+def test_mindur_delays_exit_signal_but_does_not_disable_it() -> None:
+    # Regression (H6): latching *_scored happened BEFORE the timing gate, so any
+    # non-zero mindur_exit_after_conceal silently killed exit-after-concealment for
+    # the track's whole life. It must now only DELAY the bank.
+    cfg = EdgeConfig(mindur_exit_after_conceal=2.0)
+    b = EdgeBehavior("cam", config=cfg, zones=[_zone("exit")])
+    persons, items = _conceal(_IN_BOX)
+    b.update(persons, items, 1.0, frame_wh=_FRAME_WH)  # activity t=0s
+    tr = _track(b)
+    assert tr.exit_scored is False  # min-duration not met yet
+    assert tr.raw < 40.0  # the strong exit weight has NOT banked
+    # Stay concealed in the exit zone past the 2s min-duration → it banks.
+    for t in (2.0, 3.0, 4.0):
+        p, it = _conceal(_IN_BOX)
+        b.update(p, it, t, frame_wh=_FRAME_WH)
+    tr = _track(b)
+    assert tr.exit_scored is True  # fired once the duration was met
+    assert tr.raw >= 40.0
 
 
 def test_exit_zone_without_concealment_does_not_fire() -> None:
