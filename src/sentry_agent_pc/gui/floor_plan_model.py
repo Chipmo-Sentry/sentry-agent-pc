@@ -89,3 +89,32 @@ def dir_handle(cx: float, cy: float, dir_deg: float, length: float) -> tuple[flo
 
     r = math.radians(dir_deg)
     return (cx + math.cos(r) * length, cy + math.sin(r) * length)
+
+
+# Drawing aid: angle-snap step (15° → clean 45/90/135 walls but finer control too).
+SNAP_STEP_DEG = 15.0
+
+
+def snap_segment(
+    prev: tuple[float, float], raw: tuple[float, float], step_deg: float = SNAP_STEP_DEG
+) -> tuple[float, float]:
+    """Snap the segment prev→raw to the nearest `step_deg` angle, keeping its
+    length — so walls/fixtures draw straight (horizontal/vertical/45°) instead of
+    slightly off. Returns `raw` unchanged for a zero-length move."""
+    import math
+
+    dx, dy = raw[0] - prev[0], raw[1] - prev[1]
+    dist = math.hypot(dx, dy)
+    if dist < 1e-9:
+        return raw
+    snapped = round(math.degrees(math.atan2(dy, dx)) / step_deg) * step_deg
+    r = math.radians(snapped)
+    return (prev[0] + math.cos(r) * dist, prev[1] + math.sin(r) * dist)
+
+
+def seg_angle_len(a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float]:
+    """(angle-deg 0-360, length) of the segment a→b — for the live draw readout."""
+    import math
+
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    return (math.degrees(math.atan2(dy, dx)) % 360.0, math.hypot(dx, dy))

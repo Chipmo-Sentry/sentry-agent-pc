@@ -10,6 +10,8 @@ from sentry_agent_pc.gui.floor_plan_model import (
     dir_handle,
     fixture_color,
     fixture_label,
+    seg_angle_len,
+    snap_segment,
 )
 
 
@@ -72,3 +74,26 @@ def test_fixture_style() -> None:
     assert fixture_label("exit") == "Гарц"
     assert fixture_color("shelf").startswith("#")
     assert fixture_label("aisle") == "Бүс"  # unknown fallback
+
+
+def test_snap_segment_to_clean_angles() -> None:
+    # A nearly-horizontal drag snaps to a perfectly horizontal segment (same length).
+    x, y = snap_segment((0.0, 0.0), (100.0, 8.0))
+    assert math.isclose(y, 0.0, abs_tol=1e-6)
+    assert math.isclose(x, math.hypot(100.0, 8.0), rel_tol=1e-6)
+    # A ~92° drag snaps to vertical (90°).
+    x2, y2 = snap_segment((0.0, 0.0), (-3.0, 100.0))
+    assert math.isclose(x2, 0.0, abs_tol=1e-6)
+    # A ~47° drag snaps to 45° (x == y).
+    x3, y3 = snap_segment((0.0, 0.0), (100.0, 108.0))
+    assert math.isclose(x3, y3, rel_tol=1e-6)
+
+
+def test_snap_segment_zero_move() -> None:
+    assert snap_segment((5.0, 5.0), (5.0, 5.0)) == (5.0, 5.0)
+
+
+def test_seg_angle_len() -> None:
+    ang, length = seg_angle_len((0.0, 0.0), (3.0, 4.0))
+    assert math.isclose(length, 5.0)
+    assert math.isclose(ang, math.degrees(math.atan2(4, 3)))
