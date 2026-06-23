@@ -14,6 +14,7 @@ import re
 import select
 import socket
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -38,6 +39,7 @@ def _resolve_wsdl_dir() -> str | None:
             if wsdl.is_dir():
                 return str(wsdl)
     return None
+
 
 WS_DISCOVERY_ADDR = "239.255.255.250"
 WS_DISCOVERY_PORT = 3702
@@ -113,12 +115,17 @@ def _local_ipv4_addresses() -> list[str]:
     return sorted(addrs)
 
 
-def discover(timeout_sec: float = 5.0) -> list[OnvifDevice]:
+def discover(
+    timeout_sec: float = 5.0, *, cancel: threading.Event | None = None
+) -> list[OnvifDevice]:
     """Send WS-Discovery Probes on every local interface, collect responses.
 
     Returns one OnvifDevice per unique XAddr (deduped by XAddr URL). Probes
     both `NetworkVideoTransmitter` and `Device` types on each interface so
     cameras on any reachable subnet — and either ONVIF profile — show up.
+
+    ``cancel`` (if set during the wait) ends collection early so a closed/
+    rescanned dialog isn't blocked for the full timeout.
     """
     seen: dict[str, OnvifDevice] = {}
     payloads = _probe_payloads()
@@ -161,6 +168,8 @@ def discover(timeout_sec: float = 5.0) -> list[OnvifDevice]:
     deadline = time.monotonic() + timeout_sec
     try:
         while time.monotonic() < deadline:
+            if cancel is not None and cancel.is_set():
+                break
             wait = max(0.05, deadline - time.monotonic())
             ready, _, _ = select.select(socks, [], [], wait)
             if not ready:
@@ -203,9 +212,9 @@ _XADDRS_ELEM_RE = re.compile(
 class OnvifDevice:
     """One device that responded to our Probe."""
 
-    xaddr: str          # http://host:port/onvif/device_service
-    ip: str             # parsed from xaddr
-    raw_xml: str = ""   # full SOAP response for debugging
+    xaddr: str  # http://host:port/onvif/device_service
+    ip: str  # parsed from xaddr
+    raw_xml: str = ""  # full SOAP response for debugging
     # Populated by `fetch_profiles` after auth
     manufacturer: str | None = None
     model: str | None = None
@@ -219,8 +228,8 @@ class OnvifProfile:
     name: str
     width: int | None = None
     height: int | None = None
-    encoding: str | None = None   # "H264", "H265", etc
-    rtsp_uri: str | None = None   # auth not yet embedded; agent embeds creds
+    encoding: str | None = None  # "H264", "H265", etc
+    rtsp_uri: str | None = None  # auth not yet embedded; agent embeds creds
 
 
 def _extract_xaddrs(xml: str) -> list[str]:
@@ -280,13 +289,8 @@ def fetch_profiles(
         device.manufacturer = getattr(info, "Manufacturer", None)
         device.model = getattr(info, "Model", None)
     except Exception as e:  # noqa: BLE001 — onvif-zeep raises a sea of types
-        device.error = (
-            "Нэвтрэлт амжилтгүй — нэр/нууц үгээ шалгана уу (тусгай тэмдэгт "
-            "орсон бол анхаар, ж: '*'). Hikvision дээр ONVIF-г идэвхжүүлж, "
-            "ONVIF хэрэглэгч үүсгэх шаардлагатай (Configuration → Network → "
-            "Integration Protocol). Эсвэл 'Камер нэмэх'-ээр RTSP-ээр гараар оруулна уу."
-        )
-        log.info("onvif.auth_failed", ip=device.ip, error=str(e))
+        device.error = _onvif_fetch_error_message(e)
+        log.info("onvif.fetch_failed", ip=device.ip, error=str(e))
         return device
 
     # Try Media2 (modern), fall back to Media (legacy ONVIF 1.x)
@@ -323,6 +327,45 @@ def fetch_profiles(
         device.profiles.append(prof)
 
     return device
+
+
+def _onvif_fetch_error_message(e: Exception) -> str:
+    """Map a fetch_profiles failure to a message that names the LIKELY cause.
+
+    Always blaming the password is misleading (and dangerous — it makes the user
+    retry credentials against a camera that's merely unreachable, risking a
+    Hikvision/Dahua login lockout). Distinguish unreachable / ONVIF-off from a
+    genuine auth fault by the exception type + text."""
+    name = type(e).__name__.lower()
+    text = str(e).lower()
+    unreachable = any(k in name for k in ("timeout", "connectionerror", "connecterror")) or any(
+        k in text
+        for k in (
+            "timed out",
+            "timeout",
+            "connection refused",
+            "connection aborted",
+            "max retries",
+            "no route",
+            "unreachable",
+            "failed to establish",
+            "actively refused",
+            "getaddrinfo",
+            "name or service",
+        )
+    )
+    if unreachable:
+        return (
+            "Камертай холбогдсонгүй — IP/порт хүрэхгүй, эсвэл ONVIF идэвхгүй байна. "
+            "Камер асаалттай, ижил сүлжээнд байгаа эсэх + ONVIF портоо шалгаад дахин "
+            "үзнэ үү. Эсвэл 'Камер нэмэх'-ээр RTSP-ээр гараар оруулна уу."
+        )
+    return (
+        "Нэвтрэлт амжилтгүй — нэр/нууц үгээ шалгана уу (тусгай тэмдэгт орсон бол "
+        "анхаар, ж: '*'). Hikvision дээр ONVIF-г идэвхжүүлж, ONVIF хэрэглэгч "
+        "үүсгэх шаардлагатай (Configuration → Network → Integration Protocol). "
+        "Эсвэл 'Камер нэмэх'-ээр RTSP-ээр гараар оруулна уу."
+    )
 
 
 def _get_stream_uri(media_service: object, token: str) -> str | None:

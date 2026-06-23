@@ -53,8 +53,11 @@ class _DeviceRow:
         self.checkbox.select()
 
         ctk.CTkLabel(
-            grid, text=candidate.ip, font=ctk.CTkFont(size=13, weight="bold"),
-            anchor="w", justify="left",
+            grid,
+            text=candidate.ip,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            anchor="w",
+            justify="left",
         ).grid(row=row, column=_COL_IP, sticky="w", padx=6, pady=6)
 
         self.user_entry = ctk.CTkEntry(grid, width=110, placeholder_text="admin")
@@ -68,14 +71,23 @@ class _DeviceRow:
         self.pass_entry = ctk.CTkEntry(pass_cell, width=140, show="•")
         self.pass_entry.pack(side="left")
         self.eye_btn = ctk.CTkButton(
-            pass_cell, text="👁", width=30, fg_color="transparent", border_width=1,
+            pass_cell,
+            text="👁",
+            width=30,
+            fg_color="transparent",
+            border_width=1,
             command=self._toggle_password,
         )
         self.eye_btn.pack(side="left", padx=(4, 0))
 
         self.status_lbl = ctk.CTkLabel(
-            grid, text="", font=ctk.CTkFont(size=11), text_color="gray60",
-            anchor="w", wraplength=220, justify="left",
+            grid,
+            text="",
+            font=ctk.CTkFont(size=11),
+            text_color="gray60",
+            anchor="w",
+            wraplength=220,
+            justify="left",
         )
         self.status_lbl.grid(row=row, column=_COL_STATUS, sticky="w", padx=6, pady=6)
 
@@ -104,35 +116,54 @@ class ScanDialog(ctk.CTkToplevel):
         widgets.setup_dialog(self, 760, 600, min_width=620, min_height=460)
 
         self.rows: list[_DeviceRow] = []
+        # Cancels the in-flight background scan (on close or rescan) so its ONVIF
+        # wait + LAN sweep wind down instead of running to completion detached.
+        self._scan_cancel: threading.Event | None = None
 
         # Bottom button bar FIRST so it stays visible when results fill up.
         self.btn_row = ctk.CTkFrame(self, fg_color="transparent")
         self.btn_row.pack(side="bottom", fill="x", padx=20, pady=14)
         self.close_btn = ctk.CTkButton(
-            self.btn_row, text="Хаах", fg_color="transparent", border_width=1,
+            self.btn_row,
+            text="Хаах",
+            fg_color="transparent",
+            border_width=1,
             command=self.destroy,
         )
         self.close_btn.pack(side="right", padx=(8, 0))
         self.register_btn = ctk.CTkButton(
-            self.btn_row, text="Сонгосныг бүртгэх", fg_color=BRAND_ORANGE,
-            hover_color=BRAND_ORANGE_HOVER, command=self._register_selected, state="disabled",
+            self.btn_row,
+            text="Сонгосныг бүртгэх",
+            fg_color=BRAND_ORANGE,
+            hover_color=BRAND_ORANGE_HOVER,
+            command=self._register_selected,
+            state="disabled",
         )
         self.register_btn.pack(side="right")
         self.rescan_btn = ctk.CTkButton(
-            self.btn_row, text="↻ Дахин хайх", fg_color="transparent", border_width=1,
-            command=self._start_scan, state="disabled",
+            self.btn_row,
+            text="↻ Дахин хайх",
+            fg_color="transparent",
+            border_width=1,
+            command=self._start_scan,
+            state="disabled",
         )
         self.rescan_btn.pack(side="left")
 
         ctk.CTkLabel(
-            self, text="Сүлжээнд холбогдсон камеруудыг хайж байна…",
+            self,
+            text="Сүлжээнд холбогдсон камеруудыг хайж байна…",
             font=ctk.CTkFont(size=15, weight="bold"),
         ).pack(pady=(18, 4), padx=20, anchor="w")
 
         self.info_lbl = ctk.CTkLabel(
-            self, text="ONVIF WS-Discovery — 5 секунд хүлээнэ үү.",
-            font=ctk.CTkFont(size=12), text_color="gray60", anchor="w",
-            wraplength=700, justify="left",
+            self,
+            text="ONVIF WS-Discovery — 5 секунд хүлээнэ үү.",
+            font=ctk.CTkFont(size=12),
+            text_color="gray60",
+            anchor="w",
+            wraplength=700,
+            justify="left",
         )
         self.info_lbl.pack(fill="x", padx=20, anchor="w")
 
@@ -158,11 +189,20 @@ class ScanDialog(ctk.CTkToplevel):
         }
         for col, text in hdr.items():
             ctk.CTkLabel(
-                self.results, text=text, font=ctk.CTkFont(size=11, weight="bold"),
-                text_color="gray50", anchor="w",
+                self.results,
+                text=text,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color="gray50",
+                anchor="w",
             ).grid(row=0, column=col, sticky="w", padx=6, pady=(0, 2))
 
     def _start_scan(self) -> None:
+        # Cancel a prior in-flight scan (rescan / repeated clicks) so its threads
+        # wind down before we launch a fresh one.
+        if self._scan_cancel is not None:
+            self._scan_cancel.set()
+        cancel = threading.Event()
+        self._scan_cancel = cancel
         for w in self.results.winfo_children():
             w.destroy()
         self.rows.clear()
@@ -187,14 +227,15 @@ class ScanDialog(ctk.CTkToplevel):
             _ui(lambda: self.info_lbl.configure(text=text, text_color="gray70"))
 
         def work() -> list[svc.DiscoveredCandidate]:
-            return svc.scan(timeout_sec=5.0, on_found=on_found, on_phase=on_phase)
+            return svc.scan(timeout_sec=5.0, on_found=on_found, on_phase=on_phase, cancel=cancel)
 
         def done(candidates: Any) -> None:
             self.spinner.stop()
             self.rescan_btn.configure(state="normal")
             if isinstance(candidates, dict) and not candidates.get("ok", True):
                 self.info_lbl.configure(
-                    text=f"Алдаа: {candidates.get('error')}", text_color="#FF6B6B",
+                    text=f"Алдаа: {candidates.get('error')}",
+                    text_color="#FF6B6B",
                 )
                 return
 
@@ -275,7 +316,10 @@ class ScanDialog(ctk.CTkToplevel):
             # Hand the just-verified stream to register so it doesn't re-pull
             # the same URL (faster, one fewer RTSP session on the camera).
             result = svc.register_camera(
-                name=name, ip=ip, rtsp_url=stream.rtsp_url, resolved=stream,
+                name=name,
+                ip=ip,
+                rtsp_url=stream.rtsp_url,
+                resolved=stream,
             )
             return {
                 "ok": result.ok,
@@ -294,6 +338,13 @@ class ScanDialog(ctk.CTkToplevel):
             self._register_next(rows, idx + 1)
 
         self._run_bg(work, done)
+
+    def destroy(self) -> None:
+        # Closing the dialog cancels any running scan so its ONVIF wait + LAN
+        # sweep stop instead of finishing detached on a daemon thread.
+        if self._scan_cancel is not None:
+            self._scan_cancel.set()
+        super().destroy()
 
     def _run_bg(self, work: Callable[[], Any], on_done: Callable[[Any], None]) -> None:
         def runner() -> None:

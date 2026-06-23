@@ -7,8 +7,10 @@ what the M1 testing playbook uses (см. docs/12-TESTING.md).
 
 from __future__ import annotations
 
+import contextlib
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from sentry_agent_pc.logging_setup import get_logger
@@ -63,10 +65,20 @@ def _looks_like_auth_error(text: str) -> bool:
     return "401" in t or "unauthorized" in t or "authorization failed" in t
 
 
-def probe(url: str, timeout_sec: int | None = None) -> ProbeResult:
+def probe(
+    url: str,
+    timeout_sec: int | None = None,
+    *,
+    on_proc: Callable[[subprocess.Popen[bytes]], None] | None = None,
+) -> ProbeResult:
     """Run ffmpeg briefly to verify the stream + identify codec/resolution.
 
     Returns ProbeResult — never raises. On any failure ok=False with error.
+
+    ``on_proc`` (if given) is called with the live ffmpeg Popen right after spawn,
+    so a concurrent caller can ``kill()`` an abandoned probe instead of letting it
+    run to its own timeout — see ``discovery_service._probe_until_hit``. A killed
+    probe just returns a (discarded) ok=False result.
     """
     settings = get_settings()
     timeout = timeout_sec or settings.rtsp_probe_timeout_sec
@@ -85,20 +97,28 @@ def probe(url: str, timeout_sec: int | None = None) -> ProbeResult:
         "-",
     ]
     try:
-        proc = subprocess.run(  # noqa: S603
+        proc = subprocess.Popen(  # noqa: S603
             args,
-            capture_output=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
-            timeout=timeout + 5,
-            check=False,
             creationflags=_CREATE_NO_WINDOW,
         )
     except FileNotFoundError as e:
         return ProbeResult(ok=False, url=url, error=f"ffmpeg not found: {e}")
+    if on_proc is not None:
+        on_proc(proc)
+    try:
+        _out, stderr_bytes = proc.communicate(timeout=timeout + 5)
     except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            proc.kill()
+        with contextlib.suppress(Exception):
+            proc.communicate(timeout=2)
         return ProbeResult(ok=False, url=url, error=f"timeout after {timeout}s")
 
-    stderr = proc.stderr.decode("utf-8", errors="replace")
+    stderr = (stderr_bytes or b"").decode("utf-8", errors="replace")
+    returncode = proc.returncode
     m = _CODEC_RE.search(stderr)
     if not m:
         # Maybe auth or connection error — extract last "error" line for hint
@@ -106,7 +126,7 @@ def probe(url: str, timeout_sec: int | None = None) -> ProbeResult:
         return ProbeResult(
             ok=False,
             url=url,
-            error=err_line or f"no Stream/Video line (ffmpeg exit {proc.returncode})",
+            error=err_line or f"no Stream/Video line (ffmpeg exit {returncode})",
             is_auth_error=_looks_like_auth_error(stderr),
         )
 

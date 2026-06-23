@@ -63,8 +63,8 @@ def _reap_proc(proc: subprocess.Popen[bytes] | None) -> None:
 class PushTarget:
     """One camera to relay: LAN source → cloud path."""
 
-    mediamtx_path: str        # destination path on the cloud MediaMTX
-    lan_rtsp: str             # source RTSP on the store LAN (creds embedded)
+    mediamtx_path: str  # destination path on the cloud MediaMTX
+    lan_rtsp: str  # source RTSP on the store LAN (creds embedded)
     codec: str | None = None  # source codec; "hevc"/"h265" → transcode to H.264
 
     @property
@@ -110,21 +110,32 @@ def build_relay_cmd(ffmpeg: str, target: PushTarget, dest: str) -> list[str]:
     """
     if target.needs_transcode:
         codec_args = [
-            "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
-            "-pix_fmt", "yuv420p",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-tune",
+            "zerolatency",
+            "-pix_fmt",
+            "yuv420p",
         ]
     else:
         codec_args = ["-c:v", "copy"]
     return [
         ffmpeg,
         "-nostdin",
-        "-rtsp_transport", "tcp",
-        "-i", target.lan_rtsp,
-        "-map", "0:v:0",
+        "-rtsp_transport",
+        "tcp",
+        "-i",
+        target.lan_rtsp,
+        "-map",
+        "0:v:0",
         "-an",
         *codec_args,
-        "-f", "rtsp",
-        "-rtsp_transport", "tcp",
+        "-f",
+        "rtsp",
+        "-rtsp_transport",
+        "tcp",
         dest,
     ]
 
@@ -193,9 +204,7 @@ class StreamPusher:
                     "restarts": st.restarts,
                     # Scrub creds — last_error is surfaced to the GUI/heartbeat.
                     "last_error": (
-                        scrub_credentials(st.last_error)
-                        if st.last_error is not None
-                        else None
+                        scrub_credentials(st.last_error) if st.last_error is not None else None
                     ),
                 }
                 for st in self._states.values()
@@ -257,6 +266,15 @@ class StreamPusher:
                 st.proc = proc
                 st.running = True
                 started_at = time.monotonic()
+                # Close the stop/launch race: if stop fired DURING Popen,
+                # `_stop_locked` may have reaped the previous (or None) proc and
+                # missed this fresh child. We assigned `st.proc` first, so the
+                # `stop` set is now visible — reap our own child instead of
+                # entering the blocking communicate() and orphaning it to the cloud.
+                if st.stop.is_set():
+                    _reap_proc(proc)
+                    st.running = False
+                    break
                 log.info("pusher.ffmpeg_up", path=st.target.mediamtx_path)
                 _, err = proc.communicate()
                 st.running = False
@@ -273,8 +291,12 @@ class StreamPusher:
                 st.last_error = scrub_credentials(
                     " | ".join(tail) if tail else f"exit {proc.returncode}"
                 )
-                log.warning("pusher.ffmpeg_exit", path=st.target.mediamtx_path,
-                            code=proc.returncode, err=st.last_error[:200])
+                log.warning(
+                    "pusher.ffmpeg_exit",
+                    path=st.target.mediamtx_path,
+                    code=proc.returncode,
+                    err=st.last_error[:200],
+                )
             except FileNotFoundError:
                 st.running = False
                 st.last_error = "ffmpeg олдсонгүй (PATH-д нэмэх эсвэл FFMPEG_PATH тохируулах)"
