@@ -27,6 +27,8 @@ from sentry_agent_pc.gui.floor_plan_model import (
     dir_handle,
     fixture_color,
     fixture_label,
+    seg_angle_len,
+    snap_segment,
 )
 from sentry_agent_pc.gui.widgets import BRAND_ORANGE, BRAND_ORANGE_HOVER
 from sentry_agent_pc.logging_setup import get_logger
@@ -64,6 +66,8 @@ class FloorPlanPage(ctk.CTkFrame):
         self._drag: str | None = None  # "pan" | "cam" | "dir" | None
         self._last_drag: tuple[int, int] | None = None
         self._loaded = False
+        self._snap_on = True  # angle-snap walls/fixtures to clean 15° steps
+        self._hover: tuple[float, float] | None = None  # snapped cursor (plan) for the rubber-band
 
         self._build()
 
@@ -121,6 +125,15 @@ class FloorPlanPage(ctk.CTkFrame):
             border_width=1,
             command=self._fit_view,
         ).pack(side="left", padx=(12, 2))
+        self._snap_btn = ctk.CTkButton(
+            tools,
+            text="⊾ Өнцөг",
+            width=86,
+            height=30,
+            fg_color=BRAND_ORANGE,
+            command=self._toggle_snap,
+        )
+        self._snap_btn.pack(side="left", padx=2)
 
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(side="top", fill="both", expand=True, padx=12, pady=(0, 12))
@@ -136,7 +149,12 @@ class FloorPlanPage(ctk.CTkFrame):
         self.canvas.bind("<Double-Button-1>", self._on_double)
         self.canvas.bind("<Button-3>", self._on_right)
         self.canvas.bind("<MouseWheel>", self._on_wheel)  # Windows wheel
+        self.canvas.bind("<Motion>", self._on_motion)  # rubber-band preview + readout
         self.canvas.bind("<Configure>", self._on_resize)
+        # Keyboard shortcuts — the canvas must hold focus to receive them, so grab
+        # it whenever the pointer is over the editor.
+        self.canvas.bind("<Enter>", lambda _e: self.canvas.focus_set())
+        self.canvas.bind("<Key>", self._on_key)
 
         side = ctk.CTkFrame(body, fg_color="transparent", width=240)
         side.pack(side="right", fill="y")
@@ -151,15 +169,33 @@ class FloorPlanPage(ctk.CTkFrame):
         self._cam_pick.pack(fill="x")
         ctk.CTkLabel(
             side,
-            text="«Камер» горимд камер сонгоод зураг дээр дарж байрлуул. Сонгох "
-            "горимд камерыг чирж зөөх / эргүүлэх. Хана/бүс — дарж булан нэмж, давхар "
-            "дарж дуусга.",
+            text=(
+                "Хана/бүс зурах: дарж булан нэмнэ, ДАВХАР дарж (эсвэл Enter) дуусгана. "
+                "Өнцөг автоматаар 90°/45° барина (Shift дарвал чөлөөтэй). Камер: "
+                "сонгоод дарж байрлуул; «Сонгох» горимд чирж зөөх + бариулаар эргүүлэх."
+            ),
             font=ctk.CTkFont(size=11),
             text_color="gray60",
             justify="left",
             wraplength=220,
             anchor="w",
-        ).pack(fill="x", pady=(6, 8))
+        ).pack(fill="x", pady=(6, 4))
+        ctk.CTkLabel(
+            side,
+            text=(
+                "⌨ Товчлуурууд\n"
+                "1–7  багаж (Сонгох…Камер)\n"
+                "Enter  зон дуусгах · Esc  болих\n"
+                "Backspace  сүүлийн цэг устгах\n"
+                "Delete  сонгосон камер устгах\n"
+                "G  өнцөг-snap · F  багтаах · Ctrl+S  хадгалах"
+            ),
+            font=ctk.CTkFont(size=10),
+            text_color="gray50",
+            justify="left",
+            wraplength=220,
+            anchor="w",
+        ).pack(fill="x", pady=(0, 8))
 
         ctk.CTkLabel(
             side,
@@ -239,15 +275,33 @@ class FloorPlanPage(ctk.CTkFrame):
         self._redraw()
 
     # ── click handling ───────────────────────────────────────────────────
+    def _draw_point(self, event: tk.Event) -> tuple[float, float]:
+        """Cursor → plan point, angle-snapped to the previous draft vertex unless
+        snap is off or Shift is held (event.state bit 0 = Shift)."""
+        raw = self._view.to_plan(event.x, event.y)
+        shift = bool(int(event.state) & 0x0001)
+        if self._snap_on and not shift and self._draft:
+            return snap_segment(self._draft[-1], raw)
+        return raw
+
     def _on_click(self, event: tk.Event) -> None:
-        px, py = self._view.to_plan(event.x, event.y)
         if self._mode == "select":
             self._select_at(event.x, event.y)
         elif self._mode == "camera":
-            self._place_camera(px, py)
+            self._place_camera(*self._view.to_plan(event.x, event.y))
         elif self._mode in _FIXTURE_MODES or self._mode == "wall":
-            self._draft.append((px, py))
+            self._draft.append(self._draw_point(event))
             self._redraw()
+
+    def _on_motion(self, event: tk.Event) -> None:
+        """Live rubber-band + angle/length readout while drawing a wall/fixture."""
+        if self._mode not in _FIXTURE_MODES and self._mode != "wall":
+            return
+        self._hover = self._draw_point(event) if self._draft else None
+        if self._hover is not None and self._draft:
+            ang, length = seg_angle_len(self._draft[-1], self._hover)
+            self._set_status(f"∠ {ang:.0f}°  ·  урт {length:.0f}", "gray60")
+        self._redraw()
 
     def _on_double(self, _e: object) -> None:
         if self._mode == "wall":
@@ -275,12 +329,43 @@ class FloorPlanPage(ctk.CTkFrame):
         elif self._drag == "dir" and self._sel_cam is not None:
             cam = self._plan["cameras"][self._sel_cam]
             csx, csy = self._view.to_screen(*cam["pos"])
-            cam["dir_deg"] = angle_deg(csx, csy, event.x, event.y)
+            ang = angle_deg(csx, csy, event.x, event.y)
+            # Snap the camera's facing to clean 15° steps (90°/135°…) unless Shift.
+            if self._snap_on and not (int(event.state) & 0x0001):
+                ang = round(ang / 15.0) * 15.0 % 360.0
+            cam["dir_deg"] = ang
+            self._set_status(f"Чиглэл {cam['dir_deg']:.0f}°", "gray60")
             self._redraw()
 
     def _on_release(self, _e: object) -> None:
         self._drag = None
         self._last_drag = None
+
+    def _toggle_snap(self) -> None:
+        self._snap_on = not self._snap_on
+        self._snap_btn.configure(fg_color=BRAND_ORANGE if self._snap_on else "transparent")
+        self._set_status(f"Өнцөг-snap {'ON' if self._snap_on else 'OFF'}", "gray60")
+
+    def _on_key(self, event: tk.Event) -> None:
+        k = (event.keysym or "").lower()
+        tools = ["select", "wall", "shelf", "exit", "entrance", "checkout", "camera"]
+        if k in ("1", "2", "3", "4", "5", "6", "7"):
+            self._set_mode(tools[int(k) - 1])
+        elif k == "return":
+            self._on_double(event)
+        elif k == "escape":
+            self._draft = []
+            self._redraw()
+        elif k == "backspace":
+            self._on_right(event)
+        elif k == "delete" and self._sel_cam is not None:
+            self._delete("cameras", self._sel_cam)
+        elif k == "g":
+            self._toggle_snap()
+        elif k == "f":
+            self._fit_view()
+        elif k == "s" and (int(event.state) & 0x0004):  # Ctrl+S
+            self._save()
 
     def _select_at(self, sx: int, sy: int) -> None:
         """Pick a camera body or its direction handle near (sx,sy); else start a pan."""
@@ -371,12 +456,31 @@ class FloorPlanPage(ctk.CTkFrame):
         if self._draft:
             col = WALL_COLOR if self._mode == "wall" else fixture_color(self._mode)
             self._draw_path(self._draft, col, width=2, closed=False, vertices=True)
+            # Rubber-band: the snapped segment from the last vertex to the cursor.
+            if self._hover is not None:
+                ax, ay = self._view.to_screen(*self._draft[-1])
+                bx, by = self._view.to_screen(*self._hover)
+                self.canvas.create_line(ax, ay, bx, by, fill=col, width=1, dash=(4, 3))
 
     def _draw_bounds(self) -> None:
         pw, ph = self._plan.get("size", DEFAULT_PLAN_SIZE)
+        # Light grid every `step` plan units (helps align walls/shelves).
+        step = 50.0
+        x = 0.0
+        while x <= pw:
+            sx, sy0 = self._view.to_screen(x, 0)
+            _, sy1 = self._view.to_screen(x, float(ph))
+            self.canvas.create_line(sx, sy0, sx, sy1, fill=_GRID, width=1)
+            x += step
+        y = 0.0
+        while y <= ph:
+            sx0, sy = self._view.to_screen(0, y)
+            sx1, _ = self._view.to_screen(float(pw), y)
+            self.canvas.create_line(sx0, sy, sx1, sy, fill=_GRID, width=1)
+            y += step
         x0, y0 = self._view.to_screen(0, 0)
         x1, y1 = self._view.to_screen(float(pw), float(ph))
-        self.canvas.create_rectangle(x0, y0, x1, y1, outline=_GRID, width=1)
+        self.canvas.create_rectangle(x0, y0, x1, y1, outline="#33333A", width=1)
 
     def _draw_path(
         self,
