@@ -68,6 +68,9 @@ class SuspiciousEpisode:
     # Mirrors the cloud's triggered_behavior_detail so the same per-fire breakdown
     # surfaces for edge-flagged clips.
     behavior_detail: list[dict[str, Any]] = field(default_factory=list)
+    # Per-FIRE timeline: [{key, ts, offset_sec, amount, risk}] in chronological
+    # order — every individual banking, for the clip detail view (one row per +N).
+    events: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -81,6 +84,7 @@ class ClipRecord:
     behaviors: list[str]
     created_at: float
     behavior_detail: list[dict[str, Any]] = field(default_factory=list)
+    events: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def duration(self) -> float:
@@ -152,6 +156,7 @@ def _record_from_dict(d: dict[str, Any]) -> ClipRecord:
         behaviors=[str(b) for b in d.get("behaviors", [])],
         created_at=float(d["created_at"]),
         behavior_detail=list(d.get("behavior_detail", [])),
+        events=list(d.get("events", [])),
     )
 
 
@@ -202,6 +207,7 @@ def build_clip(
         started_at=t0, ended_at=t1, risk_pct=episode.risk_pct,
         behaviors=list(episode.behaviors), created_at=time.time(),
         behavior_detail=list(episode.behavior_detail),
+        events=list(episode.events),
     )
 
 

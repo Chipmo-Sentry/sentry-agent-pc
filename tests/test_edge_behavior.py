@@ -112,6 +112,12 @@ def test_episode_opens_then_closes_with_metadata() -> None:
     assert "item_pickup" in detail and "conceal" in detail
     assert detail["item_pickup"]["score"] > 0  # accumulated over the sustained frames
     assert all("offset_sec" in d for d in ep.behavior_detail)
+    # the per-FIRE timeline records one event per banking frame, in order, each
+    # with a wall-clock ts + amount + the resulting risk (for the clip detail view)
+    assert len(ep.events) >= len(ep.behavior_detail)
+    assert all({"key", "ts", "offset_sec", "amount", "risk"} <= set(e) for e in ep.events)
+    assert [e["ts"] for e in ep.events] == sorted(e["ts"] for e in ep.events)
+    assert any(e["key"] == "conceal" and e["amount"] > 0 for e in ep.events)
 
 
 def test_drop_stale_closes_open_episode() -> None:
