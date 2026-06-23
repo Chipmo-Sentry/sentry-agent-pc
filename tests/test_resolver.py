@@ -24,8 +24,8 @@ def test_score_prefers_higher_resolution() -> None:
 def test_rtsp_paths_cover_known_brands() -> None:
     # The paths that actually worked on the live cameras must be present.
     assert "/Streaming/Channels/101" in RTSP_PATHS  # Hikvision
-    assert "/media/video1" in RTSP_PATHS            # UNV
-    assert "/stream1" in RTSP_PATHS                 # Skyworth (H.265)
+    assert "/media/video1" in RTSP_PATHS  # UNV
+    assert "/stream1" in RTSP_PATHS  # Skyworth (H.265)
 
 
 def test_push_target_transcodes_only_h265() -> None:
@@ -44,8 +44,8 @@ def test_priority_paths_are_known_brand_mains() -> None:
     # The priority batch must carry one main-stream path per brand we support
     # and be a strict subset of the full library (so the tail = full − priority).
     assert "/Streaming/Channels/101" in RTSP_PATHS_PRIORITY  # Hik
-    assert "/media/video1" in RTSP_PATHS_PRIORITY            # UNV
-    assert "/stream1" in RTSP_PATHS_PRIORITY                 # Skyworth
+    assert "/media/video1" in RTSP_PATHS_PRIORITY  # UNV
+    assert "/stream1" in RTSP_PATHS_PRIORITY  # Skyworth
     assert set(RTSP_PATHS_PRIORITY).issubset(set(RTSP_PATHS))
 
 
@@ -54,7 +54,9 @@ def test_rtsp_resolve_aborts_on_auth_error(monkeypatch: pytest.MonkeyPatch) -> N
     # immediately — NOT grind all 33 paths (which is what locks the account).
     calls: list[str] = []
 
-    def fake_probe(url: str, timeout_sec: int | None = None) -> rtsp_probe.ProbeResult:
+    def fake_probe(
+        url: str, timeout_sec: int | None = None, *, on_proc: object = None
+    ) -> rtsp_probe.ProbeResult:
         calls.append(url)
         return rtsp_probe.ProbeResult(
             ok=False, url=url, error="401 Unauthorized", is_auth_error=True
@@ -69,11 +71,11 @@ def test_rtsp_resolve_aborts_on_auth_error(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_rtsp_resolve_returns_first_working_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_probe(url: str, timeout_sec: int | None = None) -> rtsp_probe.ProbeResult:
+    def fake_probe(
+        url: str, timeout_sec: int | None = None, *, on_proc: object = None
+    ) -> rtsp_probe.ProbeResult:
         if url.endswith("/stream1"):
-            return rtsp_probe.ProbeResult(
-                ok=True, url=url, codec="hevc", width=2560, height=1920
-            )
+            return rtsp_probe.ProbeResult(ok=True, url=url, codec="hevc", width=2560, height=1920)
         return rtsp_probe.ProbeResult(ok=False, url=url, error="404")
 
     monkeypatch.setattr(rtsp_probe, "probe", fake_probe)
@@ -102,14 +104,38 @@ def test_register_uses_resolved_without_reprobe(monkeypatch: pytest.MonkeyPatch)
     )
     monkeypatch.setattr(svc, "save_state", lambda _s: None)
     result = svc.register_camera(
-        name="c", ip="10.0.0.9", rtsp_url="rtsp://x/stream1",
-        backend=_FakeBackend(), resolved=resolved,  # type: ignore[arg-type]
+        name="c",
+        ip="10.0.0.9",
+        rtsp_url="rtsp://x/stream1",
+        backend=_FakeBackend(),
+        resolved=resolved,  # type: ignore[arg-type]
     )
     assert result.ok and result.codec == "h264"
 
 
 class _EmptyState:
     cameras: list[object] = []
+
+
+def test_scan_cancel_skips_lan_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
+    # H5: a cancel set before/while discovering must short-circuit scan BEFORE the
+    # LAN /24 sweep (the expensive part) — so a closed dialog doesn't keep scanning.
+    import threading
+
+    monkeypatch.setattr(svc, "load_state", lambda: _EmptyState())
+    monkeypatch.setattr(svc.onvif_mod, "discover", lambda timeout_sec, cancel=None: [])
+    swept = {"called": False}
+
+    def fake_sweep(*_a: object, **_k: object) -> list[str]:
+        swept["called"] = True
+        return []
+
+    monkeypatch.setattr(svc, "_sweep_rtsp_hosts", fake_sweep)
+    cancel = threading.Event()
+    cancel.set()
+    result = svc.scan(timeout_sec=1.0, cancel=cancel)
+    assert result == []
+    assert swept["called"] is False  # cancelled → LAN sweep never started
 
 
 def _mk_state(cams):  # type: ignore[no-untyped-def]
@@ -121,10 +147,12 @@ def _mk_state(cams):  # type: ignore[no-untyped-def]
 def test_reconcile_drops_web_deleted_camera(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     from sentry_agent_pc.state import CameraRecord
 
-    local = _mk_state([
-        CameraRecord(uuid="A", name="Cam A", ip="1.1.1.1", rtsp_url="rtsp://a"),
-        CameraRecord(uuid="B", name="Cam B", ip="2.2.2.2", rtsp_url="rtsp://b"),
-    ])
+    local = _mk_state(
+        [
+            CameraRecord(uuid="A", name="Cam A", ip="1.1.1.1", rtsp_url="rtsp://a"),
+            CameraRecord(uuid="B", name="Cam B", ip="2.2.2.2", rtsp_url="rtsp://b"),
+        ]
+    )
     saved = {}
     monkeypatch.setattr(svc, "load_state", lambda: local)
     monkeypatch.setattr(svc, "save_state", lambda s: saved.update(c=s.cameras))

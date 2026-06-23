@@ -120,3 +120,22 @@ def test_probe_envelope_is_valid_xml() -> None:
     # Should parse without error
     root = ET.fromstring(envelope.decode("utf-8"))
     assert root is not None
+
+
+def test_fetch_error_message_unreachable_does_not_blame_password() -> None:
+    # M8: a timeout / refused connection must NOT be reported as "wrong password"
+    # (that pushes the user to retry creds against an unreachable cam → lockout).
+    for exc in (
+        TimeoutError("timed out"),
+        OSError("[WinError 10061] No connection could be made; actively refused"),
+        ConnectionError("Max retries exceeded; Failed to establish a new connection"),
+    ):
+        msg = onvif._onvif_fetch_error_message(exc)
+        assert "холбогдсонгүй" in msg  # "couldn't connect"
+        assert "нууц үг" not in msg
+
+
+def test_fetch_error_message_auth_blames_credentials() -> None:
+    # A genuine SOAP auth fault still tells the user to check the password.
+    msg = onvif._onvif_fetch_error_message(Exception("Sender not authorized - 401"))
+    assert "нэр/нууц үг" in msg

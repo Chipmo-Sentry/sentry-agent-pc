@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import contextlib
 import re
+import subprocess
+import threading
 import time
 import urllib.parse
 from collections.abc import Callable
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -40,10 +42,10 @@ class ResolvedStream:
 
     ok: bool
     rtsp_url: str | None = None
-    codec: str | None = None       # "h264" | "hevc" | ...
+    codec: str | None = None  # "h264" | "hevc" | ...
     width: int | None = None
     height: int | None = None
-    via: str | None = None         # "onvif" | "rtsp-path"
+    via: str | None = None  # "onvif" | "rtsp-path"
     error: str | None = None
 
     @property
@@ -56,9 +58,7 @@ def _score(codec: str | None, width: int | None, height: int | None) -> tuple[in
     return (1 if (codec or "").lower() == "h264" else 0, (width or 0) * (height or 0))
 
 
-def _best_onvif_stream(
-    ip: str, username: str, password: str, xaddr: str
-) -> ResolvedStream | None:
+def _best_onvif_stream(ip: str, username: str, password: str, xaddr: str) -> ResolvedStream | None:
     """Pick the best (H.264, highest-res) ONVIF profile.
 
     Trusts ONVIF's codec/resolution metadata rather than probing each profile:
@@ -95,6 +95,10 @@ _RTSP_PORTS: tuple[int, ...] = (554, 8554, 10554)
 # old 2s budget timed out the CORRECT path and reported "no stream" — the #1
 # cause of "scan found the camera but couldn't connect". 7s clears all three.
 _RTSP_PROBE_TIMEOUT_SEC = 7
+
+# LAN /24 sweep concurrency — short socket connects, so a wide fan-out is cheap;
+# the sweep is cancellable so a closed dialog winds it down promptly.
+_SWEEP_CONCURRENCY = 100
 
 # Tail concurrency — gentle for the long tail of less-common paths.
 _RTSP_PROBE_CONCURRENCY = 3
@@ -167,14 +171,26 @@ def _probe_until_hit(
     Returns the MOMENT one probe succeeds (or one reports 401) without waiting
     for the slow ones — some cameras let a wrong path HANG to the full timeout
     rather than 404 quickly, so joining them would throw away all the speed.
-    Gives up at `deadline` (monotonic seconds). The abandoned probes are ffmpeg
-    subprocesses that self-terminate at their own timeout; we don't block on them.
+    Gives up at `deadline` (monotonic seconds). Abandoned probes (a hit/401/
+    deadline left others running) have their ffmpeg child KILLED on return rather
+    than lingering ~7-12s to their own timeout holding an RTSP session.
     """
+    live: set[subprocess.Popen[bytes]] = set()
+    live_lock = threading.Lock()
+
+    def _track(p: subprocess.Popen[bytes]) -> None:
+        with live_lock:
+            live.add(p)
+
     def go(url: str) -> ResolvedStream | None:
-        r = rtsp_probe.probe(url, timeout_sec=_RTSP_PROBE_TIMEOUT_SEC)
+        r = rtsp_probe.probe(url, timeout_sec=_RTSP_PROBE_TIMEOUT_SEC, on_proc=_track)
         if r.ok:
             return ResolvedStream(
-                ok=True, rtsp_url=url, codec=r.codec, width=r.width, height=r.height,
+                ok=True,
+                rtsp_url=url,
+                codec=r.codec,
+                width=r.width,
+                height=r.height,
                 via="rtsp-path",
             )
         if r.is_auth_error:
@@ -200,9 +216,16 @@ def _probe_until_hit(
                     return res, False
         return None, False
     finally:
-        # Drop the queued probes and return immediately; don't join the ones
-        # already running (a hung wrong-path probe would stall us for seconds).
+        # Drop the queued probes, then kill any ffmpeg child still running for an
+        # abandoned URL so it can't linger to its own timeout (a hung wrong-path
+        # probe would otherwise hold a camera RTSP session for seconds).
         ex.shutdown(wait=False, cancel_futures=True)
+        with live_lock:
+            procs = list(live)
+        for p in procs:
+            if p.poll() is None:
+                with contextlib.suppress(OSError):
+                    p.kill()
 
 
 class _AuthError(Exception):
@@ -234,8 +257,9 @@ def resolve_stream(
         log.info("resolve.onvif_error", ip=ip, error=str(e))
         best = None
     if best is not None:
-        log.info("resolve.ok", ip=ip, via=best.via, codec=best.codec,
-                 res=f"{best.width}x{best.height}")
+        log.info(
+            "resolve.ok", ip=ip, via=best.via, codec=best.codec, res=f"{best.width}x{best.height}"
+        )
         return best
 
     # ONVIF missed → fall back to the ffmpeg RTSP-path brute-force. But if ffmpeg
@@ -254,8 +278,9 @@ def resolve_stream(
 
     best, auth_error = _best_rtsp_path_stream(ip, username, password)
     if best is not None:
-        log.info("resolve.ok", ip=ip, via=best.via, codec=best.codec,
-                 res=f"{best.width}x{best.height}")
+        log.info(
+            "resolve.ok", ip=ip, via=best.via, codec=best.codec, res=f"{best.width}x{best.height}"
+        )
         return best
 
     if auth_error:
@@ -308,6 +333,7 @@ def scan(
     *,
     on_found: Callable[[DiscoveredCandidate], None] | None = None,
     on_phase: Callable[[str], None] | None = None,
+    cancel: threading.Event | None = None,
 ) -> list[DiscoveredCandidate]:
     """Discover cameras by BOTH ONVIF WS-Discovery AND a LAN port-554 sweep.
 
@@ -330,13 +356,19 @@ def scan(
             with contextlib.suppress(Exception):
                 on_found(cand)
 
+    def _sorted() -> list[DiscoveredCandidate]:
+        return sorted(by_ip.values(), key=lambda c: (c.already_registered, _ip_sort_key(c.ip)))
+
     if on_phase is not None:
         with contextlib.suppress(Exception):
             on_phase("ONVIF камер хайж байна…")
-    for d in onvif_mod.discover(timeout_sec=timeout_sec):
+    for d in onvif_mod.discover(timeout_sec=timeout_sec, cancel=cancel):
         cand = DiscoveredCandidate(ip=d.ip, xaddr=d.xaddr, already_registered=d.ip in known_ips)
         by_ip[d.ip] = cand
         _emit(cand)
+
+    if cancel is not None and cancel.is_set():
+        return _sorted()  # dialog closed / rescan — don't start the LAN sweep
 
     if on_phase is not None:
         with contextlib.suppress(Exception):
@@ -348,12 +380,10 @@ def scan(
             by_ip[ip] = cand
             _emit(cand)
 
-    _sweep_rtsp_hosts(on_host=_on_host)
+    _sweep_rtsp_hosts(on_host=_on_host, cancel=cancel)
 
     # Sort: unregistered first, then by IP.
-    return sorted(
-        by_ip.values(), key=lambda c: (c.already_registered, _ip_sort_key(c.ip))
-    )
+    return _sorted()
 
 
 def _ip_sort_key(ip: str) -> tuple[int, ...]:
@@ -368,10 +398,13 @@ def _sweep_rtsp_hosts(
     timeout: float = 0.5,
     *,
     on_host: Callable[[str], None] | None = None,
+    cancel: threading.Event | None = None,
 ) -> list[str]:
     """Scan every local /24 for hosts with `port` (RTSP) open. Best-effort.
 
-    `on_host` fires for each open host AS it's found (live results for the UI)."""
+    `on_host` fires for each open host AS it's found (live results for the UI).
+    `cancel` (if set) stops the sweep early and drops the queued probes — so a
+    closed/rescanned dialog isn't blocked for hundreds of host checks."""
     import ipaddress
     import socket
 
@@ -397,13 +430,22 @@ def _sweep_rtsp_hosts(
             s.close()
 
     found: list[str] = []
-    with ThreadPoolExecutor(max_workers=100) as ex:
-        for r in ex.map(check, sorted(targets)):
+    ex = ThreadPoolExecutor(max_workers=_SWEEP_CONCURRENCY)
+    try:
+        futures = [ex.submit(check, host) for host in sorted(targets)]
+        for fut in as_completed(futures):
+            if cancel is not None and cancel.is_set():
+                break
+            r = fut.result()
             if r is not None:
                 found.append(r)
                 if on_host is not None:
                     with contextlib.suppress(Exception):
                         on_host(r)
+    finally:
+        # Cancel still-queued probes + return without joining the running ones
+        # (each is a ≤`timeout`s socket connect, so they wind down on their own).
+        ex.shutdown(wait=False, cancel_futures=True)
     log.info("sweep.rtsp_hosts", count=len(found))
     return found
 
@@ -539,8 +581,11 @@ def register_camera(
     if resolved is not None and resolved.ok:
         # Already verified during resolve — trust it, don't re-pull the stream.
         probe = rtsp_probe.ProbeResult(
-            ok=True, url=rtsp_url, codec=resolved.codec,
-            width=resolved.width, height=resolved.height,
+            ok=True,
+            url=rtsp_url,
+            codec=resolved.codec,
+            width=resolved.width,
+            height=resolved.height,
             is_h264=resolved.is_h264,
         )
     else:
@@ -728,12 +773,21 @@ def build_manual_url(
         raise ValueError(f"unknown brand: {brand_key}")
     if custom_path:
         url = manual_mod.build_rtsp_url(
-            template, host, username, password,
-            port=port, custom_path=custom_path,
+            template,
+            host,
+            username,
+            password,
+            port=port,
+            custom_path=custom_path,
         )
         return url, [url]
     main = manual_mod.build_rtsp_url(
-        template, host, username, password, port=port, use_sub=use_sub,
+        template,
+        host,
+        username,
+        password,
+        port=port,
+        use_sub=use_sub,
     )
     candidates = manual_mod.candidate_urls(template, host, username, password, port=port)
     return main, candidates

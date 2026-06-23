@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+
 from sentry_agent_pc.discovery import rtsp_probe
 
 H264_STDERR = """\
@@ -140,27 +142,41 @@ def test_probe_first_h264_empty_list_does_not_raise() -> None:
 
 
 class _FakeProc:
+    """Stand-in for the ffmpeg Popen child: communicate() yields the canned
+    stderr, and poll()/kill() satisfy the abandoned-probe cleanup path."""
+
     def __init__(self, stderr: bytes, returncode: int = 0) -> None:
-        self.stderr = stderr
+        self._stderr = stderr
         self.returncode = returncode
+
+    def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+        return b"", self._stderr
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def kill(self) -> None:
+        pass
+
+
+def _fake_subprocess(stderr: bytes, returncode: int = 0) -> type:
+    """A fake `subprocess` namespace whose Popen returns a _FakeProc, keeping the
+    real DEVNULL/PIPE/TimeoutExpired so probe()'s arg-passing + except still work."""
+    return type(
+        "S",
+        (),
+        {
+            "Popen": staticmethod(lambda *a, **k: _FakeProc(stderr, returncode)),
+            "DEVNULL": subprocess.DEVNULL,
+            "PIPE": subprocess.PIPE,
+            "TimeoutExpired": subprocess.TimeoutExpired,
+        },
+    )
 
 
 def test_probe_codec_without_resolution_is_ok(monkeypatch) -> None:
     # #9: a recognised codec with no inline WxH must give ok=True, width/height None.
-    monkeypatch.setattr(
-        rtsp_probe,
-        "subprocess",
-        type(
-            "S",
-            (),
-            {
-                "run": staticmethod(
-                    lambda *a, **k: _FakeProc(H264_NO_RES_STDERR.encode()),
-                ),
-                "DEVNULL": 0,
-            },
-        ),
-    )
+    monkeypatch.setattr(rtsp_probe, "subprocess", _fake_subprocess(H264_NO_RES_STDERR.encode()))
     monkeypatch.setattr(rtsp_probe, "resolve_ffmpeg_exe", lambda _p: "ffmpeg")
     monkeypatch.setattr(
         rtsp_probe,
@@ -177,20 +193,7 @@ def test_probe_codec_without_resolution_is_ok(monkeypatch) -> None:
 
 def test_probe_codec_with_resolution_keeps_dimensions(monkeypatch) -> None:
     # Preserve original behaviour: WxH present → width/height parsed.
-    monkeypatch.setattr(
-        rtsp_probe,
-        "subprocess",
-        type(
-            "S",
-            (),
-            {
-                "run": staticmethod(
-                    lambda *a, **k: _FakeProc(H264_STDERR.encode()),
-                ),
-                "DEVNULL": 0,
-            },
-        ),
-    )
+    monkeypatch.setattr(rtsp_probe, "subprocess", _fake_subprocess(H264_STDERR.encode()))
     monkeypatch.setattr(rtsp_probe, "resolve_ffmpeg_exe", lambda _p: "ffmpeg")
     monkeypatch.setattr(
         rtsp_probe,
@@ -202,3 +205,19 @@ def test_probe_codec_with_resolution_keeps_dimensions(monkeypatch) -> None:
     assert out.codec == "h264"
     assert out.width == 1920
     assert out.height == 1080
+
+
+def test_probe_calls_on_proc_hook(monkeypatch) -> None:
+    # M7: probe hands the live child to on_proc so a caller can kill an abandoned
+    # probe. Verify the hook fires with the spawned process.
+    seen: list[object] = []
+    monkeypatch.setattr(rtsp_probe, "subprocess", _fake_subprocess(H264_STDERR.encode()))
+    monkeypatch.setattr(rtsp_probe, "resolve_ffmpeg_exe", lambda _p: "ffmpeg")
+    monkeypatch.setattr(
+        rtsp_probe,
+        "get_settings",
+        lambda: type("Cfg", (), {"rtsp_probe_timeout_sec": 5, "ffmpeg_path": ""})(),
+    )
+    out = rtsp_probe.probe("rtsp://cam", timeout_sec=5, on_proc=seen.append)
+    assert out.ok
+    assert len(seen) == 1 and isinstance(seen[0], _FakeProc)
