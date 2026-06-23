@@ -351,9 +351,30 @@ async function pickImage() {
   setStatus("");
   if (data) setBackground(data);
 }
-// Bundled sample plan (assets/floorplan/example.svg) — try tracing without a file.
-function loadExample() {
-  setBackground("example.svg");
+// A ready-made EDITABLE starter plan (real walls/fixtures the user can use as-is
+// or tweak) — not a background image. Cameras stay as the user placed them.
+const TEMPLATE = {
+  walls: [{ points: [[60, 60], [940, 60], [940, 740], [60, 740], [60, 60]] }],
+  fixtures: [
+    { type: "exit", points: [[440, 710], [560, 710], [560, 740], [440, 740]] },
+    { type: "checkout", points: [[660, 600], [900, 600], [900, 700], [660, 700]] },
+    { type: "shelf", points: [[120, 150], [460, 150], [460, 230], [120, 230]] },
+    { type: "shelf", points: [[120, 300], [460, 300], [460, 380], [120, 380]] },
+    { type: "shelf", points: [[120, 450], [360, 450], [360, 530], [120, 530]] },
+    { type: "shelf", points: [[560, 150], [880, 150], [880, 230], [560, 230]] },
+    { type: "shelf", points: [[560, 300], [880, 300], [880, 380], [560, 380]] },
+  ],
+};
+function loadTemplate() {
+  PLAN.size = [1000, 800];
+  PLAN.walls = JSON.parse(JSON.stringify(TEMPLATE.walls));
+  PLAN.fixtures = JSON.parse(JSON.stringify(TEMPLATE.fixtures));
+  // keep PLAN.cameras — the user's placed cameras are theirs
+  deselect();
+  pushUndo();
+  render();
+  fit();
+  setStatus("Жишээ загвар ачаалагдлаа — өөрийн дэлгүүрт тааруулж засаарай");
 }
 
 // ── fit ─────────────────────────────────────────────────────────────────────
@@ -373,7 +394,7 @@ stage.on("click", (e) => {
 // ── toolbar wiring ────────────────────────────────────────────────────────
 document.querySelectorAll(".tool").forEach((b) => (b.onclick = () => setTool(b.dataset.tool)));
 document.getElementById("btn-image").onclick = pickImage;
-document.getElementById("btn-example").onclick = loadExample;
+document.getElementById("btn-example").onclick = loadTemplate;
 document.getElementById("btn-fit").onclick = fit;
 document.getElementById("btn-undo").onclick = undo;
 document.getElementById("btn-redo").onclick = redo;
