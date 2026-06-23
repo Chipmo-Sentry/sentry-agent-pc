@@ -283,6 +283,13 @@ class EdgeBehavior:
             # So the risk + the breakdown both reflect the gated banks (default 0/0 =
             # the old per-frame banking, unchanged).
             gated = self._apply_timing_gate(tr, frame_scores, now)
+            # Latch the one-shot zone behaviours only once they've actually banked
+            # through the gate, so each fires exactly once per track (and a non-zero
+            # mindur_* delays — rather than permanently kills — the bank).
+            if "exit_after_concealment" in gated:
+                tr.exit_scored = True
+            if "repeated_shelf_visit" in gated:
+                tr.shelf_scored = True
             # Wall-clock decay (#20): retained fraction = decay ** (elapsed * REF_HZ),
             # so sensitivity no longer rides on the camera's frame rate / frame_skip.
             tr.raw = tr.raw * (self.cfg.decay ** (dt * _DECAY_REF_HZ)) + sum(gated.values())
@@ -344,22 +351,28 @@ class EdgeBehavior:
         sc: dict[str, float] = {}
 
         # repeated_shelf_visit — count distinct not-inside→inside shelf entries.
+        # NOTE: the *_scored latch is NOT set here — it's set in update() only once
+        # the score actually banks through the timing gate. Latching here (before
+        # the gate) meant any non-zero mindur_* silently killed the behaviour for
+        # the track's whole life, since the one-shot signal could never re-fire.
         now_in_shelf = "shelf" in in_zones
         if now_in_shelf and not tr.in_shelf:
             tr.shelf_visits += 1
-            if tr.shelf_visits >= self.cfg.repeated_shelf_threshold and not tr.shelf_scored:
-                sig += self.cfg.w_repeated_shelf
-                beh.add("repeated_shelf_visit")
-                sc["repeated_shelf_visit"] = self.cfg.w_repeated_shelf
-                tr.shelf_scored = True
         tr.in_shelf = now_in_shelf
+        if (
+            now_in_shelf
+            and tr.shelf_visits >= self.cfg.repeated_shelf_threshold
+            and not tr.shelf_scored
+        ):
+            sig += self.cfg.w_repeated_shelf
+            beh.add("repeated_shelf_visit")
+            sc["repeated_shelf_visit"] = self.cfg.w_repeated_shelf
 
         # exit_after_concealment — concealed earlier, now standing in an exit zone.
         if "exit" in in_zones and tr.concealed and not tr.exit_scored:
             sig += self.cfg.w_exit_after_conceal
             beh.add("exit_after_concealment")
             sc["exit_after_concealment"] = self.cfg.w_exit_after_conceal
-            tr.exit_scored = True
 
         return sig, beh, sc
 

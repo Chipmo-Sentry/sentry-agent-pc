@@ -84,3 +84,30 @@ def test_floor_plan_flag_constant() -> None:
     # The spawn + entry must agree on the flag string.
     assert fpw._FLAG == "--floor-plan"
     assert sys is not None  # import-smoke
+
+
+def test_save_plan_rejects_non_dict(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # The bridge is the only Python gate before a JWT-authed PATCH — a non-object
+    # payload must be refused before it can reach the backend.
+    fake = _FakeBackend()
+    monkeypatch.setattr("sentry_agent_pc.backend_client.BackendClient", lambda: fake)
+    try:
+        FloorPlanApi().save_plan(["not", "a", "dict"])  # type: ignore[arg-type]
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("save_plan must reject a non-dict plan")
+    assert fake.saved is None  # never reached the backend
+
+
+def test_save_plan_rejects_oversized(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # A runaway shape list (>1 MB serialized) is bounded at the bridge.
+    fake = _FakeBackend()
+    monkeypatch.setattr("sentry_agent_pc.backend_client.BackendClient", lambda: fake)
+    try:
+        FloorPlanApi().save_plan({"blob": "x" * (fpw._MAX_PLAN_BYTES + 1)})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("save_plan must reject an oversized plan")
+    assert fake.saved is None

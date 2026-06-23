@@ -22,18 +22,41 @@ log = get_logger("sentry_agent_pc.gui.floor_plan_web")
 
 _FLAG = "--floor-plan"
 
+# Bounds for the JS↔Python bridge. The plan is a small vector document (a handful
+# of polygons); >1 MB means a runaway shape list, not a real store. The trace
+# background is a photo the WebView base64-inlines, so cap it before it can OOM
+# the editor (a 25 MB image → ~33 MB data URL).
+_MAX_PLAN_BYTES = 1_000_000
+_MAX_IMAGE_BYTES = 25 * 1024 * 1024
+# Leading magic bytes per supported image type — so a mislabelled / non-image
+# file picked through the "Бүх файл" filter is rejected before encoding.
+_IMAGE_MAGIC = (b"\x89PNG\r\n", b"\xff\xd8\xff", b"BM", b"RIFF", b"GIF8")
+
+# The currently-running editor child, if any. Clicking «Plan зураг» again while a
+# window is already open must NOT spawn a second WebView2 process (each holds a
+# JWT-bearing backend session) — we reuse the live one instead.
+_child: subprocess.Popen[bytes] | None = None
+
 
 def open_floor_plan() -> None:
-    """Spawn the floor-plan webview as a detached child process (never raises)."""
+    """Spawn the floor-plan webview as a detached child process (never raises).
+
+    If an editor child is already running, this is a no-op so repeated clicks
+    can't pile up WebView2 processes."""
+    global _child
+    if _child is not None and _child.poll() is None:
+        log.info("floor_plan.already_open")
+        return
     if getattr(sys, "frozen", False):
         cmd = [sys.executable, _FLAG]
     else:
         cmd = [sys.executable, "-m", "sentry_agent_pc.gui_main", _FLAG]
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
     try:
-        subprocess.Popen(cmd, creationflags=creationflags, close_fds=True)
+        _child = subprocess.Popen(cmd, creationflags=creationflags, close_fds=True)
         log.info("floor_plan.spawned")
     except OSError as e:
+        _child = None
         log.error("floor_plan.spawn_failed", error=str(e))
 
 
@@ -104,9 +127,20 @@ class FloorPlanApi:
 
     def save_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
         """PATCH the plan to the backend. Raises on failure → the JS Promise
-        rejects and the editor shows the error (so a bad save is never silent)."""
+        rejects and the editor shows the error (so a bad save is never silent).
+
+        This bridge is the only Python gate before a JWT-authenticated PATCH, so
+        it validates shape + bounds the payload before sending — a runaway shape
+        list can't be forwarded to the backend verbatim."""
+        import json
+
         from sentry_agent_pc.backend_client import BackendClient
 
+        if not isinstance(plan, dict):
+            raise ValueError("plan нь объект байх ёстой")
+        serialized = json.dumps(plan, separators=(",", ":"))
+        if len(serialized.encode("utf-8")) > _MAX_PLAN_BYTES:
+            raise ValueError("План хэт том байна — элемент тоог багасгана уу")
         return BackendClient().agent_update_floor_plan(plan)
 
     def pick_image(self) -> str | None:
@@ -127,9 +161,15 @@ class FloorPlanApi:
         sel = result[0] if isinstance(result, (list, tuple)) else result
         path = Path(str(sel))
         try:
+            if path.stat().st_size > _MAX_IMAGE_BYTES:
+                log.warning("floor_plan.image_too_large", size=path.stat().st_size)
+                return None
             raw = path.read_bytes()
         except OSError as e:
             log.warning("floor_plan.image_read_failed", error=str(e))
+            return None
+        if not raw.startswith(_IMAGE_MAGIC):
+            log.warning("floor_plan.not_an_image", suffix=path.suffix)
             return None
         ext = path.suffix.lower().lstrip(".")
         mime = "image/png" if ext == "png" else "image/webp" if ext == "webp" else "image/jpeg"

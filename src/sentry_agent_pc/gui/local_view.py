@@ -1047,5 +1047,21 @@ class LocalLiveView(ctk.CTkToplevel):
 
 
 def open_local_view(master: ctk.CTk) -> LocalLiveView:
-    """Open (or focus) the offline LAN grid window."""
-    return LocalLiveView(master)
+    """Open (or focus) the offline LAN grid window.
+
+    Reuses an already-open window — without this, each click spawns a new window
+    with its own per-camera reader threads + RTSP sessions, hammering the cameras
+    with duplicate connections."""
+    existing = getattr(master, "_local_view_win", None)
+    if existing is not None:
+        try:
+            if existing.winfo_exists():
+                existing.deiconify()
+                existing.lift()
+                existing.focus_force()
+                return cast("LocalLiveView", existing)
+        except tk.TclError:
+            pass  # window was destroyed — fall through and open a fresh one
+    win = LocalLiveView(master)
+    master._local_view_win = win
+    return win

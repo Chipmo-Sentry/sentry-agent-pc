@@ -12,6 +12,7 @@ import subprocess
 from dataclasses import dataclass
 
 from sentry_agent_pc.logging_setup import get_logger
+from sentry_agent_pc.redact import scrub_credentials
 from sentry_agent_pc.resources import resolve_ffmpeg_exe
 from sentry_agent_pc.settings import get_settings
 
@@ -73,10 +74,14 @@ def probe(url: str, timeout_sec: int | None = None) -> ProbeResult:
     args = [
         resolve_ffmpeg_exe(settings.ffmpeg_path),
         "-hide_banner",
-        "-rtsp_transport", "tcp",
-        "-i", url,
-        "-t", "2",
-        "-f", "null",
+        "-rtsp_transport",
+        "tcp",
+        "-i",
+        url,
+        "-t",
+        "2",
+        "-f",
+        "null",
         "-",
     ]
     try:
@@ -126,15 +131,25 @@ def probe(url: str, timeout_sec: int | None = None) -> ProbeResult:
 
 
 def _last_error_line(stderr: str) -> str | None:
-    """Extract the most informative-looking error line from ffmpeg stderr."""
+    """Extract the most informative-looking error line from ffmpeg stderr.
+
+    ffmpeg echoes the full input URL (``rtsp://user:pass@host/...``) in its error
+    lines, so the result is scrubbed before it's returned — this string flows into
+    ProbeResult.error and on to the GUI / logs, and the camera password must never
+    leak there."""
     interesting_keywords = (
-        "401", "403", "Connection refused", "timed out",
-        "Server returned", "Invalid data", "Unauthorized",
+        "401",
+        "403",
+        "Connection refused",
+        "timed out",
+        "Server returned",
+        "Invalid data",
+        "Unauthorized",
     )
     for line in reversed(stderr.splitlines()):
         for kw in interesting_keywords:
             if kw.lower() in line.lower():
-                return line.strip()[-200:]
+                return scrub_credentials(line.strip())[-200:]
     return None
 
 
