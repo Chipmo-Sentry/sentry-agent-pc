@@ -331,23 +331,29 @@ function renderElements() {
 
 // ── background image (trace) ───────────────────────────────────────────────
 let bgNode = null;
-async function pickImage() {
-  setStatus("Зураг сонгож байна…");
-  const data = await window.pywebview.api.pick_image();
-  setStatus("");
-  if (!data) return;
+function setBackground(src) {
   const img = new Image();
   img.onload = () => {
     if (bgNode) bgNode.destroy();
     bgNode = new Konva.Image({ image: img, x: 0, y: 0, opacity: 0.5, draggable: true });
-    // Scale the image to roughly fill the plan width.
-    const sc = PLAN.size[0] / img.width;
+    const sc = PLAN.size[0] / (img.width || img.naturalWidth || PLAN.size[0]);
     bgNode.scale({ x: sc, y: sc });
     bgLayer.add(bgNode);
     bgLayer.draw();
-    setStatus("Суурь зураг — чирж байрлуул (трейслэхэд)");
+    setStatus("Суурь зураг — чирж байрлуул, дээр нь тойруулан зур");
   };
-  img.src = data; // data URL (base64) from Python
+  img.onerror = () => setStatus("Зураг ачаалж чадсангүй");
+  img.src = src;
+}
+async function pickImage() {
+  setStatus("Зураг сонгож байна…");
+  const data = await window.pywebview.api.pick_image(); // data URL (base64) from Python
+  setStatus("");
+  if (data) setBackground(data);
+}
+// Bundled sample plan (assets/floorplan/example.svg) — try tracing without a file.
+function loadExample() {
+  setBackground("example.svg");
 }
 
 // ── fit ─────────────────────────────────────────────────────────────────────
@@ -367,6 +373,7 @@ stage.on("click", (e) => {
 // ── toolbar wiring ────────────────────────────────────────────────────────
 document.querySelectorAll(".tool").forEach((b) => (b.onclick = () => setTool(b.dataset.tool)));
 document.getElementById("btn-image").onclick = pickImage;
+document.getElementById("btn-example").onclick = loadExample;
 document.getElementById("btn-fit").onclick = fit;
 document.getElementById("btn-undo").onclick = undo;
 document.getElementById("btn-redo").onclick = redo;
