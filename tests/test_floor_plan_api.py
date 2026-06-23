@@ -1,0 +1,86 @@
+"""FloorPlanApi — the pywebview js_api bridge (docs/30). Backend + state mocked."""
+
+from __future__ import annotations
+
+import sys
+
+from sentry_agent_pc.gui import floor_plan_web as fpw
+from sentry_agent_pc.gui.floor_plan_web import FloorPlanApi, maybe_run_floor_plan_from_argv
+from sentry_agent_pc.state import AgentState, CameraRecord
+
+_PLAN = {"version": 1, "size": [1000, 800], "walls": [], "fixtures": [], "cameras": []}
+
+
+class _FakeBackend:
+    def __init__(self) -> None:
+        self.saved: dict | None = None
+
+    def agent_get_floor_plan(self) -> dict:
+        return _PLAN
+
+    def agent_update_floor_plan(self, plan: dict) -> dict:
+        self.saved = plan
+        return plan
+
+
+def test_list_cameras_from_state(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    state = AgentState(
+        cameras=[
+            CameraRecord(name="Cam A", ip="1.1.1.1", rtsp_url="rtsp://a", mediamtx_path="cam_a"),
+            CameraRecord(name="No Path", ip="2.2.2.2", rtsp_url="rtsp://b"),  # no path → skipped
+        ]
+    )
+    monkeypatch.setattr("sentry_agent_pc.state.load_state", lambda: state)
+    cams = FloorPlanApi().list_cameras()
+    assert cams == [{"camera_id": "cam_a", "name": "Cam A"}]  # path-less camera dropped
+
+
+def test_load_plan_ok(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("sentry_agent_pc.backend_client.BackendClient", lambda: _FakeBackend())
+    assert FloorPlanApi().load_plan() == _PLAN
+
+
+def test_load_plan_swallows_error(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class _Boom:
+        def agent_get_floor_plan(self) -> dict:
+            raise RuntimeError("offline")
+
+    monkeypatch.setattr("sentry_agent_pc.backend_client.BackendClient", lambda: _Boom())
+    assert FloorPlanApi().load_plan() == {}  # editor starts blank, never crashes
+
+
+def test_save_plan_patches_backend(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    fake = _FakeBackend()
+    monkeypatch.setattr("sentry_agent_pc.backend_client.BackendClient", lambda: fake)
+    plan = {**_PLAN, "fixtures": [{"type": "exit", "points": [[0, 0], [1, 0], [0.5, 1]]}]}
+    out = FloorPlanApi().save_plan(plan)
+    assert fake.saved == plan and out == plan
+
+
+def test_save_plan_propagates_error(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class _Boom:
+        def agent_update_floor_plan(self, plan: dict) -> dict:
+            raise RuntimeError("422")
+
+    monkeypatch.setattr("sentry_agent_pc.backend_client.BackendClient", lambda: _Boom())
+    try:
+        FloorPlanApi().save_plan(_PLAN)
+    except RuntimeError as e:
+        assert "422" in str(e)  # surfaces to the JS Promise reject
+    else:
+        raise AssertionError("save_plan must propagate the backend error")
+
+
+def test_maybe_run_floor_plan_noop_without_flag(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    called = {"n": 0}
+    monkeypatch.setattr(fpw, "_run_window", lambda: called.__setitem__("n", called["n"] + 1))
+    assert maybe_run_floor_plan_from_argv(["gui_main"]) is False
+    assert called["n"] == 0
+    assert maybe_run_floor_plan_from_argv(["gui_main", "--floor-plan"]) is True
+    assert called["n"] == 1
+
+
+def test_floor_plan_flag_constant() -> None:
+    # The spawn + entry must agree on the flag string.
+    assert fpw._FLAG == "--floor-plan"
+    assert sys is not None  # import-smoke

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="mn">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Plan зураг</title>
+    <script src="konva.min.js"></script>
+    <style>
+      :root {
+        --bg: #0a0a0a;
+        --panel: #141417;
+        --panel2: #1c1c20;
+        --border: #2a2a30;
+        --fg: #e6e6e6;
+        --muted: #8a8a93;
+        --orange: #ff8a1f;
+        --orange2: #e57a12;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+        font-family: "Segoe UI", system-ui, sans-serif; overflow: hidden;
+        user-select: none;
+      }
+      #app { display: flex; flex-direction: column; height: 100vh; }
+      header {
+        display: flex; align-items: center; gap: 12px; padding: 8px 14px;
+        border-bottom: 1px solid var(--border); background: var(--panel);
+      }
+      header h1 { font-size: 16px; margin: 0; font-weight: 700; }
+      header .spacer { flex: 1; }
+      #status { color: var(--muted); font-size: 12px; }
+      .toolbar {
+        display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 14px;
+        border-bottom: 1px solid var(--border); background: var(--panel);
+      }
+      .sep { width: 1px; background: var(--border); margin: 0 4px; }
+      button {
+        background: transparent; color: var(--fg); border: 1px solid var(--border);
+        border-radius: 7px; padding: 6px 11px; font-size: 13px; cursor: pointer;
+      }
+      button:hover { background: #26262c; }
+      button.active { background: var(--orange); color: #000; border-color: var(--orange); }
+      button.primary { background: var(--orange); color: #000; border-color: var(--orange); font-weight: 600; }
+      button.primary:hover { background: var(--orange2); }
+      .body { flex: 1; display: flex; min-height: 0; }
+      #canvas-holder { flex: 1; background: #0e0e10; position: relative; }
+      aside {
+        width: 250px; border-left: 1px solid var(--border); background: var(--panel);
+        padding: 12px; overflow-y: auto;
+      }
+      aside h2 { font-size: 13px; margin: 4px 0 6px; }
+      select {
+        width: 100%; background: var(--panel2); color: var(--fg);
+        border: 1px solid var(--border); border-radius: 7px; padding: 7px;
+      }
+      .hint { color: var(--muted); font-size: 11px; line-height: 1.5; margin: 8px 0; }
+      .keys { color: #6f6f78; font-size: 10.5px; line-height: 1.6; white-space: pre-line; }
+      #elements { margin-top: 8px; }
+      .elem {
+        display: flex; align-items: center; gap: 6px; padding: 5px 7px;
+        border-radius: 6px; font-size: 12px;
+      }
+      .elem:hover { background: var(--panel2); }
+      .elem .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+      .elem .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .elem .del {
+        border: none; background: transparent; color: #ff6b6b; cursor: pointer;
+        font-size: 13px; padding: 0 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>🗺 Plan зураг</h1>
+        <span id="status"></span>
+        <span class="spacer"></span>
+        <button id="btn-save" class="primary">Хадгалах</button>
+      </header>
+
+      <div class="toolbar">
+        <button data-tool="select" class="tool active">↖ Сонгох</button>
+        <button data-tool="wall" class="tool">▭ Хана</button>
+        <button data-tool="shelf" class="tool">▦ Тавиур</button>
+        <button data-tool="exit" class="tool">🚪 Орц/Гарц</button>
+        <button data-tool="checkout" class="tool">🛒 Касс</button>
+        <button data-tool="camera" class="tool">📷 Камер</button>
+        <span class="sep"></span>
+        <button id="btn-image">🖼 Зураг оруулах</button>
+        <button id="btn-fit">⤢ Багтаах</button>
+        <button id="btn-snap" class="active">⊾ Өнцөг</button>
+        <button id="btn-undo">↶</button>
+        <button id="btn-redo">↷</button>
+      </div>
+
+      <div class="body">
+        <div id="canvas-holder"></div>
+        <aside>
+          <h2>Байрлуулах камер</h2>
+          <select id="cam-pick"></select>
+          <p class="hint">
+            «Камер» горимд камер сонгоод зураг дээр дарж байрлуул. «Сонгох» горимд
+            элемент дарж сонгоод чирэх/эргүүлэх/булан засах. Хана/бүс — дарж булан
+            нэмж, давхар дарж (эсвэл Enter) дуусга. «Зураг оруулах»-аар дэлгүүрийн
+            план зургаа суурь болгож тойруулан зурж болно.
+          </p>
+          <div class="keys">⌨ 1–6 багаж · Enter дуусгах · Esc болих
+Backspace цэг устгах · Del сонгосон устгах
+G өнцөг-snap · F багтаах · Ctrl+Z/Y undo · Ctrl+S хадгалах</div>
+          <h2 style="margin-top:14px">Элементүүд</h2>
+          <div id="elements"></div>
+        </aside>
+      </div>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>
