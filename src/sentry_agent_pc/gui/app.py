@@ -61,13 +61,44 @@ BRAND_NAVY = "#2A4A73"
 BRAND_NAVY_HOVER = "#36598A"
 CHIPMO_ORANGE = BRAND_ORANGE  # module-wide alias (kept for the existing call sites)
 
-# Edge behaviour-engine movement keys → Mongolian labels (mirrors the cloud
-# vocabulary). Drives the per-clip score breakdown in the «Сэжигтэй» gallery.
-_EDGE_BEHAVIOR_LABELS = {
-    "item_pickup": "Эд зүйл барих",
-    "wrist_to_torso": "Гар бие рүү (нуух хөдөлгөөн)",
-    "conceal": "Эд зүйл нуух",
-}
+# The agent-pc edge behaviour catalog — every signal the Stage-1 gate scores,
+# with the EdgeConfig weight key that controls it (tuned per store from
+# superadmin's «Edge тохиргоо»). Drives BOTH the «Сэжигтэй» score breakdown and
+# the «Зан үйл» menu table. `weight_key` is None for non-scored signals.
+_EDGE_BEHAVIORS: tuple[dict[str, str], ...] = (
+    {
+        "key": "item_pickup",
+        "label": "Эд зүйл барих",
+        "desc": "Гар бараа дээр ойртож «барьсан» гэж тооцогдох",
+        "weight_key": "w_holding",
+    },
+    {
+        "key": "wrist_to_torso",
+        "label": "Гар бие рүү",
+        "desc": "Гар бэлхүүс/хармаан руу татагдсан (нуух хөдөлгөөн)",
+        "weight_key": "w_wrist_torso",
+    },
+    {
+        "key": "conceal",
+        "label": "Эд зүйл нуух",
+        "desc": "Бараа барьсан гар бие рүү ойртвол — нуух поз (хамгийн хүчтэй)",
+        "weight_key": "w_conceal",
+    },
+    {
+        "key": "repeated_shelf_visit",
+        "label": "Тавиур давтан зочлох",
+        "desc": "Нэг тавиурын бүс рүү олон удаа эргэж очих (зон шаардана)",
+        "weight_key": "w_repeated_shelf",
+    },
+    {
+        "key": "exit_after_concealment",
+        "label": "Нуусны дараа гарц руу",
+        "desc": "Нуусан хүн гарцын бүс рүү орох — хулгайн хүчтэй дохио (зон шаардана)",
+        "weight_key": "w_exit_after_conceal",
+    },
+)
+# Movement key → Mongolian label (the «Сэжигтэй» gallery + clip detail use this).
+_EDGE_BEHAVIOR_LABELS = {b["key"]: b["label"] for b in _EDGE_BEHAVIORS}
 
 
 def _theme(widget: str, key: str, value: object) -> None:
@@ -156,6 +187,7 @@ class AgentApp(ctk.CTk):
         self._build_camera_list(self._page_cameras)
         self._pages["cameras"] = self._page_cameras
         self._pages["alerts"] = self._build_alerts_page(self._content)
+        self._pages["behaviors"] = self._build_behaviors_page(self._content)
         self._pages["settings"] = self._build_settings_page(self._content)
         self._show_page("cameras")
 
@@ -340,6 +372,7 @@ class AgentApp(ctk.CTk):
         ("cameras", "📷  Камерууд", "page"),
         ("live", "📺  Шууд харах", "action"),
         ("alerts", "⚠  Сэжигтэй", "page"),
+        ("behaviors", "🎯  Зан үйл", "page"),
         ("settings", "⚙  Тохиргоо", "page"),
     )
 
@@ -376,6 +409,8 @@ class AgentApp(ctk.CTk):
             btn.configure(fg_color=CHIPMO_ORANGE if key == name else "transparent")
         if name == "alerts":
             self._refresh_alerts()
+        elif name == "behaviors":
+            self._refresh_behaviors()
 
     def _edge_status_text(self) -> str:
         """Human-readable edge-AI readiness for the sidebar / settings."""
@@ -473,6 +508,98 @@ class AgentApp(ctk.CTk):
             row, text="▶ Нээх", width=72, height=28, fg_color="transparent",
             border_width=1, command=lambda p=clip.path: self._open_clip(p),
         ).pack(side="right", padx=(4, 12), pady=8)
+        # Per-fire timeline (date/time + each +N + risk). Shown only when the clip
+        # actually carries an event log (older clips recorded before this feature
+        # have none → no point offering an empty detail view).
+        if clip.events:
+            ctk.CTkButton(
+                row, text="≣ Дэлгэрэнгүй", width=96, height=28, fg_color="transparent",
+                border_width=1, command=lambda c=clip: self._open_clip_detail(c),
+            ).pack(side="right", padx=(4, 0), pady=8)
+
+    def _open_clip_detail(self, clip: ClipRecord) -> None:
+        """Modal: the suspicious episode's full per-fire timeline — one row per
+        banking with wall-clock time, behaviour, +оноо and the resulting risk%."""
+        import datetime
+
+        from sentry_agent_pc.gui import widgets
+
+        win = ctk.CTkToplevel(self)
+        win.title("Сэжигтэй тохиолдол — дэлгэрэнгүй")
+        win.transient(self)
+        widgets.setup_dialog(win, 560, 560, min_width=440, min_height=360)
+        with contextlib.suppress(Exception):
+            win.grab_set()
+
+        started = datetime.datetime.fromtimestamp(clip.started_at)
+        head = ctk.CTkFrame(win, fg_color="transparent")
+        head.pack(fill="x", padx=16, pady=(14, 6))
+        ctk.CTkLabel(
+            head, text=f"{clip.camera_id}", anchor="w",
+            font=ctk.CTkFont(size=15, weight="bold"),
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            head,
+            text=(
+                f"{started.strftime('%Y-%m-%d %H:%M:%S')}  ·  "
+                f"Дээд эрсдэл {clip.risk_pct:.0f}%  ·  {clip.duration:.0f}с  ·  "
+                "⚙ Edge behaviour engine"
+            ),
+            anchor="w", font=ctk.CTkFont(size=11), text_color="gray65",
+        ).pack(anchor="w")
+
+        # Column header
+        hdr = ctk.CTkFrame(win, fg_color="gray20", corner_radius=6)
+        hdr.pack(fill="x", padx=16, pady=(8, 0))
+        for text, w, anchor in (
+            ("Цаг", 96, "w"), ("Зан үйл", 200, "w"), ("Оноо", 70, "e"), ("Эрсдэл", 70, "e")
+        ):
+            ctk.CTkLabel(
+                hdr, text=text, width=w, anchor=anchor,
+                font=ctk.CTkFont(size=11, weight="bold"), text_color="gray80",
+            ).pack(side="left", padx=6, pady=4)
+
+        # Footer pinned to the bottom FIRST (setup_dialog convention) so it never
+        # gets clipped by the expanding event list.
+        foot = ctk.CTkFrame(win, fg_color="transparent")
+        foot.pack(side="bottom", fill="x", padx=16, pady=(2, 12))
+
+        body = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=16, pady=(2, 4))
+        total = 0.0
+        for ev in clip.events:
+            key = str(ev.get("key", ""))
+            label = _EDGE_BEHAVIOR_LABELS.get(key, key)
+            amount = float(ev.get("amount", 0) or 0)
+            risk = float(ev.get("risk", 0) or 0)
+            ts = float(ev.get("ts", 0) or 0)
+            total += amount
+            tcol = "#FF6B6B" if risk >= 70 else (CHIPMO_ORANGE if risk >= 40 else "gray75")
+            line = ctk.CTkFrame(body, fg_color="transparent")
+            line.pack(fill="x", pady=1)
+            clock = datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else "—"
+            ctk.CTkLabel(line, text=clock, width=96, anchor="w",
+                         font=ctk.CTkFont(size=11), text_color="gray70").pack(side="left", padx=6)
+            ctk.CTkLabel(line, text=label, width=200, anchor="w",
+                         font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
+            ctk.CTkLabel(line, text=f"+{amount:.0f}", width=70, anchor="e",
+                         font=ctk.CTkFont(size=11, weight="bold"),
+                         text_color="#7CD992").pack(side="left", padx=6)
+            ctk.CTkLabel(line, text=f"{risk:.0f}%", width=70, anchor="e",
+                         font=ctk.CTkFont(size=11), text_color=tcol).pack(side="left", padx=6)
+
+        ctk.CTkLabel(
+            foot,
+            text=(
+                f"Нийт {len(clip.events)} дохио  ·  цугларсан +{total:.0f} оноо.  "
+                "Дохио хооронд эрсдэл аажмаар буурдаг (decay)."
+            ),
+            anchor="w", font=ctk.CTkFont(size=10), text_color="gray60", wraplength=380,
+        ).pack(side="left")
+        ctk.CTkButton(
+            foot, text="▶ Видео", width=80, height=30,
+            command=lambda p=clip.path: self._open_clip(p),
+        ).pack(side="right")
 
     def _open_clip(self, path: str) -> None:
         opener = getattr(os, "startfile", None)  # Windows default player (None elsewhere)
@@ -482,6 +609,116 @@ class AgentApp(ctk.CTk):
                 self.set_status(f"Бичлэг нээж байна: {path}")
                 return
         self.set_status(f"Бичлэг: {path}")
+
+    # === «Зан үйл» page — the edge behaviour catalog + per-store weights ===
+
+    def _build_behaviors_page(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
+        """The behaviours the agent-pc Stage-1 gate scores, with the weight each
+        adds (tuned per store from superadmin's «Edge тохиргоо», fetched live)."""
+        page = ctk.CTkFrame(parent, fg_color="transparent")
+        bar = ctk.CTkFrame(page, fg_color="transparent")
+        bar.pack(fill="x", padx=16, pady=(14, 4))
+        ctk.CTkLabel(
+            bar, text="Зан үйлийн жагсаалт", font=ctk.CTkFont(size=16, weight="bold")
+        ).pack(side="left")
+        ctk.CTkButton(
+            bar, text="↻ Сэргээх", width=100, height=32, fg_color="transparent",
+            border_width=1, command=self._refresh_behaviors,
+        ).pack(side="right")
+        ctk.CTkLabel(
+            page,
+            text=(
+                "Энэ компьютер дээрх AI хөдөлгүүр доорх зан үйлүүдийг хардаг. «Жин» нь "
+                "тухайн хөдөлгөөн илрэхэд суспиц оноонд хэдэн оноо нэмэхийг заана — "
+                "superadmin-аас дэлгүүр тус бүрээр тааруулна."
+            ),
+            anchor="w", justify="left", font=ctk.CTkFont(size=11),
+            text_color="gray60", wraplength=640,
+        ).pack(anchor="w", padx=16, pady=(0, 8))
+        self._behaviors_version = ctk.CTkLabel(
+            page, text="", anchor="w", font=ctk.CTkFont(size=10), text_color="gray55"
+        )
+        self._behaviors_version.pack(anchor="w", padx=16)
+        self._behaviors_frame = ctk.CTkScrollableFrame(page, fg_color="transparent")
+        self._behaviors_frame.pack(fill="both", expand=True, padx=16, pady=(4, 10))
+        self._behavior_weight_labels: dict[str, ctk.CTkLabel] = {}
+        return page
+
+    def _refresh_behaviors(self) -> None:
+        from sentry_agent_pc.edge.config import EdgeConfig
+
+        for w in self._behaviors_frame.winfo_children():
+            w.destroy()
+        self._behavior_weight_labels = {}
+        # Header
+        hdr = ctk.CTkFrame(self._behaviors_frame, fg_color="gray20", corner_radius=6)
+        hdr.pack(fill="x", pady=(0, 4))
+        for text, width, anchor in (
+            ("Зан үйл", 190, "w"), ("Тайлбар", 360, "w"), ("Жин", 70, "e")
+        ):
+            ctk.CTkLabel(
+                hdr, text=text, width=width, anchor=anchor,
+                font=ctk.CTkFont(size=11, weight="bold"), text_color="gray80",
+            ).pack(side="left", padx=8, pady=5)
+        # Rows — seed weights from local defaults; the live fetch overrides below.
+        defaults = EdgeConfig()
+        for b in _EDGE_BEHAVIORS:
+            row = ctk.CTkFrame(self._behaviors_frame, fg_color="gray17", corner_radius=8)
+            row.pack(fill="x", pady=2)
+            ctk.CTkLabel(
+                row, text=b["label"], width=190, anchor="w",
+                font=ctk.CTkFont(size=12, weight="bold"),
+            ).pack(side="left", padx=8, pady=8)
+            ctk.CTkLabel(
+                row, text=b["desc"], width=360, anchor="w", justify="left",
+                font=ctk.CTkFont(size=11), text_color="gray70", wraplength=350,
+            ).pack(side="left", padx=8, pady=8)
+            wkey = b.get("weight_key") or ""
+            seed = getattr(defaults, wkey, None) if wkey else None
+            lbl = ctk.CTkLabel(
+                row, text=(f"+{float(seed):.0f}" if seed is not None else "—"),
+                width=70, anchor="e",
+                font=ctk.CTkFont(size=12, weight="bold"), text_color=CHIPMO_ORANGE,
+            )
+            lbl.pack(side="left", padx=8, pady=8)
+            if wkey:
+                self._behavior_weight_labels[wkey] = lbl
+        self._behaviors_version.configure(text="Анхдагч утга харуулж байна…")
+        # Fetch the live per-store weights off the UI thread.
+        threading.Thread(target=self._fetch_behavior_weights, daemon=True).start()
+
+    def _fetch_behavior_weights(self) -> None:
+        try:
+            cfg = BackendClient().agent_edge_config()
+        except Exception as e:  # noqa: BLE001 — offline → keep the seeded defaults
+            self._post_behavior_weights(None, str(e)[:80])
+            return
+        self._post_behavior_weights(cfg, None)
+
+    def _post_behavior_weights(self, cfg: dict[str, Any] | None, err: str | None) -> None:
+        """Apply fetched weights on the UI thread (guarded against teardown)."""
+        if self._closing:
+            return
+        with contextlib.suppress(Exception):
+            self.after(0, lambda: self._apply_behavior_weights(cfg, err))
+
+    def _apply_behavior_weights(self, cfg: dict[str, Any] | None, err: str | None) -> None:
+        if self._closing or not self._behavior_weight_labels:
+            return
+        if cfg is None:
+            self._behaviors_version.configure(
+                text=f"Серверээс татаж чадсангүй ({err}). Анхдагч утга харагдаж байна."
+            )
+            return
+        for wkey, lbl in self._behavior_weight_labels.items():
+            val = cfg.get(wkey)
+            with contextlib.suppress(Exception):
+                if val is not None:
+                    lbl.configure(text=f"+{float(val):.0f}")
+        ver = cfg.get("version")
+        self._behaviors_version.configure(
+            text=f"Серверээс татсан жин (тохиргоо v{ver}) · superadmin-аас тааруулна."
+        )
 
     def _build_settings_page(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
         page = ctk.CTkFrame(parent, fg_color="transparent")

@@ -50,6 +50,11 @@ class _Track:
     # suspicious-clip score breakdown ("which movement banked how much").
     ep_scores: dict[str, float] = field(default_factory=dict)
     ep_first_ts: dict[str, float] = field(default_factory=dict)
+    # Per-FIRE event log this episode: (behavior_key, wall-clock ts, +amount,
+    # risk_pct after this frame) — one entry EVERY banking frame, so the clip
+    # detail view can show the exact timeline ("at HH:MM:SS conceal +14 → 72%").
+    # Reset on episode open; the aggregated ep_scores above stay for the summary.
+    ep_events: list[tuple[str, float, float, float]] = field(default_factory=list)
     # docs/29 P1c (edge) zone state — TRACK-lifetime (NOT reset on episode close,
     # only when the track is dropped): `concealed` latches once the person shows
     # a concealment posture (so exit_after_concealment can fire later at the door);
@@ -312,6 +317,7 @@ class EdgeBehavior:
             for k, v in frame_scores.items():
                 tr.ep_scores[k] = tr.ep_scores.get(k, 0.0) + v
                 tr.ep_first_ts.setdefault(k, now)
+                tr.ep_events.append((k, now, v, risk_pct))
 
         if tr.state == "normal":
             if risk_pct >= self.cfg.open_risk:
@@ -321,6 +327,7 @@ class EdgeBehavior:
                 tr.ep_behaviors = set(behaviors)
                 tr.ep_scores = {}
                 tr.ep_first_ts = {}
+                tr.ep_events = []
                 bank()
                 tr.last_active = now
             return None
@@ -343,6 +350,19 @@ class EdgeBehavior:
             }
             for k, score in tr.ep_scores.items()
         ]
+        # Per-fire timeline: absolute wall-clock ts + offset-from-start + amount +
+        # the risk after that frame (so the detail view shows each +N AND the decay
+        # between fires via the running risk%). Chronological (append order).
+        events = [
+            {
+                "key": k,
+                "ts": round(ts, 2),
+                "offset_sec": round(max(0.0, ts - tr.ep_start), 1),
+                "amount": round(amount, 1),
+                "risk": round(risk, 1),
+            }
+            for k, ts, amount, risk in tr.ep_events
+        ]
         ep = SuspiciousEpisode(
             camera_id=self.camera_id,
             start_ts=tr.ep_start,
@@ -350,11 +370,13 @@ class EdgeBehavior:
             risk_pct=tr.ep_peak,
             behaviors=sorted(tr.ep_behaviors),
             behavior_detail=detail,
+            events=events,
         )
         tr.state = "normal"
         tr.ep_behaviors = set()
         tr.ep_scores = {}
         tr.ep_first_ts = {}
+        tr.ep_events = []
         return ep
 
     def _drop_stale(self, now: float) -> list[SuspiciousEpisode]:
