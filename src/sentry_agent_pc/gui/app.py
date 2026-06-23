@@ -100,6 +100,28 @@ _EDGE_BEHAVIORS: tuple[dict[str, str], ...] = (
 # Movement key → Mongolian label (the «Сэжигтэй» gallery + clip detail use this).
 _EDGE_BEHAVIOR_LABELS = {b["key"]: b["label"] for b in _EDGE_BEHAVIORS}
 
+# «Сэжигтэй» table column widths (px) — header + every row share these so the
+# columns line up; the «Зан үйл» column takes the slack (expand).
+_CLIP_COL_CAM = 150
+_CLIP_COL_WHEN = 150
+_CLIP_COL_RISK = 72
+_CLIP_COL_DUR = 64
+_CLIP_ROW_BG = "gray16"
+_CLIP_ROW_HOVER = "gray25"
+
+
+def _bind_row_click(widget: Any, handler: Callable[[], None]) -> None:
+    """Make a whole row (frame + every child label) clickable + hand-cursor, so a
+    click anywhere on the row opens the detail — Tk doesn't bubble child clicks."""
+    stack = [widget]
+    while stack:
+        w = stack.pop()
+        with contextlib.suppress(Exception):
+            w.bind("<Button-1>", lambda _e: handler())
+            w.configure(cursor="hand2")
+        with contextlib.suppress(Exception):
+            stack.extend(w.winfo_children())
+
 
 def _theme(widget: str, key: str, value: object) -> None:
     """Set one ThemeManager colour, ignoring keys a CTk version doesn't have."""
@@ -451,6 +473,27 @@ class AgentApp(ctk.CTk):
             bar, text="↻ Сэргээх", width=100, height=32, fg_color="transparent",
             border_width=1, command=self._refresh_alerts,
         ).pack(side="right")
+        ctk.CTkLabel(
+            page,
+            text="Мөр дээр дарж тухайн тохиолдлын дэлгэрэнгүй (зан үйл·оноо·цаг) хараарай.",
+            anchor="w", font=ctk.CTkFont(size=11), text_color="gray55",
+        ).pack(anchor="w", padx=16, pady=(0, 6))
+        # Column header — shares the row cell widths so columns line up.
+        hdr = ctk.CTkFrame(page, fg_color="gray22", corner_radius=6)
+        hdr.pack(fill="x", padx=16, pady=(0, 2))
+        for text, w, anchor in (
+            ("Камер", _CLIP_COL_CAM, "w"),
+            ("Огноо · цаг", _CLIP_COL_WHEN, "w"),
+            ("Эрсдэл", _CLIP_COL_RISK, "e"),
+            ("Зан үйл", 0, "w"),
+            ("Хугацаа", _CLIP_COL_DUR, "e"),
+        ):
+            lbl = ctk.CTkLabel(
+                hdr, text=text, anchor=anchor,
+                font=ctk.CTkFont(size=11, weight="bold"), text_color="gray70",
+                **({"width": w} if w else {}),
+            )
+            lbl.pack(side="left", fill=("x" if not w else None), expand=(not w), padx=8, pady=5)
         self._alerts_frame = ctk.CTkScrollableFrame(page, fg_color="transparent")
         self._alerts_frame.pack(fill="both", expand=True, padx=16, pady=(0, 10))
         return page
@@ -473,49 +516,48 @@ class AgentApp(ctk.CTk):
             self._render_clip_row(clip)
 
     def _render_clip_row(self, clip: ClipRecord) -> None:
+        """One clip as a clickable table row — whole row opens the detail."""
         import datetime
 
-        row = ctk.CTkFrame(self._alerts_frame, fg_color="gray17", corner_radius=8)
-        row.pack(fill="x", pady=4)
-        when = datetime.datetime.fromtimestamp(clip.started_at).strftime("%m-%d %H:%M:%S")
-        color = "#FF6B6B" if clip.risk_pct >= 70 else (CHIPMO_ORANGE if clip.risk_pct >= 40 else "gray70")
-        info = ctk.CTkFrame(row, fg_color="transparent")
-        info.pack(side="left", fill="x", expand=True, padx=12, pady=8)
+        row = ctk.CTkFrame(self._alerts_frame, fg_color=_CLIP_ROW_BG, corner_radius=8)
+        row.pack(fill="x", pady=2)
+        when = datetime.datetime.fromtimestamp(clip.started_at).strftime("%Y-%m-%d %H:%M:%S")
+        color = (
+            "#FF6B6B" if clip.risk_pct >= 70
+            else (CHIPMO_ORANGE if clip.risk_pct >= 40 else "gray70")
+        )
+        labels = [_EDGE_BEHAVIOR_LABELS.get(b, b) for b in clip.behaviors]
+        beh = " · ".join(labels) or "—"
+
         ctk.CTkLabel(
-            info, text=f"{clip.camera_id} · {when}", anchor="w",
-            font=ctk.CTkFont(size=13, weight="bold"),
-        ).pack(anchor="w")
-        beh = ", ".join(clip.behaviors) or "—"
+            row, text=clip.camera_id, width=_CLIP_COL_CAM, anchor="w",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).pack(side="left", padx=8, pady=9)
         ctk.CTkLabel(
-            info, text=f"Risk {clip.risk_pct:.0f}%  ·  {beh}  ·  {clip.duration:.0f}с",
-            anchor="w", font=ctk.CTkFont(size=11), text_color=color,
-        ).pack(anchor="w")
-        # Which engine flagged it + the per-movement score breakdown it banked
-        # (so the founder sees *why* this clip became suspicious, not just a total).
+            row, text=when, width=_CLIP_COL_WHEN, anchor="w",
+            font=ctk.CTkFont(size=11), text_color="gray75",
+        ).pack(side="left", padx=8)
         ctk.CTkLabel(
-            info, text="⚙ Edge behaviour engine (agent-pc)", anchor="w",
-            font=ctk.CTkFont(size=10), text_color="gray55",
-        ).pack(anchor="w")
-        for d in clip.behavior_detail:
-            label = _EDGE_BEHAVIOR_LABELS.get(str(d.get("key", "")), str(d.get("key", "")))
-            score = float(d.get("score", 0) or 0)
-            offset = float(d.get("offset_sec", 0) or 0)
-            ctk.CTkLabel(
-                info, text=f"   • {label}: +{score:.0f} оноо  ({offset:.0f}с-т эхэлсэн)",
-                anchor="w", font=ctk.CTkFont(size=10), text_color="gray65",
-            ).pack(anchor="w")
-        ctk.CTkButton(
-            row, text="▶ Нээх", width=72, height=28, fg_color="transparent",
-            border_width=1, command=lambda p=clip.path: self._open_clip(p),
-        ).pack(side="right", padx=(4, 12), pady=8)
-        # Per-fire timeline (date/time + each +N + risk). Shown only when the clip
-        # actually carries an event log (older clips recorded before this feature
-        # have none → no point offering an empty detail view).
-        if clip.events:
-            ctk.CTkButton(
-                row, text="≣ Дэлгэрэнгүй", width=96, height=28, fg_color="transparent",
-                border_width=1, command=lambda c=clip: self._open_clip_detail(c),
-            ).pack(side="right", padx=(4, 0), pady=8)
+            row, text=f"{clip.risk_pct:.0f}%", width=_CLIP_COL_RISK, anchor="e",
+            font=ctk.CTkFont(size=12, weight="bold"), text_color=color,
+        ).pack(side="left", padx=8)
+        ctk.CTkLabel(
+            row, text=beh, anchor="w", justify="left",
+            font=ctk.CTkFont(size=11), text_color="gray80",
+        ).pack(side="left", fill="x", expand=True, padx=8)
+        ctk.CTkLabel(
+            row, text=f"{clip.duration:.0f}с", width=_CLIP_COL_DUR, anchor="e",
+            font=ctk.CTkFont(size=11), text_color="gray65",
+        ).pack(side="left", padx=8)
+        ctk.CTkLabel(
+            row, text="›", width=18, anchor="e",
+            font=ctk.CTkFont(size=16), text_color="gray55",
+        ).pack(side="left", padx=(0, 8))
+
+        _bind_row_click(row, lambda: self._open_clip_detail(clip))
+        # Hover highlight for the whole row.
+        row.bind("<Enter>", lambda _e: row.configure(fg_color=_CLIP_ROW_HOVER))
+        row.bind("<Leave>", lambda _e: row.configure(fg_color=_CLIP_ROW_BG))
 
     def _open_clip_detail(self, clip: ClipRecord) -> None:
         """Modal: the suspicious episode's full per-fire timeline — one row per
@@ -567,33 +609,59 @@ class AgentApp(ctk.CTk):
         body = ctk.CTkScrollableFrame(win, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=16, pady=(2, 4))
         total = 0.0
-        for ev in clip.events:
-            key = str(ev.get("key", ""))
-            label = _EDGE_BEHAVIOR_LABELS.get(key, key)
-            amount = float(ev.get("amount", 0) or 0)
-            risk = float(ev.get("risk", 0) or 0)
-            ts = float(ev.get("ts", 0) or 0)
-            total += amount
-            tcol = "#FF6B6B" if risk >= 70 else (CHIPMO_ORANGE if risk >= 40 else "gray75")
-            line = ctk.CTkFrame(body, fg_color="transparent")
-            line.pack(fill="x", pady=1)
-            clock = datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else "—"
-            ctk.CTkLabel(line, text=clock, width=96, anchor="w",
-                         font=ctk.CTkFont(size=11), text_color="gray70").pack(side="left", padx=6)
-            ctk.CTkLabel(line, text=label, width=200, anchor="w",
-                         font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
-            ctk.CTkLabel(line, text=f"+{amount:.0f}", width=70, anchor="e",
-                         font=ctk.CTkFont(size=11, weight="bold"),
-                         text_color="#7CD992").pack(side="left", padx=6)
-            ctk.CTkLabel(line, text=f"{risk:.0f}%", width=70, anchor="e",
-                         font=ctk.CTkFont(size=11), text_color=tcol).pack(side="left", padx=6)
-
-        ctk.CTkLabel(
-            foot,
-            text=(
+        if clip.events:
+            for ev in clip.events:
+                key = str(ev.get("key", ""))
+                label = _EDGE_BEHAVIOR_LABELS.get(key, key)
+                amount = float(ev.get("amount", 0) or 0)
+                risk = float(ev.get("risk", 0) or 0)
+                ts = float(ev.get("ts", 0) or 0)
+                total += amount
+                tcol = "#FF6B6B" if risk >= 70 else (CHIPMO_ORANGE if risk >= 40 else "gray75")
+                line = ctk.CTkFrame(body, fg_color="transparent")
+                line.pack(fill="x", pady=1)
+                clock = datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else "—"
+                ctk.CTkLabel(line, text=clock, width=96, anchor="w",
+                             font=ctk.CTkFont(size=11), text_color="gray70").pack(side="left", padx=6)
+                ctk.CTkLabel(line, text=label, width=200, anchor="w",
+                             font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
+                ctk.CTkLabel(line, text=f"+{amount:.0f}", width=70, anchor="e",
+                             font=ctk.CTkFont(size=11, weight="bold"),
+                             text_color="#7CD992").pack(side="left", padx=6)
+                ctk.CTkLabel(line, text=f"{risk:.0f}%", width=70, anchor="e",
+                             font=ctk.CTkFont(size=11), text_color=tcol).pack(side="left", padx=6)
+            note = (
                 f"Нийт {len(clip.events)} дохио  ·  цугларсан +{total:.0f} оноо.  "
                 "Дохио хооронд эрсдэл аажмаар буурдаг (decay)."
-            ),
+            )
+        elif clip.behavior_detail:
+            # Older clip recorded before the per-fire log: show the aggregated
+            # breakdown (одоо хүртэл цуглуулсан оноо хөдөлгөөн тус бүрээр).
+            for d in clip.behavior_detail:
+                label = _EDGE_BEHAVIOR_LABELS.get(str(d.get("key", "")), str(d.get("key", "")))
+                score = float(d.get("score", 0) or 0)
+                offset = float(d.get("offset_sec", 0) or 0)
+                total += score
+                line = ctk.CTkFrame(body, fg_color="transparent")
+                line.pack(fill="x", pady=1)
+                ctk.CTkLabel(line, text=f"{offset:.0f}с-т", width=96, anchor="w",
+                             font=ctk.CTkFont(size=11), text_color="gray70").pack(side="left", padx=6)
+                ctk.CTkLabel(line, text=label, width=200, anchor="w",
+                             font=ctk.CTkFont(size=11)).pack(side="left", padx=6)
+                ctk.CTkLabel(line, text=f"+{score:.0f}", width=70, anchor="e",
+                             font=ctk.CTkFont(size=11, weight="bold"),
+                             text_color="#7CD992").pack(side="left", padx=6)
+                ctk.CTkLabel(line, text="—", width=70, anchor="e",
+                             font=ctk.CTkFont(size=11), text_color="gray60").pack(side="left", padx=6)
+            note = f"Цугларсан +{total:.0f} оноо (нэгтгэсэн — энэ бичлэг хугацааны задаргаагүй)."
+        else:
+            ctk.CTkLabel(
+                body, text="Онооны задаргаа алга.", text_color="gray60",
+            ).pack(pady=20)
+            note = "Энэ бичлэгт зан үйлийн задаргаа бүртгэгдээгүй."
+
+        ctk.CTkLabel(
+            foot, text=note,
             anchor="w", font=ctk.CTkFont(size=10), text_color="gray60", wraplength=380,
         ).pack(side="left")
         ctk.CTkButton(
