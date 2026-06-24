@@ -81,31 +81,48 @@ _EDGE_BEHAVIORS: tuple[dict[str, str], ...] = (
         "label": "Эд зүйл барих",
         "desc": "Гар бараа дээр ойртож «барьсан» гэж тооцогдох",
         "weight_key": "w_holding",
+        "interval_key": "interval_holding",
+        "mindur_key": "mindur_holding",
     },
     {
         "key": "wrist_to_torso",
         "label": "Гар бие рүү",
         "desc": "Гар бэлхүүс/хармаан руу татагдсан (нуух хөдөлгөөн)",
         "weight_key": "w_wrist_torso",
+        "interval_key": "interval_wrist_torso",
+        "mindur_key": "mindur_wrist_torso",
     },
     {
         "key": "conceal",
         "label": "Эд зүйл нуух",
         "desc": "Бараа барьсан гар бие рүү ойртвол — нуух байрлал (хамгийн хүчтэй)",
         "weight_key": "w_conceal",
+        "interval_key": "interval_conceal",
+        "mindur_key": "mindur_conceal",
     },
     {
         "key": "repeated_shelf_visit",
         "label": "Тавиур давтан зочлох",
         "desc": "Нэг тавиурын бүс рүү олон удаа эргэж очих (зон шаардана)",
         "weight_key": "w_repeated_shelf",
+        "interval_key": "interval_repeated_shelf",
+        "mindur_key": "mindur_repeated_shelf",
     },
     {
         "key": "exit_after_concealment",
         "label": "Нуусны дараа гарц руу",
         "desc": "Нуусан хүн гарцын бүс рүү орох — хулгайн хүчтэй дохио (зон шаардана)",
         "weight_key": "w_exit_after_conceal",
+        "interval_key": "interval_exit_after_conceal",
+        "mindur_key": "mindur_exit_after_conceal",
     },
+)
+# EdgeConfig keys that belong to a behaviour row (weight + timing) — excluded from
+# the «Бусад тохиргоо» table so they aren't shown twice.
+_BEHAVIOR_FIELD_KEYS: frozenset[str] = frozenset(
+    k
+    for b in _EDGE_BEHAVIORS
+    for k in (b["weight_key"], b["interval_key"], b["mindur_key"])
 )
 # Movement key → Mongolian label (the «Сэжигтэй» gallery + clip detail use this).
 _EDGE_BEHAVIOR_LABELS = {b["key"]: b["label"] for b in _EDGE_BEHAVIORS}
@@ -795,10 +812,10 @@ class AgentApp(ctk.CTk):
 
     def _build_behaviors_page(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
         """The FULL effective edge config this PC runs YOLO + the behaviour engine
-        with — grouped + labelled, read-only. Values come live from superadmin's
-        «Edge тохиргоо» (global, one value for every store); shown as a sortable
-        table so the operator can see exactly what scores, timing gates, zone
-        thresholds and detection settings are in force."""
+        with — read-only, live from superadmin's «Edge тохиргоо» (global). Two
+        tables: each BEHAVIOUR is ONE ROW with its score + timing as COLUMNS
+        (оноо · давтамж · үргэлжлэх), then a second table for the remaining
+        single-value settings (episode FSM, detection, geometry, recording)."""
         page = ctk.CTkFrame(parent, fg_color="transparent")
         bar = ctk.CTkFrame(page, fg_color="transparent")
         bar.pack(fill="x", padx=16, pady=(14, 4))
@@ -818,10 +835,10 @@ class AgentApp(ctk.CTk):
             page,
             text=(
                 "Энэ компьютер дээрх AI хөдөлгүүр (YOLO + зан үйл) ЯГ доорх тохиргоогоор "
-                "ажиллана. Зан үйлийн оноо, илрэх давтамж/үргэлжлэх хугацаа, тавиур давтан "
-                "зочлох босго, эрсдэл → сэжигтэй бичлэг (эпизод) болон илрүүлэлтийн "
-                "параметрүүд багтсан. Эдгээрийг superadmin-аас тааруулна (бүх дэлгүүрт нэг "
-                "ижил) — энд зөвхөн харна."
+                "ажиллана. Зан үйл бүр оноо, илрэх давтамж, үргэлжлэх хугацаатай. Доорх "
+                "нь эрсдэл → сэжигтэй бичлэг (эпизод), илрүүлэлт, геометр, бичлэгийн "
+                "тохиргоо. Эдгээрийг superadmin-аас тааруулна (бүх дэлгүүрт нэг ижил) — "
+                "энд зөвхөн харна."
             ),
             anchor="w",
             justify="left",
@@ -836,7 +853,27 @@ class AgentApp(ctk.CTk):
 
         from sentry_agent_pc.gui.datatable import DataTable
 
+        # Table 1 — one row per behaviour, score + timing as COLUMNS.
+        ctk.CTkLabel(
+            page, text="Зан үйлүүд", anchor="w", font=ctk.CTkFont(size=12, weight="bold")
+        ).pack(anchor="w", padx=16, pady=(2, 2))
         self._behaviors_table = DataTable(
+            page,
+            columns=(
+                ("beh", "Зан үйл", 0, "w"),
+                ("score", "Оноо", 90, "e"),
+                ("interval", "Давтамж (сек)", 130, "e"),
+                ("mindur", "Үргэлжлэх (сек)", 140, "e"),
+            ),
+            height=len(_EDGE_BEHAVIORS) + 1,
+        )
+        self._behaviors_table.pack(fill="x", padx=16, pady=(0, 10))
+
+        # Table 2 — the remaining single-value settings.
+        ctk.CTkLabel(
+            page, text="Бусад тохиргоо", anchor="w", font=ctk.CTkFont(size=12, weight="bold")
+        ).pack(anchor="w", padx=16, pady=(2, 2))
+        self._other_table = DataTable(
             page,
             columns=(
                 ("group", "Бүлэг", 170, "w"),
@@ -844,18 +881,59 @@ class AgentApp(ctk.CTk):
                 ("value", "Утга", 100, "e"),
                 ("unit", "Нэгж", 90, "w"),
             ),
-            height=18,
+            height=14,
         )
-        self._behaviors_table.pack(fill="both", expand=True, padx=16, pady=(0, 10))
+        self._other_table.pack(fill="both", expand=True, padx=16, pady=(0, 10))
         self.after(0, self._refresh_behaviors)
         return page
 
     @staticmethod
-    def _edge_config_rows(cfg: dict[str, Any]) -> list[tuple[str, str, str, str]]:
-        """Build (group, label, value, unit) rows from a merged config dict, in the
-        registry order. `cfg` is EdgeConfig() defaults overlaid with the live fetch."""
+    def _merged_edge_config(override: dict[str, Any] | None) -> dict[str, Any]:
+        """EdgeConfig() defaults for every displayed field, overlaid with a live
+        fetch (only keys the server actually returned win)."""
+        from sentry_agent_pc.edge.config import EdgeConfig
 
-        def fmt(key: str, raw: Any) -> str:
+        base = EdgeConfig()
+        keys = set(_BEHAVIOR_FIELD_KEYS) | {k for _, k, _, _ in _EDGE_CONFIG_ROWS}
+        merged = {k: getattr(base, k, None) for k in keys}
+        if override:
+            for k in merged:
+                if override.get(k) is not None:
+                    merged[k] = override[k]
+        return merged
+
+    @staticmethod
+    def _behavior_table_rows(cfg: dict[str, Any]) -> list[tuple[str, str, str, str]]:
+        """One row per behaviour: label · score (+N) · interval · min-duration. A
+        zero interval/duration shows «—» (no gate / one-shot)."""
+
+        def num(raw: Any, *, dash_zero: bool = False) -> str:
+            if raw is None:
+                return "—"
+            try:
+                f = float(raw)
+            except (TypeError, ValueError):
+                return str(raw)
+            if dash_zero and f == 0:
+                return "—"
+            return f"{f:g}"
+
+        rows: list[tuple[str, str, str, str]] = []
+        for b in _EDGE_BEHAVIORS:
+            w = cfg.get(b["weight_key"])
+            rows.append((
+                b["label"],
+                f"+{num(w)}" if w is not None else "—",
+                num(cfg.get(b["interval_key"]), dash_zero=True),
+                num(cfg.get(b["mindur_key"]), dash_zero=True),
+            ))
+        return rows
+
+    @staticmethod
+    def _other_config_rows(cfg: dict[str, Any]) -> list[tuple[str, str, str, str]]:
+        """(group, label, value, unit) for every NON-behaviour field, registry order."""
+
+        def fmt(raw: Any) -> str:
             if isinstance(raw, bool):
                 return "Тийм" if raw else "Үгүй"
             if raw is None:
@@ -864,22 +942,22 @@ class AgentApp(ctk.CTk):
                 f = float(raw)
             except (TypeError, ValueError):
                 return str(raw)
-            txt = f"{f:g}"
-            if key.startswith("w_"):  # weights add to the score → show the + sign
-                txt = f"+{txt}"
-            return txt
+            return f"{f:g}"
 
         return [
-            (group, label, fmt(key, cfg.get(key)), unit)
+            (group, label, fmt(cfg.get(key)), unit)
             for (group, key, label, unit) in _EDGE_CONFIG_ROWS
+            if key not in _BEHAVIOR_FIELD_KEYS
         ]
 
-    def _refresh_behaviors(self) -> None:
-        from sentry_agent_pc.edge.config import EdgeConfig
+    def _set_behavior_tables(self, cfg: dict[str, Any]) -> None:
+        with contextlib.suppress(Exception):
+            self._behaviors_table.set_rows(self._behavior_table_rows(cfg))
+            self._other_table.set_rows(self._other_config_rows(cfg))
 
-        # Seed every field from the local defaults; the live fetch overrides below.
-        defaults = {f: getattr(EdgeConfig(), f, None) for _, f, _, _ in _EDGE_CONFIG_ROWS}
-        self._behaviors_table.set_rows(self._edge_config_rows(defaults))
+    def _refresh_behaviors(self) -> None:
+        # Seed from the local defaults; the live fetch overrides below.
+        self._set_behavior_tables(self._merged_edge_config(None))
         self._behaviors_version.configure(text="Анхдагч утга харуулж байна…")
         threading.Thread(target=self._fetch_behavior_weights, daemon=True).start()
 
@@ -899,8 +977,6 @@ class AgentApp(ctk.CTk):
             self.after(0, lambda: self._apply_behavior_weights(cfg, err))
 
     def _apply_behavior_weights(self, cfg: dict[str, Any] | None, err: str | None) -> None:
-        from sentry_agent_pc.edge.config import EdgeConfig
-
         if self._closing:
             return
         if cfg is None:
@@ -908,13 +984,7 @@ class AgentApp(ctk.CTk):
                 text=f"Серверээс татаж чадсангүй ({err}). Анхдагч утга харагдаж байна."
             )
             return
-        # Merge: defaults first, then whatever the server actually returned.
-        merged: dict[str, Any] = {f: getattr(EdgeConfig(), f, None) for _, f, _, _ in _EDGE_CONFIG_ROWS}
-        for key in merged:
-            if cfg.get(key) is not None:
-                merged[key] = cfg[key]
-        with contextlib.suppress(Exception):
-            self._behaviors_table.set_rows(self._edge_config_rows(merged))
+        self._set_behavior_tables(self._merged_edge_config(cfg))
         ver = cfg.get("version")
         self._behaviors_version.configure(
             text=f"Серверээс татсан тохиргоо (v{ver}) · superadmin-аас тааруулна."
