@@ -19,6 +19,8 @@ const ROT_SNAPS = [0, 45, 90, 135, 180, 225, 270, 315];
 
 let PLAN = { version: 1, size: [1000, 800], walls: [], fixtures: [], cameras: [] };
 let cameras = []; // registered cameras [{camera_id, name}]
+const camStatus = {}; // camera_id → { online: bool|undefined } from a live check
+const REPROJ_WARN = 0.05; // >5% reprojection error = a shaky calibration (yellow)
 let tool = "select";
 let snapOn = true;
 let draft = null; // { type, pts: [[x,y],...] } while drawing
@@ -133,6 +135,29 @@ function makeLine(pts, color, closed, kind, idx, label) {
   return line;
 }
 
+// Status badge color + mark for a camera icon: red=offline, yellow=needs/shaky
+// calibration, green=calibrated & online, null=calibrated but not yet checked.
+function cameraBadge(cam) {
+  const calibrated = !!(cam.homography || cam._calibrated);
+  const st = camStatus[cam.camera_id] || {};
+  if (st.online === false) return { color: "#E5484D", mark: "!" };
+  if (!calibrated) return { color: "#E0A82E", mark: "!" };
+  if (cam.reproj_err != null && cam.reproj_err > REPROJ_WARN) return { color: "#E0A82E", mark: "!" };
+  if (st.online === true) return { color: "#3DD56D", mark: "" };
+  return null;
+}
+
+// A status badge node (named "badge") for a camera, or null. Counter-rotated so
+// any "!" stays upright; rebuilt in place by checkCameraStatus without a full render.
+function makeBadge(cam) {
+  const badge = cameraBadge(cam);
+  if (!badge) return null;
+  const bg = new Konva.Group({ x: -10, y: -10, rotation: -(cam.dir_deg || 0), name: "badge" });
+  bg.add(new Konva.Circle({ radius: 6, fill: badge.color, stroke: "#0a0a0a", strokeWidth: 1.5 }));
+  if (badge.mark) bg.add(new Konva.Text({ text: badge.mark, fontSize: 10, fontStyle: "bold", fill: "#0a0a0a", x: -2, y: -5.5 }));
+  return bg;
+}
+
 function makeCamera(cam, idx) {
   const g = new Konva.Group({
     x: cam.pos[0], y: cam.pos[1], rotation: cam.dir_deg || 0,
@@ -144,6 +169,8 @@ function makeCamera(cam, idx) {
   // keep the label upright regardless of camera rotation
   label.rotation(-(cam.dir_deg || 0));
   g.add(label);
+  const badgeNode = makeBadge(cam);
+  if (badgeNode) g.add(badgeNode);
   g.on("mousedown", (e) => {
     if (tool === "select") {
       e.cancelBubble = true;
@@ -181,6 +208,7 @@ function deselect() {
   vertexAnchors.forEach((a) => a.destroy());
   vertexAnchors = [];
   selectedNode = null;
+  hideCameraSettings();
   uiLayer.draw();
 }
 
@@ -190,6 +218,8 @@ function selectCamera(node, idx) {
   node.draggable(true);
   tr.nodes([node]);
   uiLayer.draw();
+  showCameraSettings(idx);
+  checkCameraStatus(idx); // live online/offline → updates badge + panel
 }
 
 function selectShape(line, kind, idx) {
@@ -346,6 +376,61 @@ function clearPlan() {
   setStatus("Шинэ хоосон зураг — зурж эхлээрэй");
 }
 
+// ── camera settings panel (click a camera → its settings + live status) ─────
+function hideCameraSettings() {
+  const el = document.getElementById("cam-settings");
+  if (el) el.classList.add("cs-hidden");
+}
+
+function showCameraSettings(idx) {
+  const cam = PLAN.cameras[idx];
+  const el = document.getElementById("cam-settings");
+  if (!cam || !el) return;
+  const st = camStatus[cam.camera_id] || {};
+  const onlineTxt = st.online === true ? "🟢 Холбогдсон"
+    : st.online === false ? "🔴 Холбогдоогүй" : "⚪ Шалгаагүй";
+  const calibrated = !!(cam.homography || cam._calibrated);
+  const calibTxt = calibrated
+    ? `✅ Хийсэн${cam.reproj_err != null ? ` (алдаа ${(cam.reproj_err * 100).toFixed(1)}%)` : ""}`
+    : "❌ Хийгээгүй";
+  el.innerHTML = `
+    <h2>📷 ${cam.name || cam.camera_id}</h2>
+    <div class="cs-row">Төлөв: <span id="cs-online">${onlineTxt}</span></div>
+    <div class="cs-row">Калибрац: ${calibTxt}</div>
+    <div class="cs-row">Чиглэл: ${cam.dir_deg || 0}°</div>
+    <div class="cs-btns">
+      <button id="cs-calib" class="primary">📐 Калибровк</button>
+      <button id="cs-check">🔄 Шалгах</button>
+      <button id="cs-remove">🗑 Хасах</button>
+    </div>`;
+  el.classList.remove("cs-hidden");
+  document.getElementById("cs-calib").onclick = () => startCalibration(idx);
+  document.getElementById("cs-check").onclick = () => checkCameraStatus(idx);
+  document.getElementById("cs-remove").onclick = () => {
+    PLAN.cameras.splice(idx, 1); deselect(); pushUndo(); render();
+  };
+}
+
+async function checkCameraStatus(idx) {
+  const cam = PLAN.cameras[idx];
+  if (!cam) return;
+  const onlineEl = document.getElementById("cs-online");
+  if (onlineEl) onlineEl.textContent = "⏳ Шалгаж байна…";
+  let r = null;
+  try { r = await window.pywebview.api.camera_status(cam.camera_id); } catch (e) { r = null; }
+  camStatus[cam.camera_id] = { online: r && r.ok ? !!r.online : undefined };
+  // Refresh just this camera's badge in place (keeps the selection/transformer).
+  const camG = camLayer.getChildren()[idx];
+  if (camG) {
+    const old = camG.findOne(".badge");
+    if (old) old.destroy();
+    const b = makeBadge(cam);
+    if (b) camG.add(b);
+    camLayer.draw();
+  }
+  if (selectedNode && selectedNode.kind === "cameras" && selectedNode.idx === idx) showCameraSettings(idx);
+}
+
 // ── Phase B: per-camera homography calibration ──────────────────────────────
 // Match ≥4 points between the camera's snapshot and the plan; the Python side
 // fits a plan→image homography and turns the plan fixtures into THIS camera's
@@ -484,6 +569,10 @@ async function saveCalibration() {
     const errPct = (r.reproj_err * 100).toFixed(1);
     setCalibStatus(`✅ Хадгалагдлаа — ${r.zone_count} зон, алдаа ${errPct}%`);
     setStatus(`Калибровк хадгалагдлаа: ${r.zone_count} зон`);
+    // Mark calibrated so the camera badge + settings panel update.
+    calib.cam._calibrated = true;
+    calib.cam.reproj_err = r.reproj_err;
+    render();
     setTimeout(closeCalibration, 1400);
   } catch (e) {
     setCalibStatus("❌ " + e);

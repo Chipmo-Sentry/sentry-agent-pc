@@ -73,6 +73,16 @@
         border: none; background: transparent; color: var(--primary); cursor: pointer;
         font-size: 13px; padding: 0 4px;
       }
+      /* Camera settings panel (shown when a camera is selected) */
+      #cam-settings {
+        margin: 10px 0; padding: 10px; background: var(--panel2);
+        border: 1px solid var(--border); border-radius: 8px;
+      }
+      #cam-settings.cs-hidden { display: none; }
+      #cam-settings h2 { font-size: 13px; margin: 0 0 8px; }
+      .cs-row { font-size: 12px; color: var(--muted); margin: 3px 0; }
+      .cs-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+      .cs-btns button { padding: 5px 8px; font-size: 12px; }
       /* Phase B calibration overlay */
       #calib {
         position: fixed; inset: 0; z-index: 50; background: var(--bg);
@@ -125,6 +135,7 @@
         <aside>
           <h2>Байрлуулах камер</h2>
           <select id="cam-pick"></select>
+          <div id="cam-settings" class="cs-hidden"></div>
           <p class="hint">
             «📐 Жишээ загвар» — бэлэн дэлгүүрийн план ачаалж, өөрийнхөө дэлгүүрт
             тааруулж засна (шууд ашиглах эсвэл бага зэрэг өөрчлөх). «🆕 Шинээр
