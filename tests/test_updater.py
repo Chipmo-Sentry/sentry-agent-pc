@@ -128,6 +128,7 @@ def test_verify_signature_accepts_valid(tmp_path, monkeypatch) -> None:
     priv = Ed25519PrivateKey.generate()
     sha = hashlib.sha256(b"data").hexdigest()
     sig = priv.sign(sha.encode("ascii"))
+    monkeypatch.setattr(updater, "_RELEASE_PUBLIC_KEY_B64", "x")  # signing active
     monkeypatch.setattr(updater, "_release_public_key", lambda: priv.public_key())
     monkeypatch.setattr(updater, "_fetch_signature", lambda info: sig)
     f = tmp_path / "a.zip"
@@ -141,6 +142,7 @@ def test_verify_signature_rejects_tampered(tmp_path, monkeypatch) -> None:
     other = Ed25519PrivateKey.generate()
     sha = hashlib.sha256(b"data").hexdigest()
     bad_sig = other.sign(sha.encode("ascii"))  # signed by the WRONG key
+    monkeypatch.setattr(updater, "_RELEASE_PUBLIC_KEY_B64", "x")  # signing active
     monkeypatch.setattr(updater, "_release_public_key", lambda: priv.public_key())
     monkeypatch.setattr(updater, "_fetch_signature", lambda info: bad_sig)
     f = tmp_path / "a.zip"
@@ -150,9 +152,26 @@ def test_verify_signature_rejects_tampered(tmp_path, monkeypatch) -> None:
     assert not f.exists()  # refused + deleted
 
 
+def test_verify_signature_fails_closed_on_bad_pinned_key(tmp_path, monkeypatch) -> None:
+    # Review fix: a NON-empty but unparseable pinned key must REFUSE the update
+    # (fail closed), not silently downgrade to SHA-256-only like the empty pin.
+    monkeypatch.setattr(updater, "_RELEASE_PUBLIC_KEY_B64", "not-valid-base64-!!!")
+    f = tmp_path / "a.zip"
+    f.write_bytes(b"data")
+    with pytest.raises(RuntimeError):
+        updater._verify_signature(_info(sig_url="s"), "deadbeef", f)
+    assert not f.exists()
+
+
+def test_fetch_signature_none_when_absent() -> None:
+    # No sig asset on the release (sig_url None) → return immediately, no retries.
+    assert updater._fetch_signature(_info()) is None
+
+
 def test_verify_signature_refuses_when_sig_missing(tmp_path, monkeypatch) -> None:
     # Signing is on (key pinned) but the release carries no signature → refuse.
     priv = Ed25519PrivateKey.generate()
+    monkeypatch.setattr(updater, "_RELEASE_PUBLIC_KEY_B64", "x")  # signing active
     monkeypatch.setattr(updater, "_release_public_key", lambda: priv.public_key())
     monkeypatch.setattr(updater, "_fetch_signature", lambda info: None)
     f = tmp_path / "a.zip"

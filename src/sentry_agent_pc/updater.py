@@ -23,6 +23,7 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -303,30 +304,51 @@ def _release_public_key() -> Ed25519PublicKey | None:
         return None
 
 
-def _fetch_signature(info: UpdateInfo, *, timeout_sec: float = 30.0) -> bytes | None:
-    """Download + base64-decode the .sig sidecar. None if absent/unfetchable."""
+def _fetch_signature(
+    info: UpdateInfo, *, timeout_sec: float = 30.0, attempts: int = 3
+) -> bytes | None:
+    """Download + base64-decode the .sig sidecar. None if absent/unfetchable.
+
+    A transient HTTP failure is RETRIED (a single GitHub blip shouldn't block the
+    whole fleet's updates once signing is active); a malformed signature body is
+    not retried. ``sig_url is None`` (asset genuinely absent) returns immediately.
+    """
     if not info.sig_url:
         return None
-    try:
-        with httpx.Client(timeout=timeout_sec, follow_redirects=True) as client:
-            r = client.get(info.sig_url)
-        r.raise_for_status()
-        return base64.b64decode(r.text.strip(), validate=True)
-    except (httpx.HTTPError, ValueError, binascii.Error) as e:
-        log.info("updater.sig_fetch_failed", error=str(e))
-        return None
+    for attempt in range(1, attempts + 1):
+        try:
+            with httpx.Client(timeout=timeout_sec, follow_redirects=True) as client:
+                r = client.get(info.sig_url)
+            r.raise_for_status()
+            return base64.b64decode(r.text.strip(), validate=True)
+        except (ValueError, binascii.Error) as e:
+            log.info("updater.sig_decode_failed", error=str(e))
+            return None  # malformed content — retrying won't help
+        except httpx.HTTPError as e:
+            log.info("updater.sig_fetch_retry", attempt=attempt, error=str(e))
+            if attempt < attempts:
+                time.sleep(1.0)
+    return None
 
 
 def _verify_signature(info: UpdateInfo, sha256_hex: str, dest: Path) -> None:
     """Verify the release's Ed25519 signature (over its SHA-256 hex) against the
-    pinned key. No-op when signing isn't activated (empty pin); otherwise a
-    missing/invalid signature RAISES (and deletes the download) — an unsigned or
-    tampered release must never be auto-applied once signing is on.
+    pinned key. No-op when signing isn't activated (EMPTY pin); otherwise a
+    missing/invalid signature — or a pin that's set but unparseable — RAISES (and
+    deletes the download). An unsigned/tampered release, or a misconfigured key,
+    must fail CLOSED once signing is on rather than silently downgrade.
     """
-    pub = _release_public_key()
-    if pub is None:
+    if not _RELEASE_PUBLIC_KEY_B64:
         log.info("updater.signing_not_enabled")  # SHA-256-only, as before
         return
+    pub = _release_public_key()
+    if pub is None:
+        # Pin is SET but didn't parse — never silently fall back to no-verify.
+        dest.unlink(missing_ok=True)
+        raise RuntimeError(
+            "Шинэчлэлийн нийтийн түлхүүр буруу тохируулагдсан — шинэчлэл аюулгүйн "
+            "үүднээс цуцлагдлаа."
+        )
     sig = _fetch_signature(info)
     if sig is None:
         dest.unlink(missing_ok=True)

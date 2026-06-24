@@ -91,7 +91,11 @@ jobs:
         env:
           SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: |
-          if [ -n "$SIGNING_KEY" ]; then
+          # Strip whitespace so a stray newline in the secret agrees with the
+          # signer (which also strips) — otherwise the gate says "enabled" and the
+          # signer then fails the whole release on an effectively-empty key.
+          key="$(printf '%s' "$SIGNING_KEY" | tr -d '[:space:]')"
+          if [ -n "$key" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"

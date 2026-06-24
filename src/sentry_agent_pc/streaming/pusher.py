@@ -273,6 +273,11 @@ class StreamPusher:
                 # entering the blocking communicate() and orphaning it to the cloud.
                 if st.stop.is_set():
                     _reap_proc(proc)
+                    # communicate() won't run on this path, so close the stderr
+                    # pipe deterministically instead of leaving the FD for GC.
+                    if proc.stderr is not None:
+                        with contextlib.suppress(Exception):
+                            proc.stderr.close()
                     st.running = False
                     break
                 log.info("pusher.ffmpeg_up", path=st.target.mediamtx_path)
