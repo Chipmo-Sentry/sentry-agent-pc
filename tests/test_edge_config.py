@@ -81,16 +81,27 @@ def test_behaviors_page_registry_keys_are_real_fields() -> None:
         assert key in names, f"{key} is not an EdgeConfig field"
 
 
-def test_edge_config_rows_formats_values() -> None:
-    # The read-only table formatter: weights get a + sign, bools become Тийм/Үгүй,
-    # missing keys show "—", and floats render compactly.
+def test_behavior_table_rows_columnar() -> None:
+    # Each behaviour is ONE ROW with score + timing as columns (founder request):
+    # label · +score · interval · min-duration; a zero interval/duration → «—».
     from sentry_agent_pc.gui.app import AgentApp
 
-    cfg = {"w_conceal": 14.0, "upload_clips": False, "open_risk": 60.0}
-    rows = AgentApp._edge_config_rows(cfg)
-    by_key = {label: value for _g, label, value, _u in rows}
-    assert by_key["Эд зүйл нуух"] == "+14"
-    assert by_key["Cloud руу илгээх"] == "Үгүй"
-    assert by_key["Эпизод нээх босго"] == "60"
-    # a key absent from cfg → em-dash placeholder
-    assert by_key["Барих радиус"] == "—"
+    cfg = {"w_conceal": 14.0, "interval_conceal": 0.5, "mindur_conceal": 0.6,
+           "w_exit_after_conceal": 40.0, "interval_exit_after_conceal": 0.0}
+    rows = {r[0]: r for r in AgentApp._behavior_table_rows(cfg)}
+    assert rows["Эд зүйл нуух"][1:] == ("+14", "0.5", "0.6")
+    # one-shot zone behaviour: interval 0 → «—»
+    assert rows["Нуусны дараа гарц руу"][1] == "+40"
+    assert rows["Нуусны дараа гарц руу"][2] == "—"
+
+
+def test_other_config_rows_excludes_behaviour_fields() -> None:
+    # The «Бусад тохиргоо» table holds only the single-value settings — behaviour
+    # weights/timing live in the columnar behaviour table, not here.
+    from sentry_agent_pc.gui.app import AgentApp
+
+    cfg = {"upload_clips": False, "open_risk": 60.0, "w_conceal": 14.0}
+    by_label = {label: value for _g, label, value, _u in AgentApp._other_config_rows(cfg)}
+    assert by_label["Cloud руу илгээх"] == "Үгүй"
+    assert by_label["Эпизод нээх босго"] == "60"
+    assert "Эд зүйл нуух" not in by_label  # behaviour weight is NOT in this table
