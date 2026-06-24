@@ -322,8 +322,12 @@ function renderElements() {
   rows.forEach(([kind, idx, color, text]) => {
     const row = document.createElement("div");
     row.className = "elem";
-    row.innerHTML = `<span class="dot" style="background:${color}"></span><span class="name">${text}</span><button class="del">✕</button>`;
+    // Camera rows get a «calibrate» action (Phase B) before the delete button.
+    const calib = kind === "cameras"
+      ? `<button class="calib" title="Калибровк хийх">📐</button>` : "";
+    row.innerHTML = `<span class="dot" style="background:${color}"></span><span class="name">${text}</span>${calib}<button class="del">✕</button>`;
     row.querySelector(".del").onclick = () => { PLAN[kind].splice(idx, 1); deselect(); pushUndo(); render(); };
+    if (kind === "cameras") row.querySelector(".calib").onclick = () => startCalibration(idx);
     el.appendChild(row);
   });
 }
@@ -340,6 +344,150 @@ function clearPlan() {
   render();
   fit();
   setStatus("Шинэ хоосон зураг — зурж эхлээрэй");
+}
+
+// ── Phase B: per-camera homography calibration ──────────────────────────────
+// Match ≥4 points between the camera's snapshot and the plan; the Python side
+// fits a plan→image homography and turns the plan fixtures into THIS camera's
+// zones (which the behaviour engine then uses).
+const calib = { cam: null, img: null, plan: null, pairs: [], pendingImg: null, imgFit: null };
+const CALIB_COLORS = ["#2563EB", "#3DD56D", "#E0A82E", "#E5484D", "#A855F7", "#06B6D4", "#F97316", "#EC4899"];
+
+function setCalibStatus(t) {
+  document.getElementById("calib-status").textContent = t || "";
+}
+
+async function startCalibration(camIdx) {
+  const cam = PLAN.cameras[camIdx];
+  if (!cam) return;
+  calib.cam = cam;
+  calib.pairs = [];
+  calib.pendingImg = null;
+  document.getElementById("calib").classList.remove("calib-hidden");
+  document.getElementById("calib-title").textContent = "Калибровк — " + (cam.name || cam.camera_id);
+  setCalibStatus("Камерын зураг авч байна…");
+  let frame = null;
+  try {
+    frame = await window.pywebview.api.get_camera_frame(cam.camera_id);
+  } catch (e) { frame = { ok: false, error: String(e) }; }
+  if (!frame || !frame.ok) {
+    setCalibStatus("❌ " + ((frame && frame.error) || "Зураг авч чадсангүй"));
+    return;
+  }
+  buildCalibStages(frame);
+}
+
+function buildCalibStages(frame) {
+  // Camera image pane — letterbox the snapshot into the pane; clicks → 0-1 coords.
+  const camHolder = document.getElementById("calib-cam");
+  const planHolder = document.getElementById("calib-plan");
+  if (calib.img) calib.img.destroy();
+  if (calib.plan) calib.plan.destroy();
+
+  const cw = camHolder.clientWidth, ch = camHolder.clientHeight;
+  calib.img = new Konva.Stage({ container: "calib-cam", width: cw, height: ch });
+  const imgLayer = new Konva.Layer();
+  calib.img.add(imgLayer);
+  const imageObj = new Image();
+  imageObj.onload = () => {
+    const iw = imageObj.naturalWidth, ih = imageObj.naturalHeight;
+    const sc = Math.min(cw / iw, ch / ih);
+    const dw = iw * sc, dh = ih * sc, ox = (cw - dw) / 2, oy = (ch - dh) / 2;
+    calib.imgFit = { ox, oy, dw, dh };
+    imgLayer.add(new Konva.Image({ image: imageObj, x: ox, y: oy, width: dw, height: dh }));
+    calib.imgMarks = new Konva.Group();
+    imgLayer.add(calib.imgMarks);
+    imgLayer.draw();
+  };
+  imageObj.src = frame.image;
+  calib.img.on("mousedown", () => {
+    const p = calib.img.getPointerPosition();
+    const f = calib.imgFit;
+    if (!f) return;
+    const nx = (p.x - f.ox) / f.dw, ny = (p.y - f.oy) / f.dh;
+    if (nx < 0 || nx > 1 || ny < 0 || ny > 1) { setCalibStatus("Зурагнаас гадуур — зураг дотор дар"); return; }
+    calib.pendingImg = [+nx.toFixed(4), +ny.toFixed(4)];
+    redrawCalibMarks();
+    setCalibStatus("Одоо планы таарах цэгийг дар →");
+  });
+
+  // Plan pane — render the plan read-only, fit; clicks → plan coords.
+  const pw = planHolder.clientWidth, ph = planHolder.clientHeight;
+  calib.plan = new Konva.Stage({ container: "calib-plan", width: pw, height: ph });
+  const planLayer = new Konva.Layer();
+  calib.plan.add(planLayer);
+  const [PW, PH] = PLAN.size;
+  const pz = Math.min(pw / PW, ph / PH) * 0.92;
+  calib.plan.scale({ x: pz, y: pz });
+  calib.plan.position({ x: (pw - PW * pz) / 2, y: (ph - PH * pz) / 2 });
+  PLAN.walls.forEach((w) => planLayer.add(new Konva.Line({ points: w.points.flat(), stroke: WALL_COLOR, strokeWidth: 2 / pz })));
+  PLAN.fixtures.forEach((f) => {
+    const c = (FIX[f.type] || {}).color || "#999";
+    planLayer.add(new Konva.Line({ points: f.points.flat(), stroke: c, strokeWidth: 2 / pz, closed: true, fill: c + "22" }));
+  });
+  calib.planMarks = new Konva.Group();
+  planLayer.add(calib.planMarks);
+  planLayer.draw();
+  calib.plan.on("mousedown", () => {
+    if (!calib.pendingImg) { setCalibStatus("Эхлээд камерын зураг дээр цэг дар ←"); return; }
+    const p = calib.plan.getRelativePointerPosition();
+    calib.pairs.push({ image: calib.pendingImg, plan: [+p.x.toFixed(1), +p.y.toFixed(1)] });
+    calib.pendingImg = null;
+    redrawCalibMarks();
+    setCalibStatus(`${calib.pairs.length} цэг хослол${calib.pairs.length < 4 ? " (≥4 хэрэгтэй)" : " — Хадгалахад бэлэн"}`);
+  });
+  setCalibStatus("1) Камерын зураг дээр танигдах цэг дар → 2) планы таарах цэгийг дар. ≥4 хослол.");
+}
+
+function _mark(group, x, y, n, scaleInv) {
+  const color = CALIB_COLORS[(n - 1) % CALIB_COLORS.length];
+  const r = 7 * (scaleInv || 1);
+  group.add(new Konva.Circle({ x, y, radius: r, stroke: color, strokeWidth: 2 * (scaleInv || 1), fill: color + "55" }));
+  group.add(new Konva.Text({ x: x + r, y: y - r, text: String(n), fontSize: 13 * (scaleInv || 1), fontStyle: "bold", fill: color }));
+}
+
+function redrawCalibMarks() {
+  if (calib.imgMarks) {
+    calib.imgMarks.destroyChildren();
+    const f = calib.imgFit;
+    calib.pairs.forEach((pr, i) => _mark(calib.imgMarks, f.ox + pr.image[0] * f.dw, f.oy + pr.image[1] * f.dh, i + 1));
+    if (calib.pendingImg) _mark(calib.imgMarks, f.ox + calib.pendingImg[0] * f.dw, f.oy + calib.pendingImg[1] * f.dh, calib.pairs.length + 1);
+    calib.imgMarks.getLayer().batchDraw();
+  }
+  if (calib.planMarks) {
+    calib.planMarks.destroyChildren();
+    const inv = 1 / calib.plan.scaleX();
+    calib.pairs.forEach((pr, i) => _mark(calib.planMarks, pr.plan[0], pr.plan[1], i + 1, inv));
+    calib.planMarks.getLayer().batchDraw();
+  }
+}
+
+function undoCalibPoint() {
+  if (calib.pendingImg) calib.pendingImg = null;
+  else calib.pairs.pop();
+  redrawCalibMarks();
+  setCalibStatus(`${calib.pairs.length} цэг хослол`);
+}
+
+function closeCalibration() {
+  document.getElementById("calib").classList.add("calib-hidden");
+  if (calib.img) { calib.img.destroy(); calib.img = null; }
+  if (calib.plan) { calib.plan.destroy(); calib.plan = null; }
+  calib.pairs = []; calib.pendingImg = null;
+}
+
+async function saveCalibration() {
+  if (calib.pairs.length < 4) { setCalibStatus("Дор хаяж 4 цэг хослол хэрэгтэй"); return; }
+  setCalibStatus("Хадгалж байна…");
+  try {
+    const r = await window.pywebview.api.save_calibration(calib.cam.camera_id, calib.pairs, PLAN);
+    const errPct = (r.reproj_err * 100).toFixed(1);
+    setCalibStatus(`✅ Хадгалагдлаа — ${r.zone_count} зон, алдаа ${errPct}%`);
+    setStatus(`Калибровк хадгалагдлаа: ${r.zone_count} зон`);
+    setTimeout(closeCalibration, 1400);
+  } catch (e) {
+    setCalibStatus("❌ " + e);
+  }
 }
 
 // A ready-made EDITABLE starter plan (real walls/fixtures the user can use as-is
@@ -406,6 +554,9 @@ document.getElementById("btn-snap").onclick = () => {
   document.getElementById("btn-snap").classList.toggle("active", snapOn);
   setStatus("Өнцөг-snap " + (snapOn ? "ON" : "OFF"));
 };
+document.getElementById("calib-save").onclick = saveCalibration;
+document.getElementById("calib-cancel").onclick = closeCalibration;
+document.getElementById("calib-undo").onclick = undoCalibPoint;
 
 // ── keyboard shortcuts ──────────────────────────────────────────────────────
 const TOOL_KEYS = ["select", "wall", "shelf", "exit", "checkout", "camera"];
