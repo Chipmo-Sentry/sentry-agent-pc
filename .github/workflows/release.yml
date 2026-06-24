@@ -80,6 +80,31 @@ jobs:
             Out-File -Encoding ascii -NoNewline "dist\ChipmoSentryAgent-windows.zip.sha256"
           Write-Host "sha256=$hash"
 
+      # Detached Ed25519 signature over the zip's SHA-256 — the real authenticity
+      # gate (updater._verify_signature). Runs only once the RELEASE_SIGNING_KEY
+      # secret exists, so releases keep building before signing is activated; the
+      # .sig is uploaded as an extra asset after the release is created (so it
+      # stays out of the fail_on_unmatched_files list while optional).
+      - name: Check signing key
+        id: signcheck
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -n "$SIGNING_KEY" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::RELEASE_SIGNING_KEY not set — release is unsigned (SHA-256 only)."
+          fi
+
+      - name: Sign release zip (Ed25519)
+        if: steps.signcheck.outputs.enabled == 'true'
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: uv run python scripts/sign_release.py dist/ChipmoSentryAgent-windows.zip
+
       - name: Build installer (Inno Setup)
         shell: pwsh
         run: |
@@ -102,3 +127,15 @@ jobs:
             dist/ChipmoSentryAgent-windows.zip.sha256
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+      # Attach the signature as an extra asset (only when signing is active). Kept
+      # separate from the publish step's file list so an unsigned release (no
+      # secret yet) doesn't trip fail_on_unmatched_files on a missing .sig.
+      - name: Upload signature asset
+        if: steps.signcheck.outputs.enabled == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            dist/ChipmoSentryAgent-windows.zip.sig --clobber
