@@ -13,7 +13,7 @@ const FIX = {
   checkout: { color: "#E0A82E", label: "Касс" },
 };
 const WALL_COLOR = "#9CA3AF";
-const CAM_COLOR = "#FF8A1F";
+const CAM_COLOR = "#2563EB"; // brand royal-blue (the camera is the Sentry element)
 const SNAP_DEG = 15;
 const ROT_SNAPS = [0, 45, 90, 135, 180, 225, 270, 315];
 
