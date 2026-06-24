@@ -15,7 +15,7 @@ import customtkinter as ctk
 
 from sentry_agent_pc import __version__, updater
 from sentry_agent_pc.gui import widgets
-from sentry_agent_pc.gui.widgets import BRAND_ORANGE, BRAND_ORANGE_HOVER
+from sentry_agent_pc.gui.widgets import BRAND_PRIMARY, BRAND_PRIMARY_HOVER
 from sentry_agent_pc.logging_setup import get_logger
 
 log = get_logger("sentry_agent_pc.gui.update")
@@ -56,8 +56,8 @@ class UpdateDialog(ctk.CTkToplevel):
         self.action_btn = ctk.CTkButton(
             btn_row,
             text="Шинэчлэх",
-            fg_color=BRAND_ORANGE,
-            hover_color=BRAND_ORANGE_HOVER,
+            fg_color=BRAND_PRIMARY,
+            hover_color=BRAND_PRIMARY_HOVER,
             command=self._on_action,
         )
         self.action_btn.pack(side="right")

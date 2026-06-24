@@ -15,13 +15,22 @@ from functools import partial
 from tkinter import ttk
 from typing import Any, cast
 
-# Palette aligned with the app's gray dark theme + brand navy selection.
-_ROW_BG = "#1a1a1a"
-_ROW_ALT = "#202020"
-_HEAD_BG = "#2a2a2a"
-_FG = "#e0e0e0"
-_HEAD_FG = "#b0b0b0"
-_SEL = "#2A4A73"  # brand navy
+# Palette = the sentry-ui-kit dark tokens (shared with the rest of the app).
+from sentry_agent_pc.gui.widgets import (
+    BRAND_PRIMARY,
+    UI_BORDER,
+    UI_FG,
+    UI_MUTED,
+    UI_MUTED_FG,
+    UI_SURFACE,
+)
+
+_ROW_BG = UI_SURFACE  # #161616 elevated panel
+_ROW_ALT = UI_MUTED  # #1f1f1f zebra stripe
+_HEAD_BG = UI_BORDER  # #262626 header strip
+_FG = UI_FG  # near-white
+_HEAD_FG = UI_MUTED_FG  # zinc-400
+_SEL = BRAND_PRIMARY  # royal-blue selection
 
 
 class DataTable(ttk.Frame):

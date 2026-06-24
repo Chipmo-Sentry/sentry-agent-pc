@@ -21,7 +21,7 @@ from typing import Any
 import customtkinter as ctk
 
 from sentry_agent_pc.gui import widgets
-from sentry_agent_pc.gui.widgets import BRAND_ORANGE, BRAND_ORANGE_HOVER
+from sentry_agent_pc.gui.widgets import BRAND_PRIMARY, BRAND_PRIMARY_HOVER
 from sentry_agent_pc.logging_setup import get_logger
 from sentry_agent_pc.services import discovery_service as svc
 from sentry_agent_pc.settings import get_settings
@@ -134,8 +134,8 @@ class ScanDialog(ctk.CTkToplevel):
         self.register_btn = ctk.CTkButton(
             self.btn_row,
             text="Сонгосныг бүртгэх",
-            fg_color=BRAND_ORANGE,
-            hover_color=BRAND_ORANGE_HOVER,
+            fg_color=BRAND_PRIMARY,
+            hover_color=BRAND_PRIMARY_HOVER,
             command=self._register_selected,
             state="disabled",
         )
