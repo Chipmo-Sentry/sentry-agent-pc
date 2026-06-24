@@ -41,6 +41,7 @@ import platform
 import subprocess
 import tempfile
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -297,7 +298,17 @@ def _write_state_locked(state: AgentState, path: Path) -> None:
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(encrypted)
-        Path(tmp_name).replace(path)
+        # On Windows os.replace can transiently fail with PermissionError(13) when
+        # something briefly holds the destination open (an AV/indexer, or our own
+        # icacls from a just-finished save). Retry a few times before giving up.
+        for attempt in range(5):
+            try:
+                Path(tmp_name).replace(path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05)
         _existing_file_unreadable = False  # file is now freshly written + readable
     except BaseException:
         # Don't leak the scratch file if write/replace failed.
@@ -307,11 +318,12 @@ def _write_state_locked(state: AgentState, path: Path) -> None:
 
 def save_state(state: AgentState) -> None:
     path = get_settings().state_path
-    # Hold the lock around encrypt+write+replace so concurrent writers (GUI
-    # heartbeat thread vs. a CLI/camera-add) can't clobber each other.
+    # Hold the lock around encrypt+write+replace AND _restrict_permissions: icacls
+    # opens the file, so if it ran outside the lock another thread's os.replace
+    # could hit a Windows PermissionError(13) on the still-open destination.
     with _save_lock:
         _write_state_locked(state, path)
-    _restrict_permissions(path)
+        _restrict_permissions(path)
 
 
 def mutate_state(fn: Callable[[AgentState], None]) -> AgentState:
@@ -327,5 +339,5 @@ def mutate_state(fn: Callable[[AgentState], None]) -> AgentState:
         state = load_state()
         fn(state)
         _write_state_locked(state, path)
-    _restrict_permissions(path)
+        _restrict_permissions(path)  # inside the lock — see save_state
     return state
