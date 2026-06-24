@@ -8,13 +8,23 @@ import customtkinter as ctk
 
 from sentry_agent_pc import resources
 
-# Canonical brand-orange accent, defined ONCE here and imported everywhere else
-# (dialogs, app header, spinner). Previously each gui file hardcoded its own
-# literal — #FF8A1F in most dialogs, #E68425 in the app header, #E57A12 hover —
-# which drifted independently. Unify on the majority value.
-BRAND_ORANGE = "#FF8A1F"
-BRAND_ORANGE_HOVER = "#E57A12"
-CHIPMO_ORANGE = BRAND_ORANGE  # alias kept for the existing call sites
+# Brand palette — mirrors sentry-ui-kit's dark theme (src/styles.css) so the
+# desktop agent reads as the same product as the web apps: a royal-blue accent
+# on a тас хар (near-black) Linear/Vercel-style surface. Defined ONCE here and
+# imported everywhere else (dialogs, app shell, spinner). The brand pivoted off
+# the old orange accent (2026-06-16) — these are the canonical tokens now.
+BRAND_PRIMARY = "#2563EB"  # blue-600 — primary actions, selection, accent
+BRAND_PRIMARY_HOVER = "#1D4ED8"  # blue-700 — hover/pressed
+UI_BG = "#0A0A0A"  # near-black page / window base (--color-background)
+UI_SURFACE = "#161616"  # elevated panel / card (--color-surface)
+UI_MUTED = "#1F1F1F"  # input / subtle fill (--color-muted)
+UI_MUTED_HOVER = "#272727"  # row / ghost-button hover
+UI_BORDER = "#262626"  # subtle border (--color-border)
+UI_FG = "#FAFAFA"  # near-white primary text (--color-foreground)
+UI_MUTED_FG = "#A1A1AA"  # zinc-400 secondary text (--color-muted-foreground)
+UI_SUCCESS = "#4ADE80"  # online / ready
+UI_WARNING = "#FBBF24"  # caution
+UI_DANGER = "#F87171"  # error / offline
 
 
 def setup_dialog(
@@ -100,7 +110,7 @@ class Spinner(ctk.CTkLabel):
 
     def __init__(self, master: ctk.CTkBaseClass) -> None:
         super().__init__(
-            master, text="", font=ctk.CTkFont(size=22), text_color=CHIPMO_ORANGE,
+            master, text="", font=ctk.CTkFont(size=22), text_color=BRAND_PRIMARY,
         )
         self._i = 0
         self._running = False

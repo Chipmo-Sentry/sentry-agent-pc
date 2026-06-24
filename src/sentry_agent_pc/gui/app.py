@@ -39,7 +39,20 @@ from sentry_agent_pc.gui.update_dialog import (
     auto_update_in_background,
     check_in_background,
 )
-from sentry_agent_pc.gui.widgets import BRAND_ORANGE, BRAND_ORANGE_HOVER
+from sentry_agent_pc.gui.widgets import (
+    BRAND_PRIMARY,
+    BRAND_PRIMARY_HOVER,
+    UI_BG,
+    UI_BORDER,
+    UI_DANGER,
+    UI_FG,
+    UI_MUTED,
+    UI_MUTED_FG,
+    UI_MUTED_HOVER,
+    UI_SUCCESS,
+    UI_SURFACE,
+    UI_WARNING,
+)
 from sentry_agent_pc.gui.zone_editor import ZoneEditorDialog
 from sentry_agent_pc.logging_setup import get_logger
 from sentry_agent_pc.services import discovery_service as svc
@@ -52,15 +65,11 @@ log = get_logger("sentry_agent_pc.gui.app")
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-# Brand palette (Chipmo): navy + orange. CustomTkinter's "blue" theme colors
-# every unstyled button a bright generic blue that clashed with our orange CTAs.
-# Override the default button colour to brand navy so the app reads as one
-# coherent navy + orange scheme; explicit orange stays the primary-action accent.
-# The orange accent + hover live in widgets.py so every gui file shares one value
-# (the header used to carry its own slightly-different #E68425 tone).
-BRAND_NAVY = "#2A4A73"
-BRAND_NAVY_HOVER = "#36598A"
-CHIPMO_ORANGE = BRAND_ORANGE  # module-wide alias (kept for the existing call sites)
+# The palette tokens live in widgets.py (single source of truth, mirrors
+# sentry-ui-kit). The theme overrides below paint every default CustomTkinter
+# widget with those tokens so the whole app — including dialogs — reads as the
+# ui-kit dark theme (тас хар surface + royal-blue accent) without per-call_site
+# colours.
 
 # The agent-pc edge behaviour catalog — every signal the Stage-1 gate scores,
 # with the EdgeConfig weight key that controls it (tuned per store from
@@ -149,8 +158,8 @@ _CLIP_COL_CAM = 150
 _CLIP_COL_WHEN = 150
 _CLIP_COL_RISK = 72
 _CLIP_COL_DUR = 64
-_CLIP_ROW_BG = "gray16"
-_CLIP_ROW_HOVER = "gray25"
+_CLIP_ROW_BG = UI_SURFACE
+_CLIP_ROW_HOVER = UI_MUTED_HOVER
 
 
 def _bind_row_click(widget: Any, handler: Callable[[], None]) -> None:
@@ -172,29 +181,54 @@ def _theme(widget: str, key: str, value: object) -> None:
         ctk.ThemeManager.theme[widget][key] = value
 
 
-_navy = [BRAND_NAVY, BRAND_NAVY]
-_navy_hover = [BRAND_NAVY_HOVER, BRAND_NAVY_HOVER]
-_orange = [BRAND_ORANGE, BRAND_ORANGE]
-# Buttons → navy (orange stays the explicit primary-action accent).
-_theme("CTkButton", "fg_color", _navy)
-_theme("CTkButton", "hover_color", _navy_hover)
-# Dropdowns (the camera-brand picker) were bright blue → navy + orange hover.
-_theme("CTkOptionMenu", "fg_color", _navy)
-_theme("CTkOptionMenu", "button_color", _navy_hover)
-_theme("CTkOptionMenu", "button_hover_color", _orange)
-_theme("CTkComboBox", "button_color", _navy)
-_theme("CTkComboBox", "button_hover_color", _navy_hover)
-_theme("CTkComboBox", "border_color", _navy)
-# Inputs: orange focus ring (brand) instead of the default blue.
-_theme("CTkEntry", "border_color", _navy)
-# Toggles / progress / sliders → brand orange so nothing reads generic-blue.
-_theme("CTkCheckBox", "fg_color", _orange)
-_theme("CTkCheckBox", "hover_color", _orange)
-_theme("CTkSwitch", "progress_color", _orange)
-_theme("CTkProgressBar", "progress_color", _orange)
-_theme("CTkSlider", "progress_color", _orange)
-_theme("CTkSlider", "button_color", _orange)
-_theme("CTkSlider", "button_hover_color", _orange)
+_primary = [BRAND_PRIMARY, BRAND_PRIMARY]
+_primary_hover = [BRAND_PRIMARY_HOVER, BRAND_PRIMARY_HOVER]
+_bg = [UI_BG, UI_BG]
+_surface = [UI_SURFACE, UI_SURFACE]
+_muted = [UI_MUTED, UI_MUTED]
+_border = [UI_BORDER, UI_BORDER]
+_fg = [UI_FG, UI_FG]
+# Window + dialog base = near-black; default frames = the elevated surface so
+# cards/sidebar/header read one shade above the page (transparent frames stay
+# transparent and show the тас хар base through).
+_theme("CTk", "fg_color", _bg)
+_theme("CTkToplevel", "fg_color", _bg)
+_theme("CTkFrame", "fg_color", _surface)
+_theme("CTkFrame", "top_fg_color", _surface)
+_theme("CTkFrame", "border_color", _border)
+_theme("CTkScrollableFrame", "fg_color", _surface)
+# Buttons → royal-blue primary; white label; subtle border for ghost buttons.
+_theme("CTkButton", "fg_color", _primary)
+_theme("CTkButton", "hover_color", _primary_hover)
+_theme("CTkButton", "text_color", _fg)
+_theme("CTkButton", "border_color", _border)
+# Labels default to near-white foreground.
+_theme("CTkLabel", "text_color", _fg)
+# Dropdowns + combos → muted fill with a blue active/hover.
+_theme("CTkOptionMenu", "fg_color", _muted)
+_theme("CTkOptionMenu", "button_color", _primary)
+_theme("CTkOptionMenu", "button_hover_color", _primary_hover)
+_theme("CTkOptionMenu", "text_color", _fg)
+_theme("CTkComboBox", "fg_color", _muted)
+_theme("CTkComboBox", "button_color", _primary)
+_theme("CTkComboBox", "button_hover_color", _primary_hover)
+_theme("CTkComboBox", "border_color", _border)
+# Inputs: muted fill + subtle border (CTk's default focus ring is already blue).
+_theme("CTkEntry", "fg_color", _muted)
+_theme("CTkEntry", "border_color", _border)
+_theme("CTkTextbox", "fg_color", _muted)
+_theme("CTkTextbox", "border_color", _border)
+# Toggles / progress / sliders → blue accent so nothing reads generic.
+_theme("CTkCheckBox", "fg_color", _primary)
+_theme("CTkCheckBox", "hover_color", _primary_hover)
+_theme("CTkCheckBox", "text_color", _fg)
+_theme("CTkSwitch", "progress_color", _primary)
+_theme("CTkProgressBar", "progress_color", _primary)
+_theme("CTkSlider", "progress_color", _primary)
+_theme("CTkSlider", "button_color", _primary)
+_theme("CTkSlider", "button_hover_color", _primary_hover)
+_theme("CTkSegmentedButton", "selected_color", _primary)
+_theme("CTkSegmentedButton", "selected_hover_color", _primary_hover)
 
 
 def creds_from_rtsp(rtsp_url: str) -> tuple[str | None, str]:
@@ -303,39 +337,19 @@ class AgentApp(ctk.CTk):
             brand,
             text="Sentry",
             font=ctk.CTkFont(size=19, weight="bold"),
-            text_color="#FFFFFF",
+            text_color=UI_FG,
         ).pack(side="left")
 
+        # Pairing / backend status sits next to the brand. The «Холболт» +
+        # «Шинэчлэл» actions and the version live in the «Тохиргоо» page — the
+        # header stays a clean brand bar (no duplicate controls).
         self.backend_label = ctk.CTkLabel(
             header,
             text="Backend: шалгаж байна…",
             font=ctk.CTkFont(size=12),
-            text_color="gray70",
+            text_color=UI_MUTED_FG,
         )
         self.backend_label.pack(side="left", padx=8)
-
-        ctk.CTkButton(
-            header,
-            text="🔗 Холболт",
-            width=110,
-            command=self.open_pairing,
-        ).pack(side="right", padx=(8, 16))
-
-        ctk.CTkButton(
-            header,
-            text="⬆ Шинэчлэл",
-            width=110,
-            fg_color="transparent",
-            border_width=1,
-            command=self.open_update,
-        ).pack(side="right", padx=4)
-
-        ctk.CTkLabel(
-            header,
-            text=f"v{__version__}",
-            font=ctk.CTkFont(size=11),
-            text_color="gray50",
-        ).pack(side="right", padx=4)
 
     def _build_toolbar(self, parent: ctk.CTkBaseClass) -> None:
         bar = ctk.CTkFrame(parent, height=56, corner_radius=0, fg_color="transparent")
@@ -356,8 +370,8 @@ class AgentApp(ctk.CTk):
             width=180,
             height=40,
             font=ctk.CTkFont(size=14, weight="bold"),
-            fg_color=CHIPMO_ORANGE,
-            hover_color=BRAND_ORANGE_HOVER,
+            fg_color=BRAND_PRIMARY,
+            hover_color=BRAND_PRIMARY_HOVER,
             command=self.open_add,
         ).pack(side="left", padx=(10, 0))
 
@@ -396,7 +410,7 @@ class AgentApp(ctk.CTk):
     def _build_camera_list(self, parent: ctk.CTkBaseClass) -> None:
         # Column headers — grid with the shared weights. Extra right pad ≈ the
         # scrollable-frame scrollbar so the header lines up with the rows below.
-        head = ctk.CTkFrame(parent, fg_color="gray20", height=34)
+        head = ctk.CTkFrame(parent, fg_color=UI_MUTED, height=34)
         head.pack(fill="x", padx=16, pady=(8, 0))
         head.pack_propagate(False)
         self._configure_grid(head)
@@ -406,14 +420,14 @@ class AgentApp(ctk.CTk):
                 text=text,
                 anchor="w",
                 font=ctk.CTkFont(size=12, weight="bold"),
-                text_color="gray80",
+                text_color=UI_FG,
             ).grid(row=0, column=i, sticky="w", padx=6)
         ctk.CTkLabel(
             head,
             text="Үйлдэл",
             anchor="w",
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color="gray80",
+            text_color=UI_FG,
         ).grid(row=0, column=len(self._COLUMNS), sticky="w", padx=6)
 
         self.list_frame = ctk.CTkScrollableFrame(parent, fg_color="transparent")
@@ -427,7 +441,7 @@ class AgentApp(ctk.CTk):
             bar,
             text="Бэлэн",
             font=ctk.CTkFont(size=11),
-            text_color="gray70",
+            text_color=UI_MUTED_FG,
         )
         self.status_label.pack(side="left", padx=16)
 
@@ -443,7 +457,7 @@ class AgentApp(ctk.CTk):
     )
 
     def _build_sidebar(self, parent: ctk.CTkBaseClass) -> None:
-        side = ctk.CTkFrame(parent, width=170, corner_radius=0, fg_color="gray17")
+        side = ctk.CTkFrame(parent, width=170, corner_radius=0, fg_color=UI_SURFACE)
         side.pack(side="left", fill="y")
         side.pack_propagate(False)
         for key, label, kind in self._NAV:
@@ -455,8 +469,8 @@ class AgentApp(ctk.CTk):
                 height=40,
                 corner_radius=8,
                 fg_color="transparent",
-                text_color="gray85",
-                hover_color="gray25",
+                text_color=UI_FG,
+                hover_color=UI_MUTED_HOVER,
                 font=ctk.CTkFont(size=14),
                 command=cmd,
             )
@@ -470,7 +484,7 @@ class AgentApp(ctk.CTk):
             anchor="w",
             justify="left",
             font=ctk.CTkFont(size=11),
-            text_color="gray60",
+            text_color=UI_MUTED_FG,
             wraplength=148,
         )
         self._edge_status_label.pack(side="bottom", fill="x", padx=12, pady=12)
@@ -491,7 +505,7 @@ class AgentApp(ctk.CTk):
             page.pack_forget()
         self._pages[name].pack(fill="both", expand=True)
         for key, btn in self._nav_buttons.items():
-            btn.configure(fg_color=CHIPMO_ORANGE if key == name else "transparent")
+            btn.configure(fg_color=BRAND_PRIMARY if key == name else "transparent")
         if name == "alerts":
             self._refresh_alerts()
         elif name == "behaviors":
@@ -546,10 +560,10 @@ class AgentApp(ctk.CTk):
             text="Мөр дээр дарж тухайн тохиолдлын дэлгэрэнгүй (зан үйл·оноо·цаг) хараарай.",
             anchor="w",
             font=ctk.CTkFont(size=11),
-            text_color="gray55",
+            text_color=UI_MUTED_FG,
         ).pack(anchor="w", padx=16, pady=(0, 6))
         # Column header — shares the row cell widths so columns line up.
-        hdr = ctk.CTkFrame(page, fg_color="gray22", corner_radius=6)
+        hdr = ctk.CTkFrame(page, fg_color=UI_MUTED, corner_radius=6)
         hdr.pack(fill="x", padx=16, pady=(0, 2))
         for text, w, anchor in (
             ("Камер", _CLIP_COL_CAM, "w"),
@@ -563,7 +577,7 @@ class AgentApp(ctk.CTk):
                 text=text,
                 anchor=anchor,
                 font=ctk.CTkFont(size=11, weight="bold"),
-                text_color="gray70",
+                text_color=UI_MUTED_FG,
                 **({"width": w} if w else {}),
             )
             lbl.pack(side="left", fill=("x" if not w else None), expand=(not w), padx=8, pady=5)
@@ -582,7 +596,7 @@ class AgentApp(ctk.CTk):
             ctk.CTkLabel(
                 self._alerts_frame,
                 text="Сэжигтэй бичлэг алга.\n\nAI сэжигтэй үйлдэл илрүүлбэл\n[−3с … +3с] бичлэг энд гарч ирнэ.",
-                text_color="gray60",
+                text_color=UI_MUTED_FG,
                 justify="center",
             ).pack(pady=50)
             return
@@ -597,9 +611,9 @@ class AgentApp(ctk.CTk):
         row.pack(fill="x", pady=2)
         when = datetime.datetime.fromtimestamp(clip.started_at).strftime("%Y-%m-%d %H:%M:%S")
         color = (
-            "#FF6B6B"
+            UI_DANGER
             if clip.risk_pct >= 70
-            else (CHIPMO_ORANGE if clip.risk_pct >= 40 else "gray70")
+            else (BRAND_PRIMARY if clip.risk_pct >= 40 else UI_MUTED_FG)
         )
         labels = [_EDGE_BEHAVIOR_LABELS.get(b, b) for b in clip.behaviors]
         beh = " · ".join(labels) or "—"
@@ -617,7 +631,7 @@ class AgentApp(ctk.CTk):
             width=_CLIP_COL_WHEN,
             anchor="w",
             font=ctk.CTkFont(size=11),
-            text_color="gray75",
+            text_color=UI_MUTED_FG,
         ).pack(side="left", padx=8)
         ctk.CTkLabel(
             row,
@@ -633,7 +647,7 @@ class AgentApp(ctk.CTk):
             anchor="w",
             justify="left",
             font=ctk.CTkFont(size=11),
-            text_color="gray80",
+            text_color=UI_FG,
         ).pack(side="left", fill="x", expand=True, padx=8)
         ctk.CTkLabel(
             row,
@@ -641,7 +655,7 @@ class AgentApp(ctk.CTk):
             width=_CLIP_COL_DUR,
             anchor="e",
             font=ctk.CTkFont(size=11),
-            text_color="gray65",
+            text_color=UI_MUTED_FG,
         ).pack(side="left", padx=8)
         ctk.CTkLabel(
             row,
@@ -649,7 +663,7 @@ class AgentApp(ctk.CTk):
             width=18,
             anchor="e",
             font=ctk.CTkFont(size=16),
-            text_color="gray55",
+            text_color=UI_MUTED_FG,
         ).pack(side="left", padx=(0, 8))
 
         _bind_row_click(row, lambda: self._open_clip_detail(clip))
@@ -689,7 +703,7 @@ class AgentApp(ctk.CTk):
             ),
             anchor="w",
             font=ctk.CTkFont(size=11),
-            text_color="gray65",
+            text_color=UI_MUTED_FG,
         ).pack(anchor="w")
 
         from sentry_agent_pc.gui.datatable import DataTable
@@ -757,7 +771,7 @@ class AgentApp(ctk.CTk):
             text=note,
             anchor="w",
             font=ctk.CTkFont(size=10),
-            text_color="gray60",
+            text_color=UI_MUTED_FG,
             wraplength=380,
         ).pack(side="left")
         ctk.CTkButton(
@@ -812,11 +826,11 @@ class AgentApp(ctk.CTk):
             anchor="w",
             justify="left",
             font=ctk.CTkFont(size=11),
-            text_color="gray60",
+            text_color=UI_MUTED_FG,
             wraplength=720,
         ).pack(anchor="w", padx=16, pady=(0, 8))
         self._behaviors_version = ctk.CTkLabel(
-            page, text="", anchor="w", font=ctk.CTkFont(size=10), text_color="gray55"
+            page, text="", anchor="w", font=ctk.CTkFont(size=10), text_color=UI_MUTED_FG
         )
         self._behaviors_version.pack(anchor="w", padx=16, pady=(0, 6))
 
@@ -911,13 +925,13 @@ class AgentApp(ctk.CTk):
         ctk.CTkLabel(page, text="Тохиргоо", font=ctk.CTkFont(size=16, weight="bold")).pack(
             anchor="w", padx=16, pady=(14, 8)
         )
-        card = ctk.CTkFrame(page, fg_color="gray17", corner_radius=10)
+        card = ctk.CTkFrame(page, fg_color=UI_SURFACE, corner_radius=10)
         card.pack(fill="x", padx=16, pady=4)
 
         def _row(label: str, value: str) -> None:
             r = ctk.CTkFrame(card, fg_color="transparent")
             r.pack(fill="x", padx=14, pady=6)
-            ctk.CTkLabel(r, text=label, anchor="w", text_color="gray60", width=140).pack(
+            ctk.CTkLabel(r, text=label, anchor="w", text_color=UI_MUTED_FG, width=140).pack(
                 side="left"
             )
             ctk.CTkLabel(r, text=value, anchor="w").pack(side="left")
@@ -960,7 +974,7 @@ class AgentApp(ctk.CTk):
                 text="Камер бүртгэгдээгүй байна.\n\n"
                 "'Камер хайх' дарж автоматаар олох, эсвэл 'Камер нэмэх' дарж гараар нэмнэ үү.",
                 font=ctk.CTkFont(size=13),
-                text_color="gray60",
+                text_color=UI_MUTED_FG,
                 justify="center",
             ).pack(pady=60)
             self.set_status("0 камер")
@@ -1055,20 +1069,20 @@ class AgentApp(ctk.CTk):
         for path, lbl in self._push_labels.items():
             try:
                 if not ctrl.push_enabled:
-                    lbl.configure(text="—", text_color="gray50")
+                    lbl.configure(text="—", text_color=UI_MUTED_FG)
                     continue
                 st = status_by_path.get(path)
                 if st is None:
-                    lbl.configure(text="⏳ хүлээж", text_color="gray60")
+                    lbl.configure(text="⏳ хүлээж", text_color=UI_MUTED_FG)
                 elif st.get("running"):
-                    lbl.configure(text="🟢 дамжуулж", text_color="#4ADE80")
+                    lbl.configure(text="🟢 дамжуулж", text_color=UI_SUCCESS)
                 else:
-                    lbl.configure(text="🔴 тасарсан", text_color="#FF6B6B")
+                    lbl.configure(text="🔴 тасарсан", text_color=UI_DANGER)
             except Exception:  # noqa: BLE001 — label may have been destroyed mid-refresh
                 continue
 
     def _render_camera_row(self, cam: CameraRecord) -> None:
-        row = ctk.CTkFrame(self.list_frame, fg_color="gray17", corner_radius=8)
+        row = ctk.CTkFrame(self.list_frame, fg_color=UI_SURFACE, corner_radius=8)
         row.pack(fill="x", pady=3)
         self._configure_grid(row)
 
@@ -1094,7 +1108,7 @@ class AgentApp(ctk.CTk):
             text="—",
             anchor="w",
             font=ctk.CTkFont(size=12),
-            text_color="gray50",
+            text_color=UI_MUTED_FG,
         )
         push_lbl.grid(row=0, column=5, sticky="w", padx=6, pady=8)
         if cam.mediamtx_path:
@@ -1111,9 +1125,9 @@ class AgentApp(ctk.CTk):
             height=26,
             fg_color="transparent",
             border_width=1,
-            text_color=CHIPMO_ORANGE,
-            border_color=CHIPMO_ORANGE,
-            hover_color="gray25",
+            text_color=BRAND_PRIMARY,
+            border_color=BRAND_PRIMARY,
+            hover_color=UI_MUTED_HOVER,
             command=lambda c=cam: self._edit_camera(c),
         ).pack(side="left", padx=2)
 
@@ -1125,9 +1139,9 @@ class AgentApp(ctk.CTk):
             height=26,
             fg_color="transparent",
             border_width=1,
-            text_color=CHIPMO_ORANGE,
-            border_color=CHIPMO_ORANGE,
-            hover_color="gray25",
+            text_color=BRAND_PRIMARY,
+            border_color=BRAND_PRIMARY,
+            hover_color=UI_MUTED_HOVER,
             command=lambda c=cam: self._edit_zones(c),
         ).pack(side="left", padx=2)
 
@@ -1141,9 +1155,9 @@ class AgentApp(ctk.CTk):
             height=26,
             fg_color="transparent",
             border_width=1,
-            text_color=CHIPMO_ORANGE,
-            border_color=CHIPMO_ORANGE,
-            hover_color="gray25",
+            text_color=BRAND_PRIMARY,
+            border_color=BRAND_PRIMARY,
+            hover_color=UI_MUTED_HOVER,
             command=lambda c=cam: self._reconnect_camera(c),
         ).pack(side="left", padx=2)
 
@@ -1154,9 +1168,9 @@ class AgentApp(ctk.CTk):
             height=26,
             fg_color="transparent",
             border_width=1,
-            text_color="#FF6B6B",
-            border_color="#FF6B6B",
-            hover_color="gray25",
+            text_color=UI_DANGER,
+            border_color=UI_DANGER,
+            hover_color=UI_MUTED_HOVER,
             command=lambda c=cam: self._delete_camera(c),
         ).pack(side="left", padx=2)
 
@@ -1433,7 +1447,7 @@ class AgentApp(ctk.CTk):
         if not state.is_paired:
             self.backend_label.configure(
                 text="Холбогдоогүй — '🔗 Холболт' дарна уу",
-                text_color="#FBBF24",
+                text_color=UI_WARNING,
             )
             return
         store = state.store_name or "дэлгүүр"
@@ -1453,12 +1467,12 @@ class AgentApp(ctk.CTk):
             if result.get("ok"):
                 self.backend_label.configure(
                     text=f"✅ {store}",
-                    text_color="#4ADE80",
+                    text_color=UI_SUCCESS,
                 )
             else:
                 self.backend_label.configure(
                     text=f"⚠ {store} — холбогдсонгүй",
-                    text_color="#FF6B6B",
+                    text_color=UI_DANGER,
                 )
 
         self._run_bg(work, done)
@@ -1529,8 +1543,8 @@ class PairingDialog(ctk.CTkToplevel):
         self.connect_btn = ctk.CTkButton(
             btn_row,
             text="Холбох",
-            fg_color=CHIPMO_ORANGE,
-            hover_color=BRAND_ORANGE_HOVER,
+            fg_color=BRAND_PRIMARY,
+            hover_color=BRAND_PRIMARY_HOVER,
             command=self._pair,
         )
         self.connect_btn.pack(side="right")
@@ -1540,8 +1554,8 @@ class PairingDialog(ctk.CTkToplevel):
                 text="Салгах",
                 fg_color="transparent",
                 border_width=1,
-                text_color="#FF6B6B",
-                border_color="#FF6B6B",
+                text_color=UI_DANGER,
+                border_color=UI_DANGER,
                 command=self._unpair,
             ).pack(side="left")
 
@@ -1549,7 +1563,7 @@ class PairingDialog(ctk.CTkToplevel):
             self,
             text="",
             font=ctk.CTkFont(size=12),
-            text_color="gray60",
+            text_color=UI_MUTED_FG,
             wraplength=470,
             anchor="w",
         )
@@ -1570,7 +1584,7 @@ class PairingDialog(ctk.CTkToplevel):
                 body,
                 text=f"✅ Одоо холбогдсон дэлгүүр: {state.store_name or '—'}",
                 font=ctk.CTkFont(size=13),
-                text_color="#4ADE80",
+                text_color=UI_SUCCESS,
                 anchor="w",
             ).pack(fill="x", padx=20, pady=(2, 8))
 
@@ -1578,7 +1592,7 @@ class PairingDialog(ctk.CTkToplevel):
             body,
             text="Веб апп → Дэлгүүр → 'Компьютер холбох' дарж 6 оронтой код аваад доор оруулна уу.",
             font=ctk.CTkFont(size=12),
-            text_color="gray70",
+            text_color=UI_MUTED_FG,
             anchor="w",
             wraplength=470,
             justify="left",
@@ -1601,7 +1615,7 @@ class PairingDialog(ctk.CTkToplevel):
             text="⚙ Нэмэлт тохиргоо (Backend / Веб хаяг)  ▾",
             fg_color="transparent",
             border_width=1,
-            text_color="gray60",
+            text_color=UI_MUTED_FG,
             anchor="w",
             command=self._toggle_advanced,
         )
@@ -1613,7 +1627,7 @@ class PairingDialog(ctk.CTkToplevel):
             text="Backend URL (default-ыг хэвээр үлдээж болно):",
             anchor="w",
             font=ctk.CTkFont(size=11),
-            text_color="gray60",
+            text_color=UI_MUTED_FG,
         ).pack(fill="x", padx=20, pady=(8, 0))
         self.url_entry = ctk.CTkEntry(self._adv, placeholder_text=DEFAULT_BACKEND_URL)
         self.url_entry.pack(fill="x", padx=20, pady=(2, 8))
@@ -1623,7 +1637,7 @@ class PairingDialog(ctk.CTkToplevel):
             text="Веб хаяг (Шууд харах цонхонд ачаална):",
             anchor="w",
             font=ctk.CTkFont(size=11),
-            text_color="gray60",
+            text_color=UI_MUTED_FG,
         ).pack(fill="x", padx=20)
         self.frontend_entry = ctk.CTkEntry(self._adv, placeholder_text=DEFAULT_FRONTEND_URL)
         self.frontend_entry.pack(fill="x", padx=20, pady=(2, 4))
@@ -1655,11 +1669,11 @@ class PairingDialog(ctk.CTkToplevel):
         if not code.isdigit() or len(code) != 6:
             self.status_lbl.configure(
                 text="Код 6 оронтой тоо байх ёстой.",
-                text_color="#FF6B6B",
+                text_color=UI_DANGER,
             )
             return
         self.connect_btn.configure(state="disabled")
-        self.status_lbl.configure(text="Холбож байна…", text_color="gray60")
+        self.status_lbl.configure(text="Холбож байна…", text_color=UI_MUTED_FG)
         write_config(url, frontend)
 
         def runner() -> None:
@@ -1689,14 +1703,14 @@ class PairingDialog(ctk.CTkToplevel):
         if result.get("ok"):
             self.status_lbl.configure(
                 text=f"✅ '{result.get('store')}' дэлгүүртэй холбогдлоо!",
-                text_color="#4ADE80",
+                text_color=UI_SUCCESS,
             )
             self.on_saved()
             self.after(1200, self.destroy)
         else:
             self.status_lbl.configure(
                 text=f"❌ {result.get('error', 'алдаа')[:120]}",
-                text_color="#FF6B6B",
+                text_color=UI_DANGER,
             )
 
     def _unpair(self) -> None:

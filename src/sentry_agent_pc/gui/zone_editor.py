@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 import customtkinter as ctk
 
 from sentry_agent_pc.gui import widgets
-from sentry_agent_pc.gui.widgets import BRAND_ORANGE, BRAND_ORANGE_HOVER
+from sentry_agent_pc.gui.widgets import BRAND_PRIMARY, BRAND_PRIMARY_HOVER
 from sentry_agent_pc.gui.zone_geometry import (
     ZONE_TYPES,
     FitRect,
@@ -114,8 +114,8 @@ class ZoneEditorDialog(ctk.CTkToplevel):
             command=self._on_close,
         ).pack(side="right", padx=(8, 0))
         self.save_btn = ctk.CTkButton(
-            bar, text="Хадгалах", fg_color=BRAND_ORANGE,
-            hover_color=BRAND_ORANGE_HOVER, command=self._submit,
+            bar, text="Хадгалах", fg_color=BRAND_PRIMARY,
+            hover_color=BRAND_PRIMARY_HOVER, command=self._submit,
         )
         self.save_btn.pack(side="right")
         self.status_lbl = ctk.CTkLabel(
