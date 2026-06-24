@@ -47,3 +47,21 @@ def test_from_dict_string_bools_parsed_by_content() -> None:
 def test_from_dict_int_tolerates_float_strings() -> None:
     assert EdgeConfig.from_dict({"frame_skip": "5.0"}).frame_skip == 5
     assert EdgeConfig.from_dict({"max_clips": 7.9}).max_clips == 7
+
+
+def test_from_dict_rejects_non_finite_floats() -> None:
+    # M3: NaN/inf must be dropped (a non-finite weight poisons `raw` → detection
+    # silently dies); the field keeps its default instead.
+    assert EdgeConfig.from_dict({"w_conceal": "nan"}).w_conceal == EdgeConfig().w_conceal
+    assert EdgeConfig.from_dict({"w_conceal": "inf"}).w_conceal == EdgeConfig().w_conceal
+    assert EdgeConfig.from_dict({"open_risk": float("nan")}).open_risk == EdgeConfig().open_risk
+
+
+def test_from_dict_clamps_decay_into_unit_interval() -> None:
+    # M3: decay must stay in [0, 1) so `raw` always cools off and the episode FSM
+    # can close. A misconfigured >= 1 (or negative) is clamped, not honoured.
+    assert EdgeConfig.from_dict({"decay": 1.5}).decay < 1.0
+    assert EdgeConfig.from_dict({"decay": 5}).decay < 1.0
+    assert EdgeConfig.from_dict({"decay": -0.3}).decay == 0.0
+    # a valid in-range value is untouched
+    assert EdgeConfig.from_dict({"decay": 0.8}).decay == 0.8

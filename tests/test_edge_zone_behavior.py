@@ -55,6 +55,19 @@ def test_exit_after_concealment_fires_when_concealed_in_exit_zone() -> None:
     assert tr.raw >= 40.0  # the strong exit-after-conceal weight was added
 
 
+def test_raw_is_clamped_to_100() -> None:
+    # M3: sustained banking must not drift `raw` far above 100 (which would lag
+    # the cool-off after the action ends). It's clamped to the 0-100 risk range.
+    b = EdgeBehavior("cam")
+    t = 0.0
+    for _ in range(30):
+        t += 0.2
+        persons, items = _conceal(_IN_BOX)
+        b.update(persons, items, t)
+    tr = _track(b)
+    assert tr.raw <= 100.0
+
+
 def test_mindur_delays_exit_signal_but_does_not_disable_it() -> None:
     # Regression (H6): latching *_scored happened BEFORE the timing gate, so any
     # non-zero mindur_exit_after_conceal silently killed exit-after-concealment for

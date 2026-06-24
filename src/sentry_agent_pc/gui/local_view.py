@@ -910,6 +910,11 @@ class LocalLiveView(ctk.CTkToplevel):
         self._closed = False
         self._minimized = False
         self._edge_cfg_version = -1  # forces the first poll to apply (I7)
+        # Pending self-rescheduling timer ids, so _on_close can cancel them
+        # instead of relying on the _closed flag to no-op a queued tick after
+        # the widget is destroyed.
+        self._tick_after: str | None = None
+        self._edge_after: str | None = None
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._scroll.bind("<Configure>", self._on_resize)
         self.after(50, self._relayout)
@@ -1010,7 +1015,7 @@ class LocalLiveView(ctk.CTkToplevel):
             for tile in self._tiles:
                 with contextlib.suppress(Exception):
                     tile.paint()
-        self.after(int(1000 / _TARGET_FPS), self._tick)
+        self._tick_after = self.after(int(1000 / _TARGET_FPS), self._tick)
 
     def _tick_edge_config(self) -> None:
         """I7: every 30 s, hot-apply the backend's edge tunables to the running
@@ -1018,19 +1023,30 @@ class LocalLiveView(ctk.CTkToplevel):
         version change (no-op until the backend serves per-store config)."""
         if self._closed:
             return
-        pipes = [r._edge_pipe for r in self._readers]
+        # Snapshot the live pipelines, dropping any that a reader's edge loop has
+        # cleared (set to None on give-up) — passing a None into the poller would
+        # be a per-frame footgun. A reference read is atomic under the GIL.
+        pipes = [p for p in (r._edge_pipe for r in self._readers) if p is not None]
 
         def work() -> None:
+            if self._closed or not pipes:
+                return
             from sentry_agent_pc.backend_client import BackendClient
             from sentry_agent_pc.edge.config_poller import poll_and_apply
 
             self._edge_cfg_version = poll_and_apply(BackendClient(), pipes, self._edge_cfg_version)
 
         threading.Thread(target=work, name="edge-config-poll", daemon=True).start()
-        self.after(30000, self._tick_edge_config)
+        self._edge_after = self.after(30000, self._tick_edge_config)
 
     def _on_close(self) -> None:
         self._closed = True
+        # Cancel the pending self-rescheduling timers so a queued tick can't fire
+        # into the widget mid-teardown (don't lean on the _closed no-op).
+        for aid in (self._tick_after, self._edge_after):
+            if aid is not None:
+                with contextlib.suppress(Exception):
+                    self.after_cancel(aid)
         for reader in self._readers:
             reader.stop()
         # Join the reader threads (bounded) so each VideoCapture/ffmpeg session is
