@@ -100,9 +100,48 @@ _EDGE_BEHAVIORS: tuple[dict[str, str], ...] = (
 )
 # Movement key → Mongolian label (the «Сэжигтэй» gallery + clip detail use this).
 _EDGE_BEHAVIOR_LABELS = {b["key"]: b["label"] for b in _EDGE_BEHAVIORS}
-# Movement key → its EdgeConfig weight field, so the clip detail can show
-# "+5 × N удаа" from an aggregate-only (old) clip.
-_BEHAVIOR_WEIGHT_KEY = {b["key"]: b["weight_key"] for b in _EDGE_BEHAVIORS if b.get("weight_key")}
+
+# The FULL effective edge config shown (read-only) in the «Зан үйл» menu — what
+# the YOLO + behaviour engine ACTUALLY runs with on this PC, grouped + labelled.
+# (group, EdgeConfig key, Mongolian label, unit). Values come live from
+# /agent/edge-config (superadmin sets them globally); tuning stays in superadmin.
+_EDGE_CONFIG_ROWS: tuple[tuple[str, str, str, str], ...] = (
+    ("Зан үйлийн оноо", "w_holding", "Эд зүйл барих", "оноо"),
+    ("Зан үйлийн оноо", "w_conceal", "Эд зүйл нуух", "оноо"),
+    ("Зан үйлийн оноо", "w_wrist_torso", "Гар бие рүү", "оноо"),
+    ("Зан үйлийн оноо", "w_repeated_shelf", "Тавиур давтан зочлох", "оноо"),
+    ("Зан үйлийн оноо", "w_exit_after_conceal", "Нуусны дараа гарц руу", "оноо"),
+    ("Хугацаа — давтамж", "interval_holding", "Эд зүйл барих — давтамж", "сек"),
+    ("Хугацаа — давтамж", "interval_conceal", "Эд зүйл нуух — давтамж", "сек"),
+    ("Хугацаа — давтамж", "interval_wrist_torso", "Гар бие рүү — давтамж", "сек"),
+    ("Хугацаа — давтамж", "interval_repeated_shelf", "Тавиур давтан — давтамж", "сек"),
+    ("Хугацаа — давтамж", "interval_exit_after_conceal", "Гарц руу — давтамж", "сек"),
+    ("Хугацаа — үргэлжлэх", "mindur_holding", "Эд зүйл барих — үргэлжлэх", "сек"),
+    ("Хугацаа — үргэлжлэх", "mindur_conceal", "Эд зүйл нуух — үргэлжлэх", "сек"),
+    ("Хугацаа — үргэлжлэх", "mindur_wrist_torso", "Гар бие рүү — үргэлжлэх", "сек"),
+    ("Хугацаа — үргэлжлэх", "mindur_repeated_shelf", "Тавиур давтан — үргэлжлэх", "сек"),
+    ("Хугацаа — үргэлжлэх", "mindur_exit_after_conceal", "Гарц руу — үргэлжлэх", "сек"),
+    ("Зон", "repeated_shelf_threshold", "Тавиур давтахын босго", "удаа"),
+    ("Эрсдэл → эпизод", "open_risk", "Эпизод нээх босго", "оноо"),
+    ("Эрсдэл → эпизод", "close_risk", "Эпизод хаах босго", "оноо"),
+    ("Эрсдэл → эпизод", "decay", "Оноо бууралт", "×/сек"),
+    ("Эрсдэл → эпизод", "post_quiet_sec", "Намжих хугацаа", "сек"),
+    ("Эрсдэл → эпизод", "band_yellow", "Шар туяа", "оноо"),
+    ("Эрсдэл → эпизод", "band_red", "Улаан туяа", "оноо"),
+    ("Илрүүлэлт (YOLO)", "person_conf", "Хүн илрүүлэх итгэл", "0–1"),
+    ("Илрүүлэлт (YOLO)", "item_conf", "Бараа илрүүлэх итгэл", "0–1"),
+    ("Илрүүлэлт (YOLO)", "frame_skip", "Кадр алгасалт", "кадр"),
+    ("Геометр", "reach_frac", "Барих радиус", "× өндөр"),
+    ("Геометр", "near_frac", "Нуух радиус", "× өндөр"),
+    ("Геометр", "min_kp_conf", "Цэгийн итгэл", "0–1"),
+    ("Геометр", "iou_match", "Track тааруулалт", "0–1"),
+    ("Геометр", "drop_after_sec", "Track хаях", "сек"),
+    ("Бичлэг", "pre_sec", "Өмнөх (pre-roll)", "сек"),
+    ("Бичлэг", "post_sec", "Дараах (post-roll)", "сек"),
+    ("Бичлэг", "keep_sec", "Завсрын хадгалалт", "сек"),
+    ("Бичлэг", "max_clips", "Бичлэгийн дээд тоо", "ш"),
+    ("Бичлэг", "upload_clips", "Cloud руу илгээх", ""),
+)
 
 # «Сэжигтэй» table column widths (px) — header + every row share these so the
 # columns line up; the «Зан үйл» column takes the slack (expand).
@@ -653,161 +692,65 @@ class AgentApp(ctk.CTk):
             text_color="gray65",
         ).pack(anchor="w")
 
-        from sentry_agent_pc.edge.config import EdgeConfig
+        from sentry_agent_pc.gui.datatable import DataTable
 
         # Footer pinned to the bottom FIRST (setup_dialog convention) so it never
-        # gets clipped by the expanding event list.
+        # gets clipped by the expanding table.
         foot = ctk.CTkFrame(win, fg_color="transparent")
         foot.pack(side="bottom", fill="x", padx=16, pady=(2, 12))
 
-        # Column header — meaning depends on the view (per-fire timeline vs the
-        # aggregated count for an older clip), so it's built per branch below.
-        hdr = ctk.CTkFrame(win, fg_color="gray20", corner_radius=6)
-        hdr.pack(fill="x", padx=16, pady=(8, 0))
+        # One sortable datagrid: Огноо · Цаг · Зан үйл · Оноо · Эрсдэл. The «Цаг»
+        # carries milliseconds so the founder sees the exact moment + cadence.
+        table = DataTable(
+            win,
+            columns=(
+                ("date", "Огноо", 100, "w"),
+                ("time", "Цаг", 116, "w"),
+                ("beh", "Зан үйл", 0, "w"),
+                ("score", "Оноо", 70, "e"),
+                ("risk", "Эрсдэл", 72, "e"),
+            ),
+        )
+        table.pack(fill="both", expand=True, padx=16, pady=(8, 4))
 
-        def _hdr(cols: tuple[tuple[str, int, str], ...]) -> None:
-            for text, w, anchor in cols:
-                ctk.CTkLabel(
-                    hdr,
-                    text=text,
-                    width=w,
-                    anchor=anchor,
-                    font=ctk.CTkFont(size=11, weight="bold"),
-                    text_color="gray80",
-                ).pack(side="left", padx=6, pady=4)
-
-        body = ctk.CTkScrollableFrame(win, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=16, pady=(2, 4))
-        total = 0.0
+        rows: list[tuple[str, str, str, str, str]] = []
         if clip.events:
-            # Per-fire timeline: one row per banking. «Хугацаа» = seconds from the
-            # episode start (2 decimals); «Зай» = gap from the PREVIOUS bank in ms
-            # (founder: "тэр хооронд хэдэн мил.секунд болсон").
-            _hdr(
-                (
-                    ("Хугацаа", 78, "w"),
-                    ("Зай", 66, "e"),
-                    ("Зан үйл", 170, "w"),
-                    ("Оноо", 52, "e"),
-                    ("Эрсдэл", 52, "e"),
-                )
-            )
-            prev_ts: float | None = None
+            # One row per banking, with the exact wall-clock date + time (ms).
+            total = 0.0
             for ev in clip.events:
                 key = str(ev.get("key", ""))
                 label = _EDGE_BEHAVIOR_LABELS.get(key, key)
                 amount = float(ev.get("amount", 0) or 0)
                 risk = float(ev.get("risk", 0) or 0)
-                offset = float(ev.get("offset_sec", 0) or 0)
                 ts = float(ev.get("ts", 0) or 0)
-                if prev_ts is None or ts <= 0:
-                    gap = "—"
-                else:
-                    ms = (ts - prev_ts) * 1000.0
-                    gap = f"{ms:.0f}мс" if ms < 1000 else f"{ms / 1000:.1f}с"
-                prev_ts = ts
                 total += amount
-                tcol = "#FF6B6B" if risk >= 70 else (CHIPMO_ORANGE if risk >= 40 else "gray75")
-                line = ctk.CTkFrame(body, fg_color="transparent")
-                line.pack(fill="x", pady=1)
-                ctk.CTkLabel(
-                    line,
-                    text=f"+{offset:.2f}с",
-                    width=78,
-                    anchor="w",
-                    font=ctk.CTkFont(size=11),
-                    text_color="gray70",
-                ).pack(side="left", padx=6)
-                ctk.CTkLabel(
-                    line,
-                    text=gap,
-                    width=66,
-                    anchor="e",
-                    font=ctk.CTkFont(size=11),
-                    text_color="gray55",
-                ).pack(side="left", padx=6)
-                ctk.CTkLabel(
-                    line, text=label, width=170, anchor="w", font=ctk.CTkFont(size=11)
-                ).pack(side="left", padx=6)
-                ctk.CTkLabel(
-                    line,
-                    text=f"+{amount:.0f}",
-                    width=52,
-                    anchor="e",
-                    font=ctk.CTkFont(size=11, weight="bold"),
-                    text_color="#7CD992",
-                ).pack(side="left", padx=6)
-                ctk.CTkLabel(
-                    line,
-                    text=f"{risk:.0f}%",
-                    width=52,
-                    anchor="e",
-                    font=ctk.CTkFont(size=11),
-                    text_color=tcol,
-                ).pack(side="left", padx=6)
-            span = max(0.0, clip.duration)
+                if ts > 0:
+                    dt = datetime.datetime.fromtimestamp(ts)
+                    date_s = dt.strftime("%Y-%m-%d")
+                    time_s = dt.strftime("%H:%M:%S") + f".{int((ts % 1) * 1000):03d}"
+                else:
+                    date_s, time_s = "—", "—"
+                rows.append((date_s, time_s, label, f"+{amount:.0f}", f"{risk:.0f}%"))
             note = (
-                f"Нийт {len(clip.events)} дохио · {span:.0f}с дотор · цугларсан +{total:.0f} оноо. "
-                "«Зай» = өмнөх дохионоос хойшхи хугацаа (мс)."
+                f"Нийт {len(rows)} дохио · {clip.duration:.0f}с дотор · цугларсан +{total:.0f} оноо. "
+                "Толгойн багана дээр дарж эрэмбэлнэ."
             )
         elif clip.behavior_detail:
-            # Older clip (no per-fire log): can't show the timeline, but we CAN say
-            # HOW MANY times each behaviour fired — count ≈ total ÷ the per-hit
-            # weight — which is the "+5 vs +165" the operator was confused by.
-            defaults = EdgeConfig()
-            _hdr(
-                (
-                    ("Зан үйл", 240, "w"),
-                    ("Нэг удаад", 80, "e"),
-                    ("Удаа", 70, "e"),
-                    ("Нийт", 70, "e"),
-                )
-            )
+            # Older clip (recorded before the per-fire log): no per-event time —
+            # show the aggregated total per behaviour (Огноо/Цаг хоосон).
+            total = 0.0
             for d in clip.behavior_detail:
-                key = str(d.get("key", ""))
-                label = _EDGE_BEHAVIOR_LABELS.get(key, key)
+                label = _EDGE_BEHAVIOR_LABELS.get(str(d.get("key", "")), str(d.get("key", "")))
                 score = float(d.get("score", 0) or 0)
                 total += score
-                wkey = _BEHAVIOR_WEIGHT_KEY.get(key, "")
-                unit = float(getattr(defaults, wkey, 0.0)) if wkey else 0.0
-                count = round(score / unit) if unit > 0 else 0
-                line = ctk.CTkFrame(body, fg_color="transparent")
-                line.pack(fill="x", pady=1)
-                ctk.CTkLabel(
-                    line, text=label, width=240, anchor="w", font=ctk.CTkFont(size=11)
-                ).pack(side="left", padx=6)
-                ctk.CTkLabel(
-                    line,
-                    text=(f"+{unit:.0f}" if unit else "—"),
-                    width=80,
-                    anchor="e",
-                    font=ctk.CTkFont(size=11),
-                    text_color="gray70",
-                ).pack(side="left", padx=6)
-                ctk.CTkLabel(
-                    line,
-                    text=(f"~{count}" if count else "—"),
-                    width=70,
-                    anchor="e",
-                    font=ctk.CTkFont(size=11),
-                    text_color="gray75",
-                ).pack(side="left", padx=6)
-                ctk.CTkLabel(
-                    line,
-                    text=f"+{score:.0f}",
-                    width=70,
-                    anchor="e",
-                    font=ctk.CTkFont(size=11, weight="bold"),
-                    text_color="#7CD992",
-                ).pack(side="left", padx=6)
+                rows.append(("—", "—", label, f"+{score:.0f}", "—"))
             note = (
-                f"Цугларсан +{total:.0f} оноо. «Удаа» = хэдэн удаа давтагдсаны ОЙРОЛЦООГ "
-                "(нийт ÷ нэг удаагийн оноо). Хугацааны нарийн задаргаа шинэ бичлэгүүдэд гарна."
+                "Энэ бичлэг хуучин хувилбараар бичигдсэн тул хугацааны (огноо/цаг) задаргаа алга "
+                f"— зөвхөн нийт +{total:.0f} оноо. Шинэ бичлэгүүдэд дохио бүр огноо/цагтайгаар гарна."
             )
         else:
-            _hdr((("Зан үйл", 240, "w"), ("Оноо", 70, "e")))
-            ctk.CTkLabel(body, text="Онооны задаргаа алга.", text_color="gray60").pack(pady=20)
             note = "Энэ бичлэгт зан үйлийн задаргаа бүртгэгдээгүй."
+        table.set_rows(rows)
 
         ctk.CTkLabel(
             foot,
@@ -834,16 +777,19 @@ class AgentApp(ctk.CTk):
                 return
         self.set_status(f"Бичлэг: {path}")
 
-    # === «Зан үйл» page — the edge behaviour catalog + per-store weights ===
+    # === «Зан үйл» page — the FULL effective edge config (read-only, global) ===
 
     def _build_behaviors_page(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
-        """The behaviours the agent-pc Stage-1 gate scores, with the weight each
-        adds (tuned per store from superadmin's «Edge тохиргоо», fetched live)."""
+        """The FULL effective edge config this PC runs YOLO + the behaviour engine
+        with — grouped + labelled, read-only. Values come live from superadmin's
+        «Edge тохиргоо» (global, one value for every store); shown as a sortable
+        table so the operator can see exactly what scores, timing gates, zone
+        thresholds and detection settings are in force."""
         page = ctk.CTkFrame(parent, fg_color="transparent")
         bar = ctk.CTkFrame(page, fg_color="transparent")
         bar.pack(fill="x", padx=16, pady=(14, 4))
         ctk.CTkLabel(
-            bar, text="Зан үйлийн жагсаалт", font=ctk.CTkFont(size=16, weight="bold")
+            bar, text="Зан үйл ба хөдөлгүүрийн тохиргоо", font=ctk.CTkFont(size=16, weight="bold")
         ).pack(side="left")
         ctk.CTkButton(
             bar,
@@ -857,80 +803,70 @@ class AgentApp(ctk.CTk):
         ctk.CTkLabel(
             page,
             text=(
-                "Энэ компьютер дээрх AI хөдөлгүүр доорх зан үйлүүдийг хардаг. «Жин» нь "
-                "тухайн хөдөлгөөн илрэхэд сэжиг оноонд хэдэн оноо нэмэхийг заана — "
-                "superadmin-аас тааруулна (бүх дэлгүүрт нэг ижил)."
+                "Энэ компьютер дээрх AI хөдөлгүүр (YOLO + зан үйл) ЯГ доорх тохиргоогоор "
+                "ажиллана. Зан үйлийн оноо, илрэх давтамж/үргэлжлэх хугацаа, тавиур давтан "
+                "зочлох босго, эрсдэл → сэжигтэй бичлэг (эпизод) болон илрүүлэлтийн "
+                "параметрүүд багтсан. Эдгээрийг superadmin-аас тааруулна (бүх дэлгүүрт нэг "
+                "ижил) — энд зөвхөн харна."
             ),
             anchor="w",
             justify="left",
             font=ctk.CTkFont(size=11),
             text_color="gray60",
-            wraplength=640,
+            wraplength=720,
         ).pack(anchor="w", padx=16, pady=(0, 8))
         self._behaviors_version = ctk.CTkLabel(
             page, text="", anchor="w", font=ctk.CTkFont(size=10), text_color="gray55"
         )
-        self._behaviors_version.pack(anchor="w", padx=16)
-        self._behaviors_frame = ctk.CTkScrollableFrame(page, fg_color="transparent")
-        self._behaviors_frame.pack(fill="both", expand=True, padx=16, pady=(4, 10))
-        self._behavior_weight_labels: dict[str, ctk.CTkLabel] = {}
+        self._behaviors_version.pack(anchor="w", padx=16, pady=(0, 6))
+
+        from sentry_agent_pc.gui.datatable import DataTable
+
+        self._behaviors_table = DataTable(
+            page,
+            columns=(
+                ("group", "Бүлэг", 170, "w"),
+                ("label", "Тохиргоо", 0, "w"),
+                ("value", "Утга", 100, "e"),
+                ("unit", "Нэгж", 90, "w"),
+            ),
+            height=18,
+        )
+        self._behaviors_table.pack(fill="both", expand=True, padx=16, pady=(0, 10))
+        self.after(0, self._refresh_behaviors)
         return page
+
+    @staticmethod
+    def _edge_config_rows(cfg: dict[str, Any]) -> list[tuple[str, str, str, str]]:
+        """Build (group, label, value, unit) rows from a merged config dict, in the
+        registry order. `cfg` is EdgeConfig() defaults overlaid with the live fetch."""
+
+        def fmt(key: str, raw: Any) -> str:
+            if isinstance(raw, bool):
+                return "Тийм" if raw else "Үгүй"
+            if raw is None:
+                return "—"
+            try:
+                f = float(raw)
+            except (TypeError, ValueError):
+                return str(raw)
+            txt = f"{f:g}"
+            if key.startswith("w_"):  # weights add to the score → show the + sign
+                txt = f"+{txt}"
+            return txt
+
+        return [
+            (group, label, fmt(key, cfg.get(key)), unit)
+            for (group, key, label, unit) in _EDGE_CONFIG_ROWS
+        ]
 
     def _refresh_behaviors(self) -> None:
         from sentry_agent_pc.edge.config import EdgeConfig
 
-        for w in self._behaviors_frame.winfo_children():
-            w.destroy()
-        self._behavior_weight_labels = {}
-        # Header
-        hdr = ctk.CTkFrame(self._behaviors_frame, fg_color="gray20", corner_radius=6)
-        hdr.pack(fill="x", pady=(0, 4))
-        for text, width, anchor in (("Зан үйл", 190, "w"), ("Тайлбар", 360, "w"), ("Жин", 70, "e")):
-            ctk.CTkLabel(
-                hdr,
-                text=text,
-                width=width,
-                anchor=anchor,
-                font=ctk.CTkFont(size=11, weight="bold"),
-                text_color="gray80",
-            ).pack(side="left", padx=8, pady=5)
-        # Rows — seed weights from local defaults; the live fetch overrides below.
-        defaults = EdgeConfig()
-        for b in _EDGE_BEHAVIORS:
-            row = ctk.CTkFrame(self._behaviors_frame, fg_color="gray17", corner_radius=8)
-            row.pack(fill="x", pady=2)
-            ctk.CTkLabel(
-                row,
-                text=b["label"],
-                width=190,
-                anchor="w",
-                font=ctk.CTkFont(size=12, weight="bold"),
-            ).pack(side="left", padx=8, pady=8)
-            ctk.CTkLabel(
-                row,
-                text=b["desc"],
-                width=360,
-                anchor="w",
-                justify="left",
-                font=ctk.CTkFont(size=11),
-                text_color="gray70",
-                wraplength=350,
-            ).pack(side="left", padx=8, pady=8)
-            wkey = b.get("weight_key") or ""
-            seed = getattr(defaults, wkey, None) if wkey else None
-            lbl = ctk.CTkLabel(
-                row,
-                text=(f"+{float(seed):.0f}" if seed is not None else "—"),
-                width=70,
-                anchor="e",
-                font=ctk.CTkFont(size=12, weight="bold"),
-                text_color=CHIPMO_ORANGE,
-            )
-            lbl.pack(side="left", padx=8, pady=8)
-            if wkey:
-                self._behavior_weight_labels[wkey] = lbl
+        # Seed every field from the local defaults; the live fetch overrides below.
+        defaults = {f: getattr(EdgeConfig(), f, None) for _, f, _, _ in _EDGE_CONFIG_ROWS}
+        self._behaviors_table.set_rows(self._edge_config_rows(defaults))
         self._behaviors_version.configure(text="Анхдагч утга харуулж байна…")
-        # Fetch the live per-store weights off the UI thread.
         threading.Thread(target=self._fetch_behavior_weights, daemon=True).start()
 
     def _fetch_behavior_weights(self) -> None:
@@ -942,28 +878,32 @@ class AgentApp(ctk.CTk):
         self._post_behavior_weights(cfg, None)
 
     def _post_behavior_weights(self, cfg: dict[str, Any] | None, err: str | None) -> None:
-        """Apply fetched weights on the UI thread (guarded against teardown)."""
+        """Apply fetched config on the UI thread (guarded against teardown)."""
         if self._closing:
             return
         with contextlib.suppress(Exception):
             self.after(0, lambda: self._apply_behavior_weights(cfg, err))
 
     def _apply_behavior_weights(self, cfg: dict[str, Any] | None, err: str | None) -> None:
-        if self._closing or not self._behavior_weight_labels:
+        from sentry_agent_pc.edge.config import EdgeConfig
+
+        if self._closing:
             return
         if cfg is None:
             self._behaviors_version.configure(
                 text=f"Серверээс татаж чадсангүй ({err}). Анхдагч утга харагдаж байна."
             )
             return
-        for wkey, lbl in self._behavior_weight_labels.items():
-            val = cfg.get(wkey)
-            with contextlib.suppress(Exception):
-                if val is not None:
-                    lbl.configure(text=f"+{float(val):.0f}")
+        # Merge: defaults first, then whatever the server actually returned.
+        merged: dict[str, Any] = {f: getattr(EdgeConfig(), f, None) for _, f, _, _ in _EDGE_CONFIG_ROWS}
+        for key in merged:
+            if cfg.get(key) is not None:
+                merged[key] = cfg[key]
+        with contextlib.suppress(Exception):
+            self._behaviors_table.set_rows(self._edge_config_rows(merged))
         ver = cfg.get("version")
         self._behaviors_version.configure(
-            text=f"Серверээс татсан жин (тохиргоо v{ver}) · superadmin-аас тааруулна."
+            text=f"Серверээс татсан тохиргоо (v{ver}) · superadmin-аас тааруулна."
         )
 
     def _build_settings_page(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
