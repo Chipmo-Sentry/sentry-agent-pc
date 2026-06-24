@@ -40,22 +40,30 @@ class EdgeConfig:
     w_exit_after_conceal: float = 40.0
     w_repeated_shelf: float = 3.0
     repeated_shelf_threshold: int = 3  # distinct shelf entries before it banks
-    # Per-behaviour TIMING gates (founder request). Each behaviour banks its score
-    # only when it has been continuously active for >= its `mindur_*` seconds, and
-    # at most once per `interval_*` seconds thereafter. Default 0 = the old
-    # per-frame banking (no gate), so a fresh install is unchanged until tuned.
-    interval_holding: float = 0.0
-    mindur_holding: float = 0.0
-    interval_wrist_torso: float = 0.0
-    mindur_wrist_torso: float = 0.0
-    interval_conceal: float = 0.0
-    mindur_conceal: float = 0.0
-    interval_repeated_shelf: float = 0.0
-    mindur_repeated_shelf: float = 0.0
-    interval_exit_after_conceal: float = 0.0
-    mindur_exit_after_conceal: float = 0.0
-    # Risk → episode FSM
-    decay: float = 0.90
+    # Per-behaviour TIMING gates. Each behaviour banks its score only after it's
+    # been continuously active for >= its `mindur_*` seconds, then at most once per
+    # `interval_*` seconds. This makes scoring FRAME-RATE INDEPENDENT (a bank is an
+    # event-per-second, not per-frame) — without it, a continuously-detected benign
+    # pose (e.g. a standing shopper whose wrist sits near a hip → wrist_to_torso
+    # every frame) accumulates `weight × fps / decay-loss` and saturates the score
+    # in ~1-2s even though nothing suspicious happened. The defaults below are tuned
+    # so: a brief/incidental pose (< mindur) never banks; a benign sustained pose
+    # plateaus well under the bands; only a SUSTAINED concealment climbs to
+    # open_risk. All globally tunable from superadmin. (0 = ungated per-frame.)
+    interval_holding: float = 2.0
+    mindur_holding: float = 0.5
+    interval_wrist_torso: float = 3.0
+    mindur_wrist_torso: float = 1.5
+    interval_conceal: float = 0.5
+    mindur_conceal: float = 0.6
+    interval_repeated_shelf: float = 0.0  # one-shot per track; mindur filters noise
+    mindur_repeated_shelf: float = 0.5
+    interval_exit_after_conceal: float = 0.0  # one-shot per track
+    mindur_exit_after_conceal: float = 0.3
+    # Risk → episode FSM. `decay` is the retained fraction per 1/5 s (wall-clock);
+    # 0.92 ≈ a ~2.3 s half-life, slightly slower than before so a genuine sustained
+    # signal still accumulates to open_risk under the throttled (gated) banking.
+    decay: float = 0.92
     open_risk: float = 60.0
     close_risk: float = 30.0
     post_quiet_sec: float = 2.0
