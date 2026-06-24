@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from sentry_agent_pc import updater
 
@@ -101,6 +102,64 @@ def test_verify_checksum_accepts_match(tmp_path) -> None:
     good = hashlib.sha256(b"data").hexdigest()
     updater._verify_checksum(_info(expected_sha256=good.upper()), good, f)  # no raise
     assert f.exists()  # left in place on success
+
+
+# --- release signing (M1, Ed25519) ------------------------------------------
+
+
+def test_find_asset_named() -> None:
+    assets = [{"name": "a"}, {"name": updater.SIG_ASSET_NAME, "browser_download_url": "u"}]
+    found = updater._find_asset_named(assets, updater.SIG_ASSET_NAME)
+    assert found is not None and found["browser_download_url"] == "u"
+    assert updater._find_asset_named(assets, "missing") is None
+
+
+def test_verify_signature_skips_when_no_pinned_key(tmp_path, monkeypatch) -> None:
+    # Default (empty pin): signing not activated → no-op even with no .sig, and
+    # the download is kept (behavior is unchanged from the SHA-256-only era).
+    monkeypatch.setattr(updater, "_release_public_key", lambda: None)
+    f = tmp_path / "a.zip"
+    f.write_bytes(b"data")
+    updater._verify_signature(_info(), "deadbeef", f)  # no raise
+    assert f.exists()
+
+
+def test_verify_signature_accepts_valid(tmp_path, monkeypatch) -> None:
+    priv = Ed25519PrivateKey.generate()
+    sha = hashlib.sha256(b"data").hexdigest()
+    sig = priv.sign(sha.encode("ascii"))
+    monkeypatch.setattr(updater, "_release_public_key", lambda: priv.public_key())
+    monkeypatch.setattr(updater, "_fetch_signature", lambda info: sig)
+    f = tmp_path / "a.zip"
+    f.write_bytes(b"data")
+    updater._verify_signature(_info(sig_url="s"), sha, f)  # no raise
+    assert f.exists()
+
+
+def test_verify_signature_rejects_tampered(tmp_path, monkeypatch) -> None:
+    priv = Ed25519PrivateKey.generate()
+    other = Ed25519PrivateKey.generate()
+    sha = hashlib.sha256(b"data").hexdigest()
+    bad_sig = other.sign(sha.encode("ascii"))  # signed by the WRONG key
+    monkeypatch.setattr(updater, "_release_public_key", lambda: priv.public_key())
+    monkeypatch.setattr(updater, "_fetch_signature", lambda info: bad_sig)
+    f = tmp_path / "a.zip"
+    f.write_bytes(b"data")
+    with pytest.raises(RuntimeError):
+        updater._verify_signature(_info(sig_url="s"), sha, f)
+    assert not f.exists()  # refused + deleted
+
+
+def test_verify_signature_refuses_when_sig_missing(tmp_path, monkeypatch) -> None:
+    # Signing is on (key pinned) but the release carries no signature → refuse.
+    priv = Ed25519PrivateKey.generate()
+    monkeypatch.setattr(updater, "_release_public_key", lambda: priv.public_key())
+    monkeypatch.setattr(updater, "_fetch_signature", lambda info: None)
+    f = tmp_path / "a.zip"
+    f.write_bytes(b"data")
+    with pytest.raises(RuntimeError):
+        updater._verify_signature(_info(), "deadbeef", f)
+    assert not f.exists()
 
 
 # --- robocopy /MIR mirror + safety guard (#14) ------------------------------
