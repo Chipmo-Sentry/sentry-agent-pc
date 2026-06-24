@@ -127,6 +127,24 @@ def test_compute_calibration_needs_four_points() -> None:
         fpw._compute_calibration([{"plan": [0, 0], "image": [0, 0]}], [])
 
 
+def test_rtsp_host_port_parsing() -> None:
+    assert fpw._rtsp_host_port("rtsp://admin:pw@192.168.1.64:554/Streaming") == (
+        "192.168.1.64",
+        554,
+    )
+    assert fpw._rtsp_host_port("rtsp://admin:pw@10.0.0.9/stream") == ("10.0.0.9", 554)
+    assert fpw._rtsp_host_port("rtsp://cam.local:8554/s") == ("cam.local", 8554)
+    assert fpw._rtsp_host_port("192.168.1.50") == ("192.168.1.50", 554)
+
+
+def test_camera_status_unknown_camera(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from sentry_agent_pc.state import AgentState
+
+    monkeypatch.setattr("sentry_agent_pc.state.load_state", lambda: AgentState(cameras=[]))
+    r = fpw.FloorPlanApi().camera_status("nope")
+    assert r["ok"] is False
+
+
 def test_save_plan_rejects_non_dict(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     # The bridge is the only Python gate before a JWT-authed PATCH — a non-object
     # payload must be refused before it can reach the backend.

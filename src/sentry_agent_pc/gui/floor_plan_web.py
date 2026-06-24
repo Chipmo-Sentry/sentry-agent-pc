@@ -88,6 +88,38 @@ def _compute_calibration(
     return homography.tolist(), round(reproj_err, 5), zones
 
 
+def _rtsp_host_port(url_or_ip: str) -> tuple[str, int]:
+    """Parse the host + port to probe for reachability from an rtsp:// URL (creds
+    stripped) or a bare IP. Defaults to the standard RTSP port 554."""
+    import re
+
+    m = re.match(r"rtsp://(?:[^@/]+@)?([^:/]+)(?::(\d+))?", url_or_ip, re.IGNORECASE)
+    if m:
+        return m.group(1), int(m.group(2)) if m.group(2) else 554
+    return url_or_ip.split("/")[0], 554
+
+
+def _tcp_reachable(url_or_ip: str, *, timeout: float = 1.5) -> bool:
+    """True if a TCP connect to the camera's RTSP host:port answers in time — a
+    fast (no ffmpeg) online/offline signal for the editor's status badge."""
+    import socket
+
+    if not url_or_ip:
+        return False
+    host, port = _rtsp_host_port(url_or_ip)
+    if not host:
+        return False
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
 # The currently-running editor child, if any. Clicking «Plan зураг» again while a
 # window is already open must NOT spawn a second WebView2 process (each holds a
 # JWT-bearing backend session) — we reuse the live one instead.
@@ -265,3 +297,13 @@ class FloorPlanApi:
             "floor_plan.calibrated", camera_id=camera_id, reproj_err=reproj_err, zones=len(zones)
         )
         return {"ok": True, "reproj_err": reproj_err, "zone_count": len(zones)}
+
+    def camera_status(self, camera_id: str) -> dict[str, Any]:
+        """A fast online/offline check (TCP connect to the camera's RTSP port) for
+        the editor's status badge — {ok, online} or {ok: False, error}."""
+        from sentry_agent_pc.state import load_state
+
+        cam = next((c for c in load_state().cameras if c.mediamtx_path == camera_id), None)
+        if cam is None:
+            return {"ok": False, "error": "Камер олдсонгүй"}
+        return {"ok": True, "online": _tcp_reachable(cam.rtsp_url or cam.ip)}
