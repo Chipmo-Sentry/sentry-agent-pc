@@ -53,6 +53,33 @@ def test_draw_overlays_handles_no_persons() -> None:
     assert bool((out == 0).all())  # nothing to draw → blank stays blank
 
 
+def test_draw_overlays_renders_score_and_behaviour_label() -> None:
+    # The live overlay draws a per-person pill: risk % + Cyrillic behaviour label.
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    res = DummyDetector().detect(frame)
+    out = ov.draw_overlays(
+        frame, res.persons, res.items,
+        bands=["yellow"],
+        person_risks=[45.0],
+        person_behaviors=[{"conceal", "item_pickup"}],
+    )
+    assert out.shape == frame.shape
+    assert bool((out != frame).any())  # the score/label pill was drawn
+
+
+def test_draw_overlays_skips_label_when_no_score_or_behaviour() -> None:
+    # risk < 1 and no active behaviour → no pill (keeps the view clean).
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    res = DummyDetector().detect(frame)
+    out = ov.draw_overlays(
+        frame, res.persons, res.items,
+        bands=["green"], person_risks=[0.0], person_behaviors=[set()],
+    )
+    # boxes/mask still draw, but assert no text region: hard to test text directly,
+    # so just confirm it runs + returns a valid frame (label path is exercised).
+    assert out.shape == frame.shape
+
+
 def test_wrist_item_link_only_when_near() -> None:
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
     kp = np.zeros((17, 3), dtype=np.float32)

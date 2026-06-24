@@ -104,6 +104,11 @@ class BehaviorFrame:
     bands: list[str]
     trails: list[NDArray[np.int32]]
     episodes: list[SuspiciousEpisode]
+    # Per-person live suspicion + active behaviours (parallel to `persons`/`bands`),
+    # so the «Шууд харах» overlay can show the accumulating score + behaviour names
+    # on the real video. Defaulted so older callers/tests stay valid.
+    person_risks: list[float] = field(default_factory=list)
+    person_behaviors: list[set[str]] = field(default_factory=list)
 
 
 def _iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
@@ -257,6 +262,8 @@ class EdgeBehavior:
         bands: list[str] = []
         trails: list[NDArray[np.int32]] = []
         episodes: list[SuspiciousEpisode] = []
+        person_risks: list[float] = []
+        person_behaviors: list[set[str]] = []
 
         for person, tid in zip(persons, matched, strict=True):
             tr = self._tracks[tid]
@@ -306,9 +313,19 @@ class EdgeBehavior:
 
             bands.append(_band(risk_pct, yellow=self.cfg.band_yellow, red=self.cfg.band_red))
             trails.append(np.array(tr.trail, dtype=np.int32))
+            person_risks.append(risk_pct)
+            # the FULL active behaviour set this frame (not just gated banks) so the
+            # live overlay shows what's happening even between banks.
+            person_behaviors.append(set(behaviors))
 
         episodes.extend(self._drop_stale(now))
-        return BehaviorFrame(bands=bands, trails=trails, episodes=episodes)
+        return BehaviorFrame(
+            bands=bands,
+            trails=trails,
+            episodes=episodes,
+            person_risks=person_risks,
+            person_behaviors=person_behaviors,
+        )
 
     def _apply_timing_gate(
         self, tr: _Track, frame_scores: dict[str, float], now: float

@@ -1,6 +1,8 @@
 """Edge live-view overlay — pose-polygon mask, trajectory trail, wrist→item link,
 risk box. Ported from sentry-ai's snapshot overlay (PR #6) to draw on the agent's
-'Шууд харах' frames. Pure cv2/numpy — no model, no torch.
+'Шууд харах' frames. cv2/numpy for the geometry; a small PIL pass renders the
+per-person Cyrillic score + behaviour labels (cv2's Hershey fonts are ASCII-only).
+No model, no torch.
 
 The caller supplies a risk band per person ("green"/"yellow"/"red"); this module
 is risk-agnostic (the behaviour engine decides the band). Trails are passed in as
@@ -9,10 +11,15 @@ ready polylines so this stays a pure drawing function.
 
 from __future__ import annotations
 
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, cast
+
 import cv2
 import numpy as np
 from numpy.typing import NDArray
 
+from sentry_agent_pc.edge.behaviors_common import BEHAVIOR_LABELS
 from sentry_agent_pc.edge.detector import ItemDet, PersonDet
 
 # COCO-17 indices + draw constants (mirror sentry-ai camera_worker overlay).
@@ -34,6 +41,80 @@ def risk_bgr(band: str) -> tuple[int, int, int]:
     if band == "yellow":
         return (0, 230, 230)
     return (0, 255, 0)
+
+
+def _band_rgb(band: str) -> tuple[int, int, int]:
+    """Risk band → RGB (for PIL text)."""
+    if band == "red":
+        return (255, 90, 90)
+    if band == "yellow":
+        return (255, 210, 60)
+    return (120, 230, 130)
+
+
+@lru_cache(maxsize=4)
+def _label_font(size: int) -> Any:
+    """A TrueType font with Cyrillic glyphs (cv2's Hershey fonts are ASCII-only,
+    so Mongolian behaviour labels need PIL + a real font). Prefer the Windows UI
+    font on the store PC, then Pillow's bundled DejaVuSans (also has Cyrillic),
+    then the tiny bitmap default (ASCII — acceptable last resort)."""
+    from PIL import ImageFont
+
+    for path in (
+        r"C:\Windows\Fonts\segoeui.ttf",
+        r"C:\Windows\Fonts\arial.ttf",
+        "DejaVuSans.ttf",
+    ):
+        try:
+            if path.startswith("C:") and not Path(path).exists():
+                continue
+            return ImageFont.truetype(path, size)
+        except Exception:  # noqa: BLE001 — any load failure → try the next candidate
+            continue
+    return ImageFont.load_default()
+
+
+def _draw_person_labels(
+    frame_bgr: NDArray[np.uint8],
+    persons: list[PersonDet],
+    risks: list[float],
+    behaviors: list[set[str]],
+    bands: list[str],
+) -> NDArray[np.uint8]:
+    """Draw a per-person pill at the top of each box: the live risk % (in the band
+    colour) + the active behaviour names (white). PIL so Cyrillic renders. Returns
+    the frame; only persons with risk >= 1 or an active behaviour get a label."""
+    from PIL import Image, ImageDraw
+
+    img = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(img)
+    font = _label_font(14)
+    pad = 3
+    for idx, p in enumerate(persons):
+        if idx >= len(risks):
+            break
+        risk = risks[idx]
+        beh = behaviors[idx] if idx < len(behaviors) else set()
+        labels = [BEHAVIOR_LABELS.get(b, b) for b in sorted(beh)]
+        if risk < 1 and not labels:
+            continue
+        risk_txt = f"{risk:.0f}%"
+        beh_txt = ("  " + ", ".join(labels)) if labels else ""
+        rgb = _band_rgb(bands[idx] if idx < len(bands) else "green")
+        x1, y1, x2, y2 = (int(v) for v in p.box)
+        rw = int(draw.textlength(risk_txt, font=font))
+        full = risk_txt + beh_txt
+        fbox = draw.textbbox((0, 0), full, font=font)
+        fw, fh = fbox[2] - fbox[0], fbox[3] - fbox[1]
+        px = x1
+        py = y1 - fh - 2 * pad - 1
+        if py < 0:  # box hugs the top → drop the pill just inside the box
+            py = y1 + 1
+        draw.rectangle([px, py, px + fw + 2 * pad, py + fh + 2 * pad], fill=(0, 0, 0))
+        draw.text((px + pad, py + pad), risk_txt, font=font, fill=rgb)
+        if beh_txt:
+            draw.text((px + pad + rw, py + pad), beh_txt, font=font, fill=(235, 235, 235))
+    return cast("NDArray[np.uint8]", cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR))
 
 
 def kp_point(kp: NDArray[np.float32] | None, idx: int) -> tuple[int, int] | None:
@@ -116,11 +197,14 @@ def draw_overlays(
     *,
     bands: list[str] | None = None,
     trails: list[NDArray[np.int32]] | None = None,
+    person_risks: list[float] | None = None,
+    person_behaviors: list[set[str]] | None = None,
     fps: float | None = None,
 ) -> NDArray[np.uint8]:
-    """Return a copy of `frame_bgr` with the 4 overlays drawn. `bands` is the
+    """Return a copy of `frame_bgr` with the overlays drawn. `bands` is the
     per-person risk band (parallel to `persons`; default all green). `trails` are
-    per-person foot-path polylines (parallel; optional)."""
+    per-person foot-path polylines (parallel; optional). `person_risks` +
+    `person_behaviors` (parallel) drive the live score + behaviour label per box."""
     annotated = frame_bgr.copy()
     use_bands = bands if bands is not None else ["green"] * len(persons)
 
@@ -145,6 +229,15 @@ def draw_overlays(
             cv2.circle(annotated, (int(tail[0]), int(tail[1])), 4, bgr, -1, cv2.LINE_AA)
         draw_wrist_item_links(annotated, p.keypoints, items, ph)
         cv2.rectangle(annotated, (x1, y1), (x2, y2), bgr, 2)
+
+    # Per-person live score + behaviour labels (PIL pass, Cyrillic). Only when
+    # there's something to show, to skip the BGR↔PIL round-trip on empty frames.
+    if person_risks is not None and persons:
+        annotated = _draw_person_labels(
+            annotated, persons, person_risks,
+            person_behaviors if person_behaviors is not None else [],
+            use_bands,
+        )
 
     if fps is not None:
         cv2.rectangle(annotated, (0, 0), (annotated.shape[1], 26), (0, 0, 0), -1)
