@@ -26,9 +26,21 @@ def _bare_track(tid: int = 1) -> _Track:
     )
 
 
+# Mechanics tests below want the OLD ungated per-frame banking so they can open an
+# episode in a few frames; the product defaults now gate banking (frame-rate
+# independence) which is covered by its own tests further down.
+_GATEFREE = EdgeConfig(
+    interval_holding=0.0, mindur_holding=0.0,
+    interval_wrist_torso=0.0, mindur_wrist_torso=0.0,
+    interval_conceal=0.0, mindur_conceal=0.0,
+    interval_repeated_shelf=0.0, mindur_repeated_shelf=0.0,
+    interval_exit_after_conceal=0.0, mindur_exit_after_conceal=0.0,
+)
+
+
 def test_timing_gate_interval_debounces_banking() -> None:
     # interval_conceal=1.0 → conceal banks at 0.0, skips within 1s, banks again at 1.0.
-    eng = EdgeBehavior("cam", EdgeConfig(interval_conceal=1.0))
+    eng = EdgeBehavior("cam", EdgeConfig(interval_conceal=1.0, mindur_conceal=0.0))
     tr = _bare_track()
     fired = [
         t
@@ -40,7 +52,7 @@ def test_timing_gate_interval_debounces_banking() -> None:
 
 def test_timing_gate_min_duration_delays_first_bank() -> None:
     # mindur_holding=0.5 → item_pickup banks only after 0.5s continuous activity.
-    eng = EdgeBehavior("cam", EdgeConfig(mindur_holding=0.5))
+    eng = EdgeBehavior("cam", EdgeConfig(mindur_holding=0.5, interval_holding=0.0))
     tr = _bare_track()
     fired = [
         t
@@ -50,9 +62,9 @@ def test_timing_gate_min_duration_delays_first_bank() -> None:
     assert fired == [0.6, 0.8]  # 0.0-0.4 still under the 0.5s min-duration
 
 
-def test_timing_gate_default_zero_banks_every_frame() -> None:
-    # Default 0/0 preserves the old per-frame banking (backward compatible).
-    eng = EdgeBehavior("cam")
+def test_timing_gate_disabled_banks_every_frame() -> None:
+    # interval=0/mindur=0 preserves the old per-frame banking (no gate).
+    eng = EdgeBehavior("cam", EdgeConfig(interval_conceal=0.0, mindur_conceal=0.0))
     tr = _bare_track()
     fired = [
         t
@@ -64,7 +76,7 @@ def test_timing_gate_default_zero_banks_every_frame() -> None:
 
 def test_timing_gate_resets_on_inactivity() -> None:
     # A behaviour that goes inactive then returns re-banks promptly (continuity reset).
-    eng = EdgeBehavior("cam", EdgeConfig(interval_conceal=1.0))
+    eng = EdgeBehavior("cam", EdgeConfig(interval_conceal=1.0, mindur_conceal=0.0))
     tr = _bare_track()
     assert "conceal" in eng._apply_timing_gate(tr, {"conceal": 14.0}, 0.0)  # bank
     eng._apply_timing_gate(tr, {}, 0.3)  # inactive → resets
@@ -138,7 +150,7 @@ def test_tracker_stable_and_new_ids() -> None:
 
 
 def test_episode_opens_then_closes_with_metadata() -> None:
-    eng = EdgeBehavior("cam03")
+    eng = EdgeBehavior("cam03", _GATEFREE)
     persons, items = _conceal_frame()
 
     # sustained concealment → risk climbs to the red band, but no episode emits yet
@@ -176,8 +188,45 @@ def test_episode_opens_then_closes_with_metadata() -> None:
     assert any(e["key"] == "conceal" and e["amount"] > 0 for e in ep.events)
 
 
+def test_standing_person_stays_green_under_default_gates() -> None:
+    # The reported bug: a shopper just STANDING (wrist near hip → wrist_to_torso
+    # fires every frame) must NOT accumulate suspicion. With the default timing
+    # gates, the score plateaus low — no episode, band stays out of red — across a
+    # long, realistic 6 fps stand.
+    eng = EdgeBehavior("cam-stand")  # PRODUCT DEFAULTS (gates on)
+    # wrist on the hip but NO merchandise item → only wrist_to_torso (weak signal).
+    person = _person(rwrist=(400.0, 300.0), rhip=(400.0, 300.0))
+    last_band = "green"
+    t = 0.0
+    for _ in range(180):  # ~30 s at 6 fps
+        frame = eng.update([person], [], now=t)
+        assert frame.episodes == []  # never opens an episode just standing
+        last_band = frame.bands[0]
+        t += 1 / 6
+    assert eng._tracks[1].raw < eng.cfg.open_risk  # stayed well under the open gate
+    assert last_band != "red"
+
+
+def test_sustained_conceal_still_opens_under_default_gates() -> None:
+    # The gates must throttle benign poses WITHOUT killing real detection: a
+    # sustained concealment (item held + wrist at hip) still climbs to open_risk
+    # within a few seconds and emits an episode once it settles.
+    eng = EdgeBehavior("cam-conceal")  # PRODUCT DEFAULTS (gates on)
+    persons, items = _conceal_frame()
+    opened = False
+    t = 0.0
+    for _ in range(60):  # up to 10 s of sustained concealment at 6 fps
+        eng.update(persons, items, now=t)
+        if eng._tracks[1].raw >= eng.cfg.open_risk:
+            opened = True
+            break
+        t += 1 / 6
+    assert opened, "sustained concealment should reach open_risk under the gates"
+    assert t <= 6.0  # and do so within a realistic few seconds
+
+
 def test_drop_stale_closes_open_episode() -> None:
-    eng = EdgeBehavior("cam02")
+    eng = EdgeBehavior("cam02", _GATEFREE)
     persons, items = _conceal_frame()
     for i in range(8):
         eng.update(persons, items, now=i * 0.1)  # open a suspicious episode
@@ -236,7 +285,7 @@ def test_decay_is_wall_clock_not_per_frame() -> None:
     # frame_skip can't silently change sensitivity. Same conceal signal + one idle
     # frame: the longer gap leaves the lower retained score.
     persons, items = _conceal_frame()
-    fast, slow = EdgeBehavior("c"), EdgeBehavior("c")
+    fast, slow = EdgeBehavior("c", _GATEFREE), EdgeBehavior("c", _GATEFREE)
     fast.update(persons, items, now=0.0)
     slow.update(persons, items, now=0.0)
     seeded = fast._tracks[1].raw

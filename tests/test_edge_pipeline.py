@@ -89,7 +89,12 @@ def test_pipeline_frame_skip_and_overlay_shape() -> None:
 
 def test_pipeline_hands_closed_episode_to_recorder() -> None:
     spy = _SpyRecorder()
-    pipe = EdgePipeline("cam03", _SeqDetector(conceal_for=8), spy, frame_skip=1)
+    # Gate-free conceal so the short 8-frame burst opens an episode (this checks the
+    # pipeline→recorder handoff, not the score tuning).
+    pipe = EdgePipeline(
+        "cam03", _SeqDetector(conceal_for=8), spy, frame_skip=1,
+        config=EdgeConfig(interval_conceal=0.0, mindur_conceal=0.0),
+    )
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
     t = 0.0
     for _ in range(120):

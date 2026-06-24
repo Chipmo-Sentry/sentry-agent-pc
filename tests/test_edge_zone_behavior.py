@@ -46,7 +46,10 @@ def _track(b: EdgeBehavior):  # type: ignore[no-untyped-def]
 
 
 def test_exit_after_concealment_fires_when_concealed_in_exit_zone() -> None:
-    b = EdgeBehavior("cam", zones=[_zone("exit")])
+    # Pin the timing gates off — this checks the zone-DETECTION mechanic fires on a
+    # qualifying frame; the mindur delay is covered by its own test below.
+    cfg = EdgeConfig(mindur_conceal=0.0, mindur_exit_after_conceal=0.0)
+    b = EdgeBehavior("cam", config=cfg, zones=[_zone("exit")])
     persons, items = _conceal(_IN_BOX)  # concealing, foot in the exit zone
     b.update(persons, items, 1.0, frame_wh=_FRAME_WH)
     tr = _track(b)
@@ -115,7 +118,8 @@ def test_no_frame_size_skips_zone_signal() -> None:
 
 
 def test_repeated_shelf_visit_counts_distinct_entries() -> None:
-    b = EdgeBehavior("cam", zones=[_zone("shelf")])
+    # mindur off → the one-shot banks on the qualifying entry frame (mechanic test).
+    b = EdgeBehavior("cam", config=EdgeConfig(mindur_repeated_shelf=0.0), zones=[_zone("shelf")])
     t = 0.0
     for _ in range(3):  # enter (in) → leave (out), 3 distinct entries
         t += 1
