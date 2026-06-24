@@ -86,6 +86,47 @@ def test_floor_plan_flag_constant() -> None:
     assert sys is not None  # import-smoke
 
 
+def test_compute_calibration_identity_scale() -> None:
+    # Plan corners → image corners is a pure /1000,/800 scale; a fixture must
+    # project to the matching normalized rectangle, reproj error ~0.
+    pairs = [
+        {"plan": [0, 0], "image": [0, 0]},
+        {"plan": [1000, 0], "image": [1, 0]},
+        {"plan": [1000, 800], "image": [1, 1]},
+        {"plan": [0, 800], "image": [0, 1]},
+    ]
+    fixtures = [{"type": "shelf", "points": [[250, 200], [750, 200], [750, 600], [250, 600]]}]
+    homography, err, zones = fpw._compute_calibration(pairs, fixtures)
+    assert len(homography) == 3 and len(homography[0]) == 3
+    assert err < 1e-6
+    assert len(zones) == 1
+    z = zones[0]
+    assert z["type"] == "shelf"
+    assert abs(z["points"][0][0] - 0.25) < 1e-3 and abs(z["points"][0][1] - 0.25) < 1e-3
+    assert abs(z["points"][2][0] - 0.75) < 1e-3 and abs(z["points"][2][1] - 0.75) < 1e-3
+
+
+def test_compute_calibration_skips_out_of_view_fixture() -> None:
+    # A fixture far outside the camera's view (projects well beyond [0,1]) is not
+    # turned into a zone for this camera.
+    pairs = [
+        {"plan": [0, 0], "image": [0, 0]},
+        {"plan": [1000, 0], "image": [1, 0]},
+        {"plan": [1000, 800], "image": [1, 1]},
+        {"plan": [0, 800], "image": [0, 1]},
+    ]
+    fixtures = [{"type": "shelf", "points": [[5000, 5000], [5200, 5000], [5200, 5200]]}]
+    _h, _e, zones = fpw._compute_calibration(pairs, fixtures)
+    assert zones == []
+
+
+def test_compute_calibration_needs_four_points() -> None:
+    import pytest
+
+    with pytest.raises(ValueError):
+        fpw._compute_calibration([{"plan": [0, 0], "image": [0, 0]}], [])
+
+
 def test_save_plan_rejects_non_dict(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     # The bridge is the only Python gate before a JWT-authed PATCH — a non-object
     # payload must be refused before it can reach the backend.
