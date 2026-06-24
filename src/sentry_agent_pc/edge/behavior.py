@@ -292,8 +292,14 @@ class EdgeBehavior:
                 tr.shelf_scored = True
             # Wall-clock decay (#20): retained fraction = decay ** (elapsed * REF_HZ),
             # so sensitivity no longer rides on the camera's frame rate / frame_skip.
-            tr.raw = tr.raw * (self.cfg.decay ** (dt * _DECAY_REF_HZ)) + sum(gated.values())
-            risk_pct = min(100.0, tr.raw)
+            # Clamp `raw` to [0, 100]: risk is a 0-100 quantity, and bounding the
+            # internal accumulator keeps it from drifting far above 100 under
+            # sustained banking (which would lag the cool-off after the action ends).
+            tr.raw = min(
+                100.0,
+                max(0.0, tr.raw * (self.cfg.decay ** (dt * _DECAY_REF_HZ)) + sum(gated.values())),
+            )
+            risk_pct = tr.raw
             ep = self._advance_episode(tr, risk_pct, set(gated), gated, now)
             if ep is not None:
                 episodes.append(ep)

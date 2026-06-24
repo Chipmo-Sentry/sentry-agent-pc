@@ -8,6 +8,7 @@ config atomically to hot-apply.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, fields
 from typing import Any
 
@@ -87,6 +88,11 @@ class EdgeConfig:
             except (TypeError, ValueError):
                 log.warning("edge_config.reject_value", key=key, value=repr(value))
                 continue
+        # `decay` is the per-step retained fraction; it MUST stay in [0, 1). A
+        # misconfigured >= 1 makes `raw` grow without bound so the episode FSM can
+        # never reach close_risk — the suspicion never cools off. Clamp it.
+        if "decay" in kwargs:
+            kwargs["decay"] = min(0.9999, max(0.0, kwargs["decay"]))
         return cls(**kwargs)
 
 
@@ -111,5 +117,12 @@ def _coerce(type_str: Any, value: Any) -> Any:
     if "int" in t:
         return int(float(value))  # tolerate "5", "5.0", 5.0 → 5
     if "float" in t:
-        return float(value)
+        v = float(value)
+        # Reject NaN/inf: a single non-finite weight/threshold poisons `raw`
+        # (NaN compares False against every band/open/close threshold), silently
+        # killing detection for that camera until restart. Better to drop + keep
+        # the default than to coerce a value that breaks the FSM.
+        if not math.isfinite(v):
+            raise ValueError(f"non-finite float: {value!r}")
+        return v
     return value
