@@ -80,6 +80,14 @@ class EdgePipeline:
         self._n += 1
         bands = self._frame.bands if self._frame is not None else None
         trails = self._frame.trails if self._frame is not None else None
+        risks = self._frame.person_risks if self._frame is not None else None
+        behaviors = self._frame.person_behaviors if self._frame is not None else None
         return draw_overlays(
-            frame_bgr, self._last.persons, self._last.items, bands=bands, trails=trails
+            frame_bgr,
+            self._last.persons,
+            self._last.items,
+            bands=bands,
+            trails=trails,
+            person_risks=risks,
+            person_behaviors=behaviors,
         )
