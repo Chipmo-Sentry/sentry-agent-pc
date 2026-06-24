@@ -40,7 +40,10 @@ def test_clear_pairing_nulls_every_pairing_field() -> None:
     assert not s.is_paired
     # default_store_id used to survive unpair → stale cross-tenant id
     assert (s.agent_jwt, s.paired_org_id, s.default_store_id, s.store_name) == (
-        None, None, None, None
+        None,
+        None,
+        None,
+        None,
     )
 
 
@@ -145,6 +148,41 @@ def test_mutate_state_serialises_read_modify_write(tmp_path, monkeypatch) -> Non
     returned = state.mutate_state(add_device)
     assert "2.2.2.2" in returned.ignored_devices
     assert state.load_state().ignored_devices == ["1.1.1.1", "2.2.2.2"]
+
+
+def test_legacy_fernet_file_is_migrated(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # H1: a state file written by the OLD machine-key Fernet scheme (no DPAPI
+    # prefix) must still load — an upgrade can't drop the existing pairing — and
+    # the next save re-seals it (DPAPI on Windows).
+    from cryptography.fernet import Fernet
+
+    settings = _point_state_at(tmp_path, monkeypatch)
+    plain = state.AgentState(agent_jwt="legacy-jwt").model_dump_json().encode("utf-8")
+    settings.state_path.write_bytes(Fernet(state._machine_key()).encrypt(plain))
+    assert not settings.state_path.read_bytes().startswith(state._DPAPI_MAGIC)
+
+    loaded = state.load_state()  # migration read
+    assert loaded.agent_jwt == "legacy-jwt"
+
+    state.save_state(loaded)  # re-seal
+    raw = settings.state_path.read_bytes()
+    if state.dpapi.is_available():
+        assert raw.startswith(state._DPAPI_MAGIC)  # now DPAPI-sealed
+    assert state.load_state().agent_jwt == "legacy-jwt"  # still round-trips
+
+
+def test_state_file_is_not_plaintext(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # The JWT + camera password must never sit in cleartext on disk.
+    settings = _point_state_at(tmp_path, monkeypatch)
+    state.save_state(
+        state.AgentState(
+            agent_jwt="super-secret-jwt",
+            cameras=[state.CameraRecord(name="C", ip="1.1.1.1", rtsp_url="rtsp://admin:pw@x")],
+        )
+    )
+    raw = settings.state_path.read_bytes()
+    assert b"super-secret-jwt" not in raw
+    assert b"admin:pw" not in raw
 
 
 def test_persisted_random_secret_handles_concurrent_create(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

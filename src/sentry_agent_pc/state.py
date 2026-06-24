@@ -1,13 +1,12 @@
 """Encrypted state file — camera list, JWT, pairing data.
 
-M1.5: uses Fernet with a key derived from a stable per-machine secret
-(Windows ``MachineGuid``, else a persisted random key). This MACHINE-BINDS /
-OBFUSCATES the state file so it isn't trivially readable and doesn't decrypt on
-a different install. It is NOT protection against a local attacker: anyone who
-can read this user's registry + config dir (i.e. already runs code as this user)
-can re-derive the key. Real OS-backed protection (Windows DPAPI, which seals to
-the user/machine credential) is deferred to M2.
-# DPAPI deferred to M2 (see audit)
+At rest the file is sealed with Windows **DPAPI** (``CryptProtectData``, bound to
+the current user; the key is held by the OS and isn't derivable from anything on
+disk) — see ``dpapi.py``. This is real protection of the agent JWT + camera
+passwords against another local user. On non-Windows (dev/test), or for a legacy
+file written before DPAPI, it falls back to a Fernet key derived from a stable
+per-machine secret (Windows ``MachineGuid``, else a persisted random key); such a
+legacy file is read for migration and re-sealed as DPAPI on the next save.
 
 Schema:
     {
@@ -49,12 +48,20 @@ from typing import Any
 from cryptography.fernet import Fernet, InvalidToken
 from pydantic import BaseModel, Field
 
+from sentry_agent_pc import dpapi
 from sentry_agent_pc.logging_setup import get_logger
 from sentry_agent_pc.settings import get_settings
 
 log = get_logger("sentry_agent_pc.state")
 
 SCHEMA_VERSION = 2
+
+# Marks a state file sealed with Windows DPAPI (CryptProtectData, user-bound) —
+# the real at-rest protection. A file WITHOUT this prefix is the legacy
+# machine-key Fernet format; it's read for migration, then rewritten as DPAPI on
+# the next save. The marker is binary so it can't collide with a Fernet token
+# (which is urlsafe-base64).
+_DPAPI_MAGIC = b"DPAPIv1\n"
 
 # Serialises the encrypt+write+replace in save_state so the GUI heartbeat thread
 # and a CLI/camera-add can't race on the state file (corruption / lost updates).
@@ -141,9 +148,7 @@ def _stable_machine_secret() -> str:
         try:
             import winreg
 
-            with winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography"
-            ) as k:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as k:
                 guid, _ = winreg.QueryValueEx(k, "MachineGuid")
             if guid:
                 return f"{platform.node()}|{guid}"
@@ -156,8 +161,8 @@ def _restrict_permissions(path: Path) -> None:
     """Best-effort: lock a file down to the current user only.
 
     On Windows this runs ``icacls`` to drop inheritance and grant only the
-    current user. Failure is non-fatal — it's a hardening nicety, not a gate
-    (and it never replaces real OS-backed protection; # DPAPI deferred to M2).
+    current user. Failure is non-fatal — it's defense-in-depth on top of the
+    DPAPI sealing, not the primary protection.
     """
     if os.name != "nt":
         return
@@ -214,28 +219,52 @@ def _persisted_random_secret() -> str:
         return platform.node() or "chipmo-sentry-agent"
 
 
+def _decrypt_state_bytes(raw: bytes) -> bytes:
+    """Decrypt on-disk state bytes → plaintext JSON.
+
+    DPAPI-sealed files (the ``_DPAPI_MAGIC`` prefix) unseal via the OS; a file
+    without the prefix is the legacy machine-key Fernet format (still read so an
+    upgrade doesn't lose the existing pairing — it's re-sealed on the next save).
+    """
+    if raw.startswith(_DPAPI_MAGIC):
+        return dpapi.unprotect(raw[len(_DPAPI_MAGIC) :])
+    return Fernet(_machine_key()).decrypt(raw)
+
+
 def load_state() -> AgentState:
     settings = get_settings()
     path = settings.state_path
     if not path.exists():
         return AgentState()
     try:
-        encrypted = path.read_bytes()
-        f = Fernet(_machine_key())
-        decoded = f.decrypt(encrypted)
+        decoded = _decrypt_state_bytes(path.read_bytes())
         data = json.loads(decoded.decode("utf-8"))
         if data.get("schema_version", 1) > SCHEMA_VERSION:
             log.warning("state.schema_too_new", got=data.get("schema_version"))
         return AgentState.model_validate(data)
-    except (InvalidToken, json.JSONDecodeError, ValueError) as e:
+    except (InvalidToken, json.JSONDecodeError, ValueError, OSError) as e:
+        # OSError = DPAPI unseal refused (e.g. state copied from another user —
+        # exactly what user-bound sealing prevents). Start fresh → re-pair.
         log.warning("state.load_failed", error=str(e), path=str(path))
         return AgentState()
+
+
+def _encrypt_state_bytes(plaintext: bytes) -> bytes:
+    """Seal plaintext JSON for disk. Prefer Windows DPAPI (user-bound, OS-held
+    key); fall back to the legacy machine-key Fernet on non-Windows / dev, or if
+    DPAPI itself fails — so a save never loses state."""
+    if dpapi.is_available():
+        try:
+            return _DPAPI_MAGIC + dpapi.protect(plaintext)
+        except OSError as e:
+            log.warning("state.dpapi_protect_failed", error=str(e))
+    return Fernet(_machine_key()).encrypt(plaintext)
 
 
 def _write_state_locked(state: AgentState, path: Path) -> None:
     """Encrypt + atomically write `state` to `path`. Caller MUST hold _save_lock."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    encrypted = Fernet(_machine_key()).encrypt(state.model_dump_json().encode("utf-8"))
+    encrypted = _encrypt_state_bytes(state.model_dump_json().encode("utf-8"))
     # Write into a UNIQUE temp file in the SAME directory, then os.replace
     # (atomic on the same volume). A unique name — not a shared ".tmp" — means
     # two concurrent writers never share a scratch file.
