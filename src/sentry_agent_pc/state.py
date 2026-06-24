@@ -67,6 +67,15 @@ _DPAPI_MAGIC = b"DPAPIv1\n"
 # and a CLI/camera-add can't race on the state file (corruption / lost updates).
 _save_lock = threading.Lock()
 
+# Set when an EXISTING state file failed to decrypt on the last load. DPAPI can
+# fail TRANSIENTLY (a locked/roaming/not-yet-loaded profile), not only because the
+# file belongs to another user — so a failed load must NOT let an empty state be
+# persisted OVER the still-present file, or a transient failure would permanently
+# wipe a valid pairing + camera passwords. _write_state_locked refuses to clobber
+# the file with an UNPAIRED state while this is set; a genuine (re)pair (paired
+# state) is allowed through and clears it.
+_existing_file_unreadable = False
+
 
 class CameraRecord(BaseModel):
     uuid: str | None = None  # set after backend register
@@ -232,19 +241,27 @@ def _decrypt_state_bytes(raw: bytes) -> bytes:
 
 
 def load_state() -> AgentState:
+    global _existing_file_unreadable
     settings = get_settings()
     path = settings.state_path
     if not path.exists():
+        _existing_file_unreadable = False
         return AgentState()
     try:
         decoded = _decrypt_state_bytes(path.read_bytes())
         data = json.loads(decoded.decode("utf-8"))
         if data.get("schema_version", 1) > SCHEMA_VERSION:
             log.warning("state.schema_too_new", got=data.get("schema_version"))
-        return AgentState.model_validate(data)
-    except (InvalidToken, json.JSONDecodeError, ValueError, OSError) as e:
-        # OSError = DPAPI unseal refused (e.g. state copied from another user —
-        # exactly what user-bound sealing prevents). Start fresh → re-pair.
+        result = AgentState.model_validate(data)
+        _existing_file_unreadable = False  # decrypted cleanly
+        return result
+    except (InvalidToken, json.JSONDecodeError, ValueError, OSError, RuntimeError) as e:
+        # An existing file we couldn't decrypt. This is NOT necessarily another
+        # user's data — DPAPI also fails transiently (locked/roaming/not-yet-loaded
+        # profile), and a DPAPI file on a non-Windows host raises RuntimeError. A
+        # blank state is fine for THIS read, but flag it so the next save won't
+        # clobber the still-present file with an empty/unpaired state.
+        _existing_file_unreadable = True
         log.warning("state.load_failed", error=str(e), path=str(path))
         return AgentState()
 
@@ -263,6 +280,14 @@ def _encrypt_state_bytes(plaintext: bytes) -> bytes:
 
 def _write_state_locked(state: AgentState, path: Path) -> None:
     """Encrypt + atomically write `state` to `path`. Caller MUST hold _save_lock."""
+    global _existing_file_unreadable
+    if _existing_file_unreadable and not state.is_paired and path.exists():
+        # Last load couldn't decrypt the on-disk file (possibly a TRANSIENT DPAPI
+        # failure). Refuse to overwrite it with an unpaired/empty state — that
+        # would make a recoverable transient permanent. A genuine (re)pair carries
+        # a JWT (is_paired) and is allowed through below.
+        log.warning("state.skip_overwrite_unreadable", path=str(path))
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     encrypted = _encrypt_state_bytes(state.model_dump_json().encode("utf-8"))
     # Write into a UNIQUE temp file in the SAME directory, then os.replace
@@ -273,6 +298,7 @@ def _write_state_locked(state: AgentState, path: Path) -> None:
         with os.fdopen(fd, "wb") as fh:
             fh.write(encrypted)
         Path(tmp_name).replace(path)
+        _existing_file_unreadable = False  # file is now freshly written + readable
     except BaseException:
         # Don't leak the scratch file if write/replace failed.
         Path(tmp_name).unlink(missing_ok=True)

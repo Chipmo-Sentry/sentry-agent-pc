@@ -38,6 +38,32 @@ def main() -> int:
     sha256_hex = hashlib.sha256(zip_path.read_bytes()).hexdigest().lower()
     signature = priv.sign(sha256_hex.encode("ascii"))
 
+    # Self-check: once a public key is PINNED in the updater, verify the signature
+    # we just produced actually validates against it. This turns "wrong/rotated
+    # private key in the secret" into a RED CI build instead of a fleet-wide
+    # update outage discovered only in the field. Skipped before activation
+    # (empty pin), since there's nothing to check against yet.
+    from sentry_agent_pc import updater  # noqa: PLC0415 — CI-only, avoid import cost
+
+    pin = updater._RELEASE_PUBLIC_KEY_B64
+    if pin:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+        try:
+            Ed25519PublicKey.from_public_bytes(base64.b64decode(pin)).verify(
+                signature, sha256_hex.encode("ascii")
+            )
+        except (InvalidSignature, ValueError) as e:
+            print(
+                f"ERROR: signature does not verify against the pinned key ({e}). "
+                "The RELEASE_SIGNING_KEY secret likely doesn't match "
+                "updater._RELEASE_PUBLIC_KEY_B64.",
+                file=sys.stderr,
+            )
+            return 1
+        print("self-check: signature verifies against the pinned public key")
+
     sig_path = zip_path.with_name(zip_path.name + ".sig")
     sig_path.write_text(base64.b64encode(signature).decode("ascii"), encoding="ascii")
     print(f"signed {zip_path.name} (sha256={sha256_hex}) -> {sig_path.name}")

@@ -27,6 +27,29 @@ class _DataBlob(ctypes.Structure):
     _fields_ = (("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char)))
 
 
+# Declare explicit prototypes on the (cached) win32 functions so ctypes marshals
+# 64-bit pointers correctly instead of defaulting returns to a 32-bit int. Done
+# once at import, guarded for Windows (ctypes.windll doesn't exist elsewhere).
+if os.name == "nt":
+    _BLOB_P = ctypes.POINTER(_DataBlob)
+    for _crypt_fn in (
+        ctypes.windll.crypt32.CryptProtectData,
+        ctypes.windll.crypt32.CryptUnprotectData,
+    ):
+        _crypt_fn.argtypes = [
+            _BLOB_P,
+            wintypes.LPCWSTR,
+            _BLOB_P,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            _BLOB_P,
+        ]
+        _crypt_fn.restype = wintypes.BOOL
+    ctypes.windll.kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+    ctypes.windll.kernel32.LocalFree.restype = wintypes.HLOCAL
+
+
 def is_available() -> bool:
     """True only where DPAPI exists (Windows)."""
     return os.name == "nt"

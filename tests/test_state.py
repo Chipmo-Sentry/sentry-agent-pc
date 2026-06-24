@@ -171,6 +171,27 @@ def test_legacy_fernet_file_is_migrated(tmp_path, monkeypatch) -> None:  # type:
     assert state.load_state().agent_jwt == "legacy-jwt"  # still round-trips
 
 
+def test_unreadable_file_not_overwritten_by_empty(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # H1 review fix: a load that can't decrypt an EXISTING file (e.g. a TRANSIENT
+    # DPAPI failure) must not let an empty/unpaired state be saved over it — that
+    # would turn a transient into permanent loss of the pairing + camera passwords.
+    settings = _point_state_at(tmp_path, monkeypatch)
+    monkeypatch.setattr(state, "_existing_file_unreadable", False)
+    settings.state_path.write_bytes(b"corrupt-not-decryptable")  # no magic → Fernet → InvalidToken
+    original = settings.state_path.read_bytes()
+
+    loaded = state.load_state()  # fails to decrypt → empty + flag set
+    assert not loaded.is_paired
+    assert state._existing_file_unreadable is True
+
+    state.save_state(state.AgentState())  # unpaired save must NOT clobber
+    assert settings.state_path.read_bytes() == original  # file preserved
+
+    state.save_state(state.AgentState(agent_jwt="new-jwt"))  # a real (re)pair IS allowed
+    assert settings.state_path.read_bytes() != original
+    assert state.load_state().agent_jwt == "new-jwt"
+
+
 def test_state_file_is_not_plaintext(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     # The JWT + camera password must never sit in cleartext on disk.
     settings = _point_state_at(tmp_path, monkeypatch)
