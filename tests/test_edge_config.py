@@ -65,3 +65,32 @@ def test_from_dict_clamps_decay_into_unit_interval() -> None:
     assert EdgeConfig.from_dict({"decay": -0.3}).decay == 0.0
     # a valid in-range value is untouched
     assert EdgeConfig.from_dict({"decay": 0.8}).decay == 0.8
+
+
+def test_behaviors_page_registry_keys_are_real_fields() -> None:
+    # The agent's «Зан үйл» menu renders the FULL effective config from this
+    # registry; every key must be a real EdgeConfig field or the row would show
+    # "—" for a knob the engine actually runs with.
+    from dataclasses import fields
+
+    from sentry_agent_pc.gui.app import _EDGE_CONFIG_ROWS
+
+    names = {f.name for f in fields(EdgeConfig)}
+    assert _EDGE_CONFIG_ROWS  # non-empty
+    for _group, key, _label, _unit in _EDGE_CONFIG_ROWS:
+        assert key in names, f"{key} is not an EdgeConfig field"
+
+
+def test_edge_config_rows_formats_values() -> None:
+    # The read-only table formatter: weights get a + sign, bools become Тийм/Үгүй,
+    # missing keys show "—", and floats render compactly.
+    from sentry_agent_pc.gui.app import AgentApp
+
+    cfg = {"w_conceal": 14.0, "upload_clips": False, "open_risk": 60.0}
+    rows = AgentApp._edge_config_rows(cfg)
+    by_key = {label: value for _g, label, value, _u in rows}
+    assert by_key["Эд зүйл нуух"] == "+14"
+    assert by_key["Cloud руу илгээх"] == "Үгүй"
+    assert by_key["Эпизод нээх босго"] == "60"
+    # a key absent from cfg → em-dash placeholder
+    assert by_key["Барих радиус"] == "—"
