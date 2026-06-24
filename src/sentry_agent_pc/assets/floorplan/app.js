@@ -32,12 +32,11 @@ const stage = new Konva.Stage({
   width: holder.clientWidth,
   height: holder.clientHeight,
 });
-const bgLayer = new Konva.Layer();
 const gridLayer = new Konva.Layer({ listening: false });
 const shapeLayer = new Konva.Layer();
 const camLayer = new Konva.Layer();
 const uiLayer = new Konva.Layer();
-stage.add(bgLayer, gridLayer, shapeLayer, camLayer, uiLayer);
+stage.add(gridLayer, shapeLayer, camLayer, uiLayer);
 
 const tr = new Konva.Transformer({
   rotationSnaps: ROT_SNAPS,
@@ -329,28 +328,20 @@ function renderElements() {
   });
 }
 
-// ── background image (trace) ───────────────────────────────────────────────
-let bgNode = null;
-function setBackground(src) {
-  const img = new Image();
-  img.onload = () => {
-    if (bgNode) bgNode.destroy();
-    bgNode = new Konva.Image({ image: img, x: 0, y: 0, opacity: 0.5, draggable: true });
-    const sc = PLAN.size[0] / (img.width || img.naturalWidth || PLAN.size[0]);
-    bgNode.scale({ x: sc, y: sc });
-    bgLayer.add(bgNode);
-    bgLayer.draw();
-    setStatus("Суурь зураг — чирж байрлуул, дээр нь тойруулан зур");
-  };
-  img.onerror = () => setStatus("Зураг ачаалж чадсангүй");
-  img.src = src;
+// ── new / clear ────────────────────────────────────────────────────────────
+function clearPlan() {
+  if (!window.confirm("Бүх зураг (хана, бүс, камер) устгаж шинээр эхлэх үү?")) return;
+  PLAN.walls = [];
+  PLAN.fixtures = [];
+  PLAN.cameras = [];
+  deselect();
+  cancelDraft();
+  pushUndo();
+  render();
+  fit();
+  setStatus("Шинэ хоосон зураг — зурж эхлээрэй");
 }
-async function pickImage() {
-  setStatus("Зураг сонгож байна…");
-  const data = await window.pywebview.api.pick_image(); // data URL (base64) from Python
-  setStatus("");
-  if (data) setBackground(data);
-}
+
 // A ready-made EDITABLE starter plan (real walls/fixtures the user can use as-is
 // or tweak) — not a background image. Cameras stay as the user placed them.
 // Layout = a tidy convenience-store: outer wall, a back-wall display + two side
@@ -404,7 +395,7 @@ stage.on("click", (e) => {
 
 // ── toolbar wiring ────────────────────────────────────────────────────────
 document.querySelectorAll(".tool").forEach((b) => (b.onclick = () => setTool(b.dataset.tool)));
-document.getElementById("btn-image").onclick = pickImage;
+document.getElementById("btn-new").onclick = clearPlan;
 document.getElementById("btn-example").onclick = loadTemplate;
 document.getElementById("btn-fit").onclick = fit;
 document.getElementById("btn-undo").onclick = undo;

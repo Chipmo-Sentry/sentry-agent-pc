@@ -10,10 +10,8 @@ bridge — so the agent JWT (backend calls) stays in Python, never in the page.
 
 from __future__ import annotations
 
-import base64
 import subprocess
 import sys
-from pathlib import Path
 from typing import Any
 
 from sentry_agent_pc.logging_setup import get_logger
@@ -22,15 +20,9 @@ log = get_logger("sentry_agent_pc.gui.floor_plan_web")
 
 _FLAG = "--floor-plan"
 
-# Bounds for the JS↔Python bridge. The plan is a small vector document (a handful
-# of polygons); >1 MB means a runaway shape list, not a real store. The trace
-# background is a photo the WebView base64-inlines, so cap it before it can OOM
-# the editor (a 25 MB image → ~33 MB data URL).
+# Bound for the JS↔Python bridge. The plan is a small vector document (a handful
+# of polygons); >1 MB means a runaway shape list, not a real store.
 _MAX_PLAN_BYTES = 1_000_000
-_MAX_IMAGE_BYTES = 25 * 1024 * 1024
-# Leading magic bytes per supported image type — so a mislabelled / non-image
-# file picked through the "Бүх файл" filter is rejected before encoding.
-_IMAGE_MAGIC = (b"\x89PNG\r\n", b"\xff\xd8\xff", b"BM", b"RIFF", b"GIF8")
 
 # The currently-running editor child, if any. Clicking «Plan зураг» again while a
 # window is already open must NOT spawn a second WebView2 process (each holds a
@@ -142,35 +134,3 @@ class FloorPlanApi:
         if len(serialized.encode("utf-8")) > _MAX_PLAN_BYTES:
             raise ValueError("План хэт том байна — элемент тоог багасгана уу")
         return BackendClient().agent_update_floor_plan(plan)
-
-    def pick_image(self) -> str | None:
-        """Open a native file dialog, return the chosen image as a data: URL the
-        editor draws as a traceable background. None if cancelled / unreadable."""
-        import webview
-
-        win = self._window or (webview.windows[0] if webview.windows else None)
-        if win is None:
-            return None
-        result = win.create_file_dialog(
-            webview.OPEN_DIALOG,
-            allow_multiple=False,
-            file_types=("Зураг (*.png;*.jpg;*.jpeg;*.bmp;*.webp)", "Бүх файл (*.*)"),
-        )
-        if not result:
-            return None
-        sel = result[0] if isinstance(result, (list, tuple)) else result
-        path = Path(str(sel))
-        try:
-            if path.stat().st_size > _MAX_IMAGE_BYTES:
-                log.warning("floor_plan.image_too_large", size=path.stat().st_size)
-                return None
-            raw = path.read_bytes()
-        except OSError as e:
-            log.warning("floor_plan.image_read_failed", error=str(e))
-            return None
-        if not raw.startswith(_IMAGE_MAGIC):
-            log.warning("floor_plan.not_an_image", suffix=path.suffix)
-            return None
-        ext = path.suffix.lower().lstrip(".")
-        mime = "image/png" if ext == "png" else "image/webp" if ext == "webp" else "image/jpeg"
-        return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
