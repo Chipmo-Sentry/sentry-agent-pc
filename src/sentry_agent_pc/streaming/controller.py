@@ -100,8 +100,15 @@ class StreamController:
                 publish_pass=cfg.get("publish_pass"),
             )
         else:
-            # Credentials/base may have changed — rebuild if so.
-            if self._pusher.push_base != cfg["push_rtsp_base"]:
+            # Base OR credentials may have changed — rebuild if so. Comparing creds
+            # too matters: when the backend's MediaMTX publish password is rotated
+            # (same push base), a base-only check would keep relaying with the stale
+            # password → every publish 401s until the app is restarted.
+            if (
+                self._pusher.push_base != cfg["push_rtsp_base"]
+                or self._pusher.publish_user != cfg.get("publish_user")
+                or self._pusher.publish_pass != cfg.get("publish_pass")
+            ):
                 self._pusher.stop_all()
                 self._pusher = StreamPusher(
                     push_base=str(cfg["push_rtsp_base"]),
@@ -114,9 +121,7 @@ class StreamController:
         # local_url() returns None and the relay reads the camera directly — the
         # pre-fan-out behaviour, so this can only improve, never regress.
         cams = [
-            (c.mediamtx_path, c.rtsp_url)
-            for c in state.cameras
-            if c.mediamtx_path and c.rtsp_url
+            (c.mediamtx_path, c.rtsp_url) for c in state.cameras if c.mediamtx_path and c.rtsp_url
         ]
         if self._local is not None:
             self._local.sync(cams)
