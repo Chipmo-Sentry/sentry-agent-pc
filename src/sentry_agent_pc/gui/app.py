@@ -305,6 +305,12 @@ class AgentApp(ctk.CTk):
         self._pages["alerts"] = self._build_alerts_page(self._content)
         self._pages["behaviors"] = self._build_behaviors_page(self._content)
         self._pages["settings"] = self._build_settings_page(self._content)
+        # «Шууд харах» — an empty container; the live grid is created lazily when
+        # the page is shown and torn down when leaving (so RTSP is only held while
+        # the page is on screen). See _ensure_live / _teardown_live.
+        self._pages["live"] = ctk.CTkFrame(self._content, fg_color="transparent")
+        self._live_view: Any = None
+        self._live_empty: Any = None
         self._show_page("cameras")
 
         self.refresh_cameras()
@@ -467,7 +473,7 @@ class AgentApp(ctk.CTk):
     _NAV: tuple[tuple[str, str, str], ...] = (
         ("cameras", "📷  Камерууд", "page"),
         ("plan", "🗺  Plan зураг", "action"),
-        ("live", "📺  Шууд харах", "action"),
+        ("live", "📺  Шууд харах", "page"),
         ("alerts", "⚠  Сэжигтэй", "page"),
         ("behaviors", "🎯  Зан үйл", "page"),
         ("settings", "⚙  Тохиргоо", "page"),
@@ -510,23 +516,59 @@ class AgentApp(ctk.CTk):
         """A nav-button command that shows `key`'s page (binds key, no loop closure bug)."""
         return lambda: self._show_page(key)
 
-    def _action_cmd(self, key: str) -> Callable[[], None]:
+    def _action_cmd(self, _key: str) -> Callable[[], None]:
         """Nav-button command for an 'action' item — opens a separate window
-        (live view / floor-plan webview) instead of switching the in-app page."""
-        if key == "plan":
-            return self.open_floor_plan
-        return self.open_live_view
+        (the floor-plan webview, which can't embed in the Tk app)."""
+        return self.open_floor_plan
 
     def _show_page(self, name: str) -> None:
+        # Leaving «Шууд харах» releases its RTSP sessions (the grid is recreated
+        # on return), so cameras aren't decoded while another page is open.
+        if name != "live":
+            self._teardown_live()
         for page in self._pages.values():
             page.pack_forget()
         self._pages[name].pack(fill="both", expand=True)
         for key, btn in self._nav_buttons.items():
             btn.configure(fg_color=BRAND_PRIMARY if key == name else "transparent")
-        if name == "alerts":
+        if name == "live":
+            self._ensure_live()
+        elif name == "alerts":
             self._refresh_alerts()
         elif name == "behaviors":
             self._refresh_behaviors()
+
+    def _ensure_live(self) -> None:
+        """Build the live grid inside the «Шууд харах» page (or an empty-state
+        when no cameras are registered). Idempotent."""
+        if self._live_view is not None or self._live_empty is not None:
+            return
+        if not load_state().cameras:
+            self._live_empty = ctk.CTkLabel(
+                self._pages["live"],
+                text="Камер бүртгэгдээгүй — эхлээд «Камерууд» хуудаснаас камер нэмнэ үү.",
+                font=ctk.CTkFont(size=14),
+                text_color=UI_MUTED_FG,
+                justify="center",
+            )
+            self._live_empty.pack(expand=True)
+            return
+        from sentry_agent_pc.gui.local_view import LocalLiveView
+
+        self._live_view = LocalLiveView(self._pages["live"])
+        self._live_view.pack(fill="both", expand=True)
+        self.set_status("Шууд харах (LAN-аас шууд)…")
+
+    def _teardown_live(self) -> None:
+        """Stop + remove the live grid (releases RTSP). Safe to call any time."""
+        if self._live_view is not None:
+            with contextlib.suppress(Exception):
+                self._live_view.stop()
+            self._live_view = None
+        if self._live_empty is not None:
+            with contextlib.suppress(Exception):
+                self._live_empty.destroy()
+            self._live_empty = None
 
     def _edge_status_text(self) -> str:
         """Human-readable edge-AI readiness for the sidebar / settings."""
@@ -1383,19 +1425,6 @@ class AgentApp(ctk.CTk):
         """Manual update check from the header button (dialog runs the check)."""
         UpdateDialog(self, info=None)
 
-    def open_live_view(self) -> None:
-        """Open the OFFLINE LAN live view — decodes the cameras' RTSP directly in
-        a window inside this app. Works with no internet, no MediaMTX, no login;
-        the cloud sentry-ai pipeline + web /live (with AI overlay) run separately
-        when online."""
-        if not load_state().cameras:
-            self.set_status("Камер бүртгэгдээгүй — эхлээд камер нэмнэ үү.")
-            return
-        from sentry_agent_pc.gui.local_view import open_local_view
-
-        open_local_view(self)
-        self.set_status("Шууд харах цонх нээгдэж байна (LAN-аас шууд)…")
-
     def open_floor_plan(self) -> None:
         """Open the «Plan зураг» floor-plan editor (docs/30) in a webview window.
 
@@ -1441,6 +1470,7 @@ class AgentApp(ctk.CTk):
         if self._closing:
             return  # re-entrant (tray "Гарах" + window-close race) → no double destroy()
         self._closing = True
+        self._teardown_live()  # stop the live grid's RTSP readers, if open
         for after_id in self._after_ids.values():
             with contextlib.suppress(tk.TclError):
                 self.after_cancel(after_id)
