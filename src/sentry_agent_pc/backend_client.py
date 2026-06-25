@@ -161,9 +161,18 @@ class BackendClient:
         return r.json()  # type: ignore[no-any-return]
 
     # ── Agent-scoped (agent JWT) ────────────────────────────────────────
-    def heartbeat(self) -> None:
+    def heartbeat(self, push_status: list[dict[str, Any]] | None = None) -> None:
         # Heartbeat is idempotent (just liveness) → retry transport blips.
-        self._request("POST", "/api/v1/agent/heartbeat", ok_codes=(204,), retriable=True)
+        # `push_status` (per-camera ffmpeg relay state + last_error) lets the cloud
+        # show WHY a push is down without anyone RDP-ing into the store PC.
+        body = {"push": push_status} if push_status is not None else None
+        self._request(
+            "POST",
+            "/api/v1/agent/heartbeat",
+            json_body=body,
+            ok_codes=(204,),
+            retriable=True,
+        )
 
     def agent_list_cameras(self) -> list[dict[str, Any]]:
         r = self._request("GET", "/api/v1/agent/cameras", ok_codes=(200,))

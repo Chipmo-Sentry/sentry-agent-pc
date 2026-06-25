@@ -1554,7 +1554,17 @@ class AgentApp(ctk.CTk):
 
         def work() -> dict[str, Any]:
             try:
-                BackendClient().heartbeat()
+                # Attach push-relay state so the cloud can show WHY a camera's push
+                # is down (ffmpeg last_error) without RDP-ing into this store PC.
+                # Only when push is enabled — pull/on-LAN stores have nothing to push.
+                push_status: list[dict[str, Any]] | None = None
+                try:
+                    ctrl = get_stream_controller()
+                    if ctrl.push_enabled:
+                        push_status = ctrl.status()
+                except Exception:  # noqa: BLE001 — never let telemetry block liveness
+                    push_status = None
+                BackendClient().heartbeat(push_status=push_status)
                 return {"ok": True}
             except BackendError as e:
                 return {"ok": False, "error": str(e)}
