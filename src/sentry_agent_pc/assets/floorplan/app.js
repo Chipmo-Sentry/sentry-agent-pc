@@ -820,8 +820,12 @@ document.getElementById("calib-cancel").onclick = closeCalibration;
 document.getElementById("calib-undo").onclick = undoCalibPoint;
 // Length input: Enter drops the next wall vertex at the typed distance.
 document.getElementById("len-input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") { e.preventDefault(); applyLenInput(); }
-  else if (e.key === "Escape") { e.target.blur(); }
+  if (e.key === "Enter") {
+    e.preventDefault();
+    // a length → drop a segment; empty Enter → finish the wall (matches the hint)
+    if (parseFloat(e.target.value) > 0) applyLenInput();
+    else if (draft) { e.target.blur(); finishDraft(); }
+  } else if (e.key === "Escape") { e.target.blur(); }
   e.stopPropagation(); // don't let digits hit the tool shortcuts below
 });
 
