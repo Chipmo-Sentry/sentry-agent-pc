@@ -27,6 +27,7 @@ from sentry_agent_pc.config_file import (
     read_config,
     write_config,
 )
+from sentry_agent_pc.edge.controller import get_edge_controller
 from sentry_agent_pc.edge.recorder import ClipRecord, ClipStore
 from sentry_agent_pc.gui import widgets
 from sentry_agent_pc.gui.add_dialog import AddCameraDialog
@@ -1127,6 +1128,14 @@ class AgentApp(ctk.CTk):
             name="stream-refresh",
             daemon=True,
         ).start()
+        # Headless edge Stage-1: starts/stops a 24/7 decode+analysis worker per
+        # edge_pc camera, independent of any GUI window (founder requirement). A
+        # no-op for cloud-tier cameras. Heavy (OpenVINO load) → its own thread.
+        threading.Thread(
+            target=get_edge_controller().refresh,
+            name="edge-refresh",
+            daemon=True,
+        ).start()
 
     def _schedule(self, key: str, delay_ms: int, fn: Callable[[], None]) -> None:
         """Record a self-rescheduling `after` so quit_app() can cancel the pending
@@ -1479,6 +1488,10 @@ class AgentApp(ctk.CTk):
             get_stream_controller().stop()
         except Exception as e:  # noqa: BLE001
             log.debug("quit.stop_streams_failed", error=str(e))
+        try:
+            get_edge_controller().stop()
+        except Exception as e:  # noqa: BLE001
+            log.debug("quit.stop_edge_failed", error=str(e))
         if getattr(self, "_tray", None) is not None:
             self._tray.stop()
         self.destroy()
