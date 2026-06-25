@@ -97,7 +97,18 @@ function setTool(t) {
   // Drag-empty = marquee-select (select mode) or draw — never pan; pan is on Space.
   stage.draggable(false);
   if (t !== "select") deselect();
+  // In select mode every shape is draggable UP FRONT so a single press-and-drag
+  // moves it (Konva checks draggable at mousedown-start; setting it only inside
+  // the click handler would need a 2nd drag). Off in draw modes so it can't
+  // interfere with drawing.
+  setShapesDraggable(t === "select");
   stage.container().style.cursor = t === "select" ? "default" : "crosshair";
+}
+
+// Toggle draggability of every placed shape/camera (not labels/grid/preview).
+function setShapesDraggable(on) {
+  shapeLayer.find("Line").forEach((n) => n.draggable(on));
+  camLayer.find("Group").forEach((n) => n.draggable(on));
 }
 
 // ── render plan → Konva ─────────────────────────────────────────────────
@@ -113,6 +124,8 @@ function render() {
   camLayer.draw();
   drawGrid();
   renderElements();
+  // Nodes are recreated non-draggable; restore one-gesture move in select mode.
+  setShapesDraggable(tool === "select");
 }
 
 function makeLine(pts, color, closed, kind, idx, label) {
