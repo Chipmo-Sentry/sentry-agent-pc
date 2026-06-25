@@ -78,7 +78,6 @@ os.environ.setdefault(
 import customtkinter as ctk  # noqa: E402
 from PIL import Image, ImageTk  # noqa: E402
 
-from sentry_agent_pc.gui import widgets  # noqa: E402
 from sentry_agent_pc.logging_setup import get_logger  # noqa: E402
 from sentry_agent_pc.state import CameraRecord, load_state  # noqa: E402
 
@@ -828,18 +827,25 @@ class _Tile(ctk.CTkFrame):
                 self._placeholder = detail
 
 
-class LocalLiveView(ctk.CTkToplevel):
-    """A responsive grid window that plays the store's cameras straight off the LAN."""
+class LocalLiveView(ctk.CTkFrame):
+    """A responsive grid that plays the store's cameras straight off the LAN.
 
-    def __init__(self, master: ctk.CTk) -> None:
-        super().__init__(master)
-        self.title("Sentry — Шууд харах (офлайн)")
-        self.configure(fg_color="#0B0B0D")
-        self.transient(master)
+    Embedded as the «Шууд харах» page inside the main app (not a separate window);
+    the app creates it when the page is shown and calls ``stop()`` when leaving,
+    so the RTSP sessions are only held while the page is actually on screen."""
+
+    def __init__(self, master: ctk.CTkBaseClass) -> None:
+        super().__init__(master, fg_color="#0B0B0D")
+        # Lifecycle state up front so stop() is safe even on the no-camera path.
+        self._readers: list[_CameraReader] = []
+        self._tiles: list[_Tile] = []
+        self._closed = False
+        self._minimized = False
+        self._edge_cfg_version = -1  # forces the first poll to apply (I7)
+        self._tick_after: str | None = None
+        self._edge_after: str | None = None
 
         cams = [c for c in load_state().cameras if c.rtsp_url]
-        widgets.setup_dialog(self, 1180, 760, min_width=560, min_height=420)
-
         store = load_state().store_name
         title = ctk.CTkFrame(self, fg_color="transparent")
         title.pack(fill="x", padx=18, pady=(14, 0))
@@ -879,8 +885,6 @@ class LocalLiveView(ctk.CTkToplevel):
 
         ctrl = get_stream_controller()
 
-        self._readers: list[_CameraReader] = []
-        self._tiles: list[_Tile] = []
         for i, cam in enumerate(cams):
             local = ctrl.local_url(cam.mediamtx_path)
             # Browser-style HTTP snapshot fallback: parse host+creds off the RTSP
@@ -907,15 +911,6 @@ class LocalLiveView(ctk.CTkToplevel):
         self._focused: _Tile | None = None
         self._cols = 0
         self._last_w = 0
-        self._closed = False
-        self._minimized = False
-        self._edge_cfg_version = -1  # forces the first poll to apply (I7)
-        # Pending self-rescheduling timer ids, so _on_close can cancel them
-        # instead of relying on the _closed flag to no-op a queued tick after
-        # the widget is destroyed.
-        self._tick_after: str | None = None
-        self._edge_after: str | None = None
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._scroll.bind("<Configure>", self._on_resize)
         self.after(50, self._relayout)
         self._tick()
@@ -1003,9 +998,10 @@ class LocalLiveView(ctk.CTkToplevel):
     def _tick(self) -> None:
         if self._closed:
             return
-        # Pause/resume decoding when the window is minimized or restored.
+        # Pause/resume decoding when the MAIN WINDOW is minimized or restored (we're
+        # a page now, so read the toplevel's state, not our own frame's).
         try:
-            minimized = self.state() in ("iconic", "withdrawn")
+            minimized = self.winfo_toplevel().state() in ("iconic", "withdrawn")
         except Exception:  # noqa: BLE001 — Tk may transiently refuse state(); ignore
             minimized = self._minimized
         if minimized != self._minimized:
@@ -1039,7 +1035,9 @@ class LocalLiveView(ctk.CTkToplevel):
         threading.Thread(target=work, name="edge-config-poll", daemon=True).start()
         self._edge_after = self.after(30000, self._tick_edge_config)
 
-    def _on_close(self) -> None:
+    def stop(self) -> None:
+        """Stop decoding + release the RTSP sessions, then destroy the page frame.
+        Called by the app when navigating away from «Шууд харах» (or on quit)."""
         self._closed = True
         # Cancel the pending self-rescheduling timers so a queued tick can't fire
         # into the widget mid-teardown (don't lean on the _closed no-op).
@@ -1060,24 +1058,3 @@ class LocalLiveView(ctk.CTkToplevel):
                 break  # budget spent — let the daemon thread die with the process
             reader.join(timeout=remaining)
         self.destroy()
-
-
-def open_local_view(master: ctk.CTk) -> LocalLiveView:
-    """Open (or focus) the offline LAN grid window.
-
-    Reuses an already-open window — without this, each click spawns a new window
-    with its own per-camera reader threads + RTSP sessions, hammering the cameras
-    with duplicate connections."""
-    existing = getattr(master, "_local_view_win", None)
-    if existing is not None:
-        try:
-            if existing.winfo_exists():
-                existing.deiconify()
-                existing.lift()
-                existing.focus_force()
-                return cast("LocalLiveView", existing)
-        except tk.TclError:
-            pass  # window was destroyed — fall through and open a fresh one
-    win = LocalLiveView(master)
-    master._local_view_win = win
-    return win
