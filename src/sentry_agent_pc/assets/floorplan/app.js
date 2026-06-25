@@ -24,6 +24,12 @@ const REPROJ_WARN = 0.05; // >5% reprojection error = a shaky calibration (yello
 let tool = "select";
 let snapOn = true;
 let draft = null; // { type, pts: [[x,y],...] } while drawing
+let rectDraft = null; // { type, start:[x,y] } while Shift-dragging a rectangle
+let marquee = null; // { start:[x,y] } while rubber-band selecting an area
+let marqueeRect = null; // the live marquee box node
+let marqueeSel = []; // [{kind, idx}] objects selected by the marquee
+const marqueeNodes = []; // highlight boxes for the marquee selection
+let panning = false; // Space held → drag the canvas instead of selecting
 const undoStack = [];
 const redoStack = [];
 
@@ -84,9 +90,11 @@ stage.on("wheel", (e) => {
 function setTool(t) {
   tool = t;
   cancelDraft();
+  cancelRect();
+  cancelMarquee();
   document.querySelectorAll(".tool").forEach((b) => b.classList.toggle("active", b.dataset.tool === t));
-  // Pan by dragging empty space only in select mode; shapes carry their own drag.
-  stage.draggable(t === "select");
+  // Drag-empty = marquee-select (select mode) or draw — never pan; pan is on Space.
+  stage.draggable(false);
   if (t !== "select") deselect();
   stage.container().style.cursor = t === "select" ? "default" : "crosshair";
 }
@@ -208,6 +216,7 @@ function deselect() {
   vertexAnchors.forEach((a) => a.destroy());
   vertexAnchors = [];
   selectedNode = null;
+  clearMarqueeSel();
   hideCameraSettings();
   uiLayer.draw();
 }
@@ -265,20 +274,35 @@ function cancelDraft() {
 }
 
 stage.on("mousedown", (e) => {
-  if (tool === "select") return; // pan / selection handled elsewhere
+  if (panning) return; // Space-pan → let the stage drag handle it
   const raw = pointerPlan();
+  if (tool === "select") {
+    // Drag on EMPTY canvas → marquee-select an area (shape clicks are caught by
+    // the shape's own handler with cancelBubble).
+    if (e.target === stage) startMarquee(raw);
+    return;
+  }
   if (tool === "camera") { placeCamera(raw); return; }
+  // Shift+drag = a quick rectangle (fixtures are mostly rectangular).
+  if (FIX[tool] && e.evt.shiftKey) { startRect(raw); return; }
   // wall / fixture: add a (snapped) vertex
   const prev = draft && draft.pts.length ? draft.pts[draft.pts.length - 1] : null;
-  const p = snapSeg(prev, raw, e.evt.shiftKey);
+  const p = snapSeg(prev, raw, false);
   if (!draft) draft = { type: tool, pts: [] };
   draft.pts.push(p);
-  drawPreview(raw, e.evt.shiftKey);
+  drawPreview(raw, false);
 });
 
 stage.on("mousemove", () => {
+  if (rectDraft) { previewRect(pointerPlan()); return; }
+  if (marquee) { growMarquee(pointerPlan()); return; }
   if (!draft) return;
   drawPreview(pointerPlan(), false);
+});
+
+stage.on("mouseup", () => {
+  if (rectDraft) finishRect();
+  else if (marquee) finishMarquee();
 });
 
 function drawPreview(raw, shift) {
@@ -313,6 +337,126 @@ function finishDraft() {
 }
 
 stage.on("dblclick", () => { if (draft) finishDraft(); });
+
+// ── Shift+drag rectangle (fixtures) ─────────────────────────────────────────
+function startRect(raw) {
+  cancelDraft();
+  rectDraft = { type: tool, start: raw };
+  setStatus("Тэгш өнцөгт — чирээд тавь");
+}
+function previewRect(raw) {
+  if (previewLine) previewLine.destroy();
+  const [x0, y0] = rectDraft.start;
+  const color = (FIX[rectDraft.type] || {}).color || "#999";
+  previewLine = new Konva.Line({
+    points: [x0, y0, raw[0], y0, raw[0], raw[1], x0, raw[1]],
+    stroke: color, strokeWidth: 2, dash: [6, 4], closed: true, fill: color + "22", listening: false,
+  });
+  uiLayer.add(previewLine);
+  uiLayer.batchDraw();
+  setStatus(`▭ ${Math.abs(raw[0] - x0).toFixed(0)} × ${Math.abs(raw[1] - y0).toFixed(0)}`);
+}
+function finishRect() {
+  const raw = pointerPlan();
+  const [x0, y0] = rectDraft.start;
+  const t = rectDraft.type;
+  cancelRect();
+  const w = Math.abs(raw[0] - x0), h = Math.abs(raw[1] - y0);
+  if (w < 5 || h < 5) { setStatus("Хэт жижиг — болилоо"); return; }
+  const x1 = Math.min(x0, raw[0]), y1 = Math.min(y0, raw[1]);
+  const x2 = Math.max(x0, raw[0]), y2 = Math.max(y0, raw[1]);
+  PLAN.fixtures.push({ type: t, points: [[x1, y1], [x2, y1], [x2, y2], [x1, y2]] });
+  pushUndo();
+  render();
+  setStatus("Тэгш өнцөгт нэмэгдлээ");
+}
+function cancelRect() {
+  rectDraft = null;
+  if (previewLine) { previewLine.destroy(); previewLine = null; uiLayer.batchDraw(); }
+}
+
+// ── marquee (area) selection ────────────────────────────────────────────────
+function startMarquee(raw) {
+  deselect();
+  marquee = { start: raw };
+}
+function growMarquee(raw) {
+  if (marqueeRect) marqueeRect.destroy();
+  const [x0, y0] = marquee.start;
+  marqueeRect = new Konva.Rect({
+    x: Math.min(x0, raw[0]), y: Math.min(y0, raw[1]),
+    width: Math.abs(raw[0] - x0), height: Math.abs(raw[1] - y0),
+    stroke: "#2563EB", strokeWidth: 1 / stage.scaleX(), dash: [4, 3], fill: "#2563EB22", listening: false,
+  });
+  uiLayer.add(marqueeRect);
+  uiLayer.batchDraw();
+}
+function finishMarquee() {
+  const raw = pointerPlan();
+  const [x0, y0] = marquee.start;
+  cancelMarquee();
+  const x1 = Math.min(x0, raw[0]), y1 = Math.min(y0, raw[1]);
+  const x2 = Math.max(x0, raw[0]), y2 = Math.max(y0, raw[1]);
+  if (x2 - x1 < 4 && y2 - y1 < 4) { deselect(); return; } // a click, not a drag
+  deselect();
+  const within = (pts) => pts.some(([px, py]) => px >= x1 && px <= x2 && py >= y1 && py <= y2);
+  PLAN.fixtures.forEach((f, i) => { if (within(f.points)) marqueeSel.push({ kind: "fixtures", idx: i }); });
+  PLAN.walls.forEach((w, i) => { if (within(w.points)) marqueeSel.push({ kind: "walls", idx: i }); });
+  PLAN.cameras.forEach((c, i) => {
+    const [px, py] = c.pos;
+    if (px >= x1 && px <= x2 && py >= y1 && py <= y2) marqueeSel.push({ kind: "cameras", idx: i });
+  });
+  highlightMarqueeSel();
+  setStatus(marqueeSel.length ? `${marqueeSel.length} объект сонгогдлоо — Del товчоор устга` : "Юу ч сонгогдсонгүй");
+}
+function highlightMarqueeSel() {
+  marqueeNodes.forEach((n) => n.destroy());
+  marqueeNodes.length = 0;
+  marqueeSel.forEach(({ kind, idx }) => {
+    const pts = kind === "fixtures" ? PLAN.fixtures[idx].points
+      : kind === "walls" ? PLAN.walls[idx].points : [PLAN.cameras[idx].pos];
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+    const pad = 6 / stage.scaleX();
+    marqueeNodes.push(new Konva.Rect({
+      x: Math.min(...xs) - pad, y: Math.min(...ys) - pad,
+      width: Math.max(...xs) - Math.min(...xs) + 2 * pad, height: Math.max(...ys) - Math.min(...ys) + 2 * pad,
+      stroke: "#2563EB", strokeWidth: 1.5 / stage.scaleX(), dash: [4, 3], listening: false,
+    }));
+  });
+  marqueeNodes.forEach((n) => uiLayer.add(n));
+  uiLayer.batchDraw();
+}
+function cancelMarquee() {
+  marquee = null;
+  if (marqueeRect) { marqueeRect.destroy(); marqueeRect = null; uiLayer.batchDraw(); }
+}
+function clearMarqueeSel() {
+  marqueeSel = [];
+  marqueeNodes.forEach((n) => n.destroy());
+  marqueeNodes.length = 0;
+}
+
+// ── delete the current selection (single or marquee) ────────────────────────
+function deleteSelection() {
+  if (marqueeSel.length) {
+    const byKind = {};
+    marqueeSel.forEach(({ kind, idx }) => (byKind[kind] = byKind[kind] || []).push(idx));
+    Object.entries(byKind).forEach(([kind, idxs]) => {
+      idxs.sort((a, b) => b - a).forEach((i) => PLAN[kind].splice(i, 1)); // high→low keeps indices valid
+    });
+    deselect();
+    pushUndo();
+    render();
+    setStatus("Сонгосон объектууд устгагдлаа");
+    return;
+  }
+  if (selectedNode) {
+    PLAN[selectedNode.kind].splice(selectedNode.idx, 1);
+    deselect();
+    pushUndo();
+    render();
+  }
+}
 
 function placeCamera(raw) {
   const sel = document.getElementById("cam-pick");
@@ -625,13 +769,11 @@ function fit() {
   drawGrid();
 }
 
-// ── stage click on empty → deselect ───────────────────────────────────────
-stage.on("click", (e) => {
-  if (tool === "select" && e.target === stage) deselect();
-});
+// (deselect on empty is handled by the marquee — a click = a zero-size marquee)
 
 // ── toolbar wiring ────────────────────────────────────────────────────────
 document.querySelectorAll(".tool").forEach((b) => (b.onclick = () => setTool(b.dataset.tool)));
+document.getElementById("btn-del").onclick = deleteSelection;
 document.getElementById("btn-new").onclick = clearPlan;
 document.getElementById("btn-example").onclick = loadTemplate;
 document.getElementById("btn-fit").onclick = fit;
@@ -655,11 +797,20 @@ window.addEventListener("keydown", (e) => {
   if (e.ctrlKey && e.key.toLowerCase() === "s") { e.preventDefault(); save(); return; }
   if (e.key >= "1" && e.key <= "6") setTool(TOOL_KEYS[+e.key - 1]);
   else if (e.key === "Enter") finishDraft();
-  else if (e.key === "Escape") cancelDraft();
+  else if (e.key === "Escape") { cancelDraft(); cancelRect(); cancelMarquee(); deselect(); }
   else if (e.key === "Backspace" && draft) { draft.pts.pop(); if (!draft.pts.length) cancelDraft(); else drawPreview(draft.pts[draft.pts.length - 1], false); }
-  else if (e.key === "Delete" && selectedNode) { PLAN[selectedNode.kind].splice(selectedNode.idx, 1); deselect(); pushUndo(); render(); }
+  else if (e.key === "Delete") deleteSelection();
   else if (e.key.toLowerCase() === "g") document.getElementById("btn-snap").click();
   else if (e.key.toLowerCase() === "f") fit();
+  else if (e.key === " " && !panning) { e.preventDefault(); panning = true; stage.draggable(true); stage.container().style.cursor = "grab"; }
+});
+
+window.addEventListener("keyup", (e) => {
+  if (e.key === " ") {
+    panning = false;
+    stage.draggable(false);
+    stage.container().style.cursor = tool === "select" ? "default" : "crosshair";
+  }
 });
 
 window.addEventListener("resize", () => {
