@@ -30,6 +30,7 @@ let marqueeRect = null; // the live marquee box node
 let marqueeSel = []; // [{kind, idx}] objects selected by the marquee
 const marqueeNodes = []; // highlight boxes for the marquee selection
 let panning = false; // Space held → drag the canvas instead of selecting
+let lastPointer = null; // last plan-space cursor pos (for numeric wall length)
 const undoStack = [];
 const redoStack = [];
 
@@ -269,8 +270,35 @@ let previewLine = null;
 function cancelDraft() {
   draft = null;
   if (previewLine) { previewLine.destroy(); previewLine = null; }
+  hideLenInput();
   uiLayer.batchDraw();
   setStatus("");
+}
+
+// ── numeric wall length ─────────────────────────────────────────────────────
+// While drawing a wall: aim the cursor for DIRECTION, type a length + Enter to
+// drop the next vertex at that exact distance (angle-snapped).
+function showLenInput() {
+  const w = document.getElementById("len-wrap");
+  if (w) w.classList.remove("len-hidden");
+}
+function hideLenInput() {
+  const w = document.getElementById("len-wrap");
+  if (w) w.classList.add("len-hidden");
+  const i = document.getElementById("len-input");
+  if (i) i.value = "";
+}
+function applyLenInput() {
+  const len = parseFloat(document.getElementById("len-input").value);
+  if (!draft || !draft.pts.length || !(len > 0)) return;
+  const last = draft.pts[draft.pts.length - 1];
+  const aim = snapSeg(last, lastPointer || [last[0] + 1, last[1]], false);
+  let dx = aim[0] - last[0], dy = aim[1] - last[1];
+  const d = Math.hypot(dx, dy) || 1;
+  draft.pts.push([+(last[0] + (dx / d) * len).toFixed(1), +(last[1] + (dy / d) * len).toFixed(1)]);
+  document.getElementById("len-input").value = "";
+  drawPreview(draft.pts[draft.pts.length - 1], false);
+  setStatus(`Сегмент ${len} нэмэгдлээ — чиглэл заагаад дахин урт оруул, эсвэл Enter-ээр дуусга`);
 }
 
 stage.on("mousedown", (e) => {
@@ -283,21 +311,23 @@ stage.on("mousedown", (e) => {
     return;
   }
   if (tool === "camera") { placeCamera(raw); return; }
-  // Shift+drag = a quick rectangle (fixtures are mostly rectangular).
-  if (FIX[tool] && e.evt.shiftKey) { startRect(raw); return; }
-  // wall / fixture: add a (snapped) vertex
+  // Fixtures (тавиур/орц-гарц/касс) are boxes → just drag a rectangle (no Shift).
+  if (FIX[tool]) { startRect(raw); return; }
+  // wall: add a (snapped) polyline vertex; offer numeric length for the next one.
   const prev = draft && draft.pts.length ? draft.pts[draft.pts.length - 1] : null;
   const p = snapSeg(prev, raw, false);
   if (!draft) draft = { type: tool, pts: [] };
   draft.pts.push(p);
   drawPreview(raw, false);
+  showLenInput();
 });
 
 stage.on("mousemove", () => {
-  if (rectDraft) { previewRect(pointerPlan()); return; }
-  if (marquee) { growMarquee(pointerPlan()); return; }
+  lastPointer = pointerPlan();
+  if (rectDraft) { previewRect(lastPointer); return; }
+  if (marquee) { growMarquee(lastPointer); return; }
   if (!draft) return;
-  drawPreview(pointerPlan(), false);
+  drawPreview(lastPointer, false);
 });
 
 stage.on("mouseup", () => {
@@ -338,7 +368,7 @@ function finishDraft() {
 
 stage.on("dblclick", () => { if (draft) finishDraft(); });
 
-// ── Shift+drag rectangle (fixtures) ─────────────────────────────────────────
+// ── drag rectangle (fixtures) ───────────────────────────────────────────────
 function startRect(raw) {
   cancelDraft();
   rectDraft = { type: tool, start: raw };
@@ -788,10 +818,18 @@ document.getElementById("btn-snap").onclick = () => {
 document.getElementById("calib-save").onclick = saveCalibration;
 document.getElementById("calib-cancel").onclick = closeCalibration;
 document.getElementById("calib-undo").onclick = undoCalibPoint;
+// Length input: Enter drops the next wall vertex at the typed distance.
+document.getElementById("len-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); applyLenInput(); }
+  else if (e.key === "Escape") { e.target.blur(); }
+  e.stopPropagation(); // don't let digits hit the tool shortcuts below
+});
 
 // ── keyboard shortcuts ──────────────────────────────────────────────────────
 const TOOL_KEYS = ["select", "wall", "shelf", "exit", "checkout", "camera"];
 window.addEventListener("keydown", (e) => {
+  // Typing in an input (e.g. length) must not trigger tool shortcuts.
+  if (e.target && e.target.tagName === "INPUT") return;
   if (e.ctrlKey && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); return; }
   if (e.ctrlKey && e.key.toLowerCase() === "y") { e.preventDefault(); redo(); return; }
   if (e.ctrlKey && e.key.toLowerCase() === "s") { e.preventDefault(); save(); return; }
@@ -845,6 +883,12 @@ async function boot() {
     if (loaded && typeof loaded === "object") PLAN = normalize(loaded);
   } catch { /* empty plan */ }
   undoStack.length = 0; undoStack.push(snapshot());
+  // Re-measure the canvas now that the window is shown + laid out — if the stage
+  // was created before layout (0×0), pan/draw coords would be broken until a
+  // resize. boot() runs on pywebviewready (window visible), so the holder is sized.
+  if (holder.clientWidth && holder.clientHeight) {
+    stage.size({ width: holder.clientWidth, height: holder.clientHeight });
+  }
   render(); fit();
   setTool("select");
 }

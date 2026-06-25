@@ -103,6 +103,17 @@
         border-bottom: 1px solid var(--border);
       }
       .calib-canvas { flex: 1; min-height: 0; background: #0e0e10; cursor: crosshair; }
+      /* numeric wall-length input (shown only while drawing a wall) */
+      #len-wrap {
+        display: inline-flex; align-items: center; gap: 6px; padding: 0 8px;
+        font-size: 12px; color: var(--muted);
+      }
+      #len-wrap.len-hidden { display: none; }
+      #len-input {
+        width: 70px; background: var(--panel2); color: var(--fg);
+        border: 1px solid var(--primary); border-radius: 6px; padding: 5px 7px; font-size: 13px;
+      }
+      .len-hint { color: #6f6f78; font-size: 11px; }
     </style>
   </head>
   <body>
@@ -129,6 +140,10 @@
         <button id="btn-del">🗑 Устгах</button>
         <button id="btn-undo">↶</button>
         <button id="btn-redo">↷</button>
+        <span id="len-wrap" class="len-hidden">
+          урт <input id="len-input" type="number" min="1" step="1" placeholder="px" />
+          <span class="len-hint">+Enter</span>
+        </span>
       </div>
 
       <div class="body">
@@ -141,16 +156,18 @@
             «📐 Жишээ загвар» — бэлэн дэлгүүрийн план ачаалж, өөрийнхөө дэлгүүрт
             тааруулж засна (шууд ашиглах эсвэл бага зэрэг өөрчлөх). «🆕 Шинээр
             эхлэх» — бүгдийг цэвэрлэж хоосноос зурна. «Камер» горимд камераа
-            байрлуул; «Сонгох» горимд элемент чирэх/эргүүлэх/булан засах. Тавиур/
-            бүс — дарж булан нэмж дуусга, ЭСВЭЛ <b>Shift+чирж тэгш өнцөгт</b> зур.
-            «Сонгох» горимд хоосон зайд <b>чирж талбар сонгоод</b> (олон объект)
-            Del/«🗑 Устгах»-аар устга. Зай (Space)+чирэх = зураг гүйлгэх. Камераа
-            байрлуулсны дараа элемент жагсаалтаас «📐»-аар калибровк хийж (камерын
-            зураг ‖ план 4+ цэг), планы бүсүүдийг тухайн камерт ононо.
+            байрлуул. <b>«Тавиур/Орц/Касс» горимд зүгээр чирээд тэгш өнцөгт</b> зур
+            (Shift хэрэггүй). <b>«Хана» горимд</b> дараалан дарж зурна; чиглэлээ
+            заагаад <b>урт (px) бичээд Enter</b> дарвал тухайн уртаар яг тавина,
+            давхар дарж/Enter-ээр дуусга. <b>«Сонгох» горимд</b>: элемент дарж
+            сонгоод чирч зөөх/эргүүлэх/булан засах; хоосон зайд чирж <b>талбар
+            сонгоод</b> олон объектыг Del/«🗑 Устгах»-аар устга. Space+чирэх = гүйлгэх.
+            Камер дээр «📐»-аар калибровк (камер-зураг ‖ план 4+ цэг).
           </p>
-          <div class="keys">⌨ 1–6 багаж · Shift+чирэх тэгш өнцөгт · Сонгох+чирэх талбар
+          <div class="keys">⌨ 1 Сонгох · 2 Хана · 3 Тавиур · 4 Орц · 5 Касс · 6 Камер
+Тавиур/Орц/Касс: чирэх=тэгш өнцөгт · Хана: урт+Enter
 Enter дуусгах · Esc болих · Del устгах · Space+чирэх гүйлгэх
-G өнцөг-snap · F багтаах · Ctrl+Z/Y undo · Ctrl+S хадгалах</div>
+G өнцөг-snap · F багтаах · Ctrl+Z/Y · Ctrl+S</div>
           <h2 style="margin-top:14px">Элементүүд</h2>
           <div id="elements"></div>
         </aside>
