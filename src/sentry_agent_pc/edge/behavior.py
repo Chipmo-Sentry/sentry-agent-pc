@@ -109,6 +109,9 @@ class BehaviorFrame:
     # on the real video. Defaulted so older callers/tests stay valid.
     person_risks: list[float] = field(default_factory=list)
     person_behaviors: list[set[str]] = field(default_factory=list)
+    # Stable matched track id per person (parallel to persons/bands), so the cloud
+    # live overlay can key boxes on a persistent id across frames (edge-first P2b).
+    person_ids: list[int] = field(default_factory=list)
 
 
 def _iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
@@ -264,8 +267,10 @@ class EdgeBehavior:
         episodes: list[SuspiciousEpisode] = []
         person_risks: list[float] = []
         person_behaviors: list[set[str]] = []
+        person_ids: list[int] = []
 
         for person, tid in zip(persons, matched, strict=True):
+            person_ids.append(int(tid))
             tr = self._tracks[tid]
             dt = max(0.0, now - tr.last_seen)  # wall-clock gap since last detection
             tr.box = person.box
@@ -325,6 +330,7 @@ class EdgeBehavior:
             episodes=episodes,
             person_risks=person_risks,
             person_behaviors=person_behaviors,
+            person_ids=person_ids,
         )
 
     def _apply_timing_gate(

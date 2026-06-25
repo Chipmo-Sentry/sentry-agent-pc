@@ -161,6 +161,17 @@ class BackendClient:
         return r.json()  # type: ignore[no-any-return]
 
     # ── Agent-scoped (agent JWT) ────────────────────────────────────────
+    def agent_post_live_metadata(self, frames: list[dict[str, Any]]) -> None:
+        """POST edge live-overlay tracks (edge-first P2b). Best-effort overlay feed;
+        the backend publishes to the live WS broker only (no alert path)."""
+        self._request(
+            "POST",
+            "/api/v1/agent/live-metadata",
+            json_body={"frames": frames},
+            ok_codes=(202,),
+            retriable=True,
+        )
+
     def heartbeat(self, push_status: list[dict[str, Any]] | None = None) -> None:
         # Heartbeat is idempotent (just liveness) → retry transport blips.
         # `push_status` (per-camera ffmpeg relay state + last_error) lets the cloud

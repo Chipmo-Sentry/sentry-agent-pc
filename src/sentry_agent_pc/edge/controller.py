@@ -61,15 +61,47 @@ class _CamWorker:
         self.camera_id = camera_id
         self.src_url = src_url
         self._stop = threading.Event()
+        self._last_wh: tuple[int, int] | None = None  # (w, h) of the last decoded frame
+        self._frame_seq = 0
         self._thread = threading.Thread(target=self._run, name=f"edge-cam-{camera_id}", daemon=True)
+        self._poster = threading.Thread(
+            target=self._post_loop, name=f"edge-post-{camera_id}", daemon=True
+        )
 
     def start(self) -> None:
         self._runtime.start_camera(self.camera_id, self.src_url)
         self._thread.start()
+        self._poster.start()
 
     def stop(self) -> None:
         self._stop.set()
         self._runtime.stop_camera(self.camera_id)
+
+    def _post_loop(self) -> None:
+        """Push the latest edge tracks to the cloud live overlay at ~5 fps —
+        decoupled from decode so a slow POST never stalls inference. Overlay-only:
+        the backend publishes to the WS broker, never the alert path (docs/32 P2b)."""
+        from sentry_agent_pc.backend_client import BackendClient
+
+        while not self._stop.wait(0.2):
+            wh = self._last_wh
+            if wh is None:
+                continue
+            tracks = self._runtime.latest_tracks(self.camera_id)
+            if not tracks:
+                continue
+            frame = {
+                "camera_id": self.camera_id,
+                "frame_id": self._frame_seq,
+                "ts_ms": int(time.time() * 1000),
+                "width": wh[0],
+                "height": wh[1],
+                "tracks": tracks,
+            }
+            try:
+                BackendClient().agent_post_live_metadata([frame])
+            except Exception:  # noqa: BLE001 — overlay feed is best-effort
+                log.debug("edge.overlay_post_failed", camera_id=self.camera_id)
 
     def _run(self) -> None:
         backoff = _RECONNECT_MIN_SEC
@@ -94,6 +126,8 @@ class _CamWorker:
                         self._runtime.process(
                             self.camera_id, cast("NDArray[np.uint8]", frame), time.time()
                         )
+                        self._last_wh = (int(frame.shape[1]), int(frame.shape[0]))
+                        self._frame_seq += 1
                     except Exception:  # noqa: BLE001 — one bad frame must not kill the loop
                         log.exception("edge.process_failed", camera_id=self.camera_id)
             finally:
