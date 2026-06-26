@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import replace
 
 import numpy as np
 
@@ -126,9 +127,10 @@ def test_signals_holding_and_conceal() -> None:
     kp[12] = (400.0, 300.0, 0.9)  # right hip at the wrist → wrist-to-torso
     assert _wrist_on_item(kp, items, person_h) is True
     assert _wrist_to_torso(kp, person_h) is True
-    score, behaviors, scores = _frame_signal(kp, items, person_h)
+    score, behaviors, scores, raw_holding, pocket_now = _frame_signal(kp, items, person_h)
     assert score > 0
-    assert {"item_pickup", "wrist_to_torso", "conceal"} <= behaviors
+    assert raw_holding is True and pocket_now is True  # on a COCO item + at the hip
+    assert {"item_pickup", "wrist_to_torso", "conceal"} <= behaviors  # holding → conceal
     # the score map carries each movement's contribution
     assert scores.get("item_pickup", 0.0) > 0
     assert scores.get("conceal", 0.0) > 0
@@ -136,8 +138,63 @@ def test_signals_holding_and_conceal() -> None:
     # wrist far from any item / hip → no signal
     kp2 = np.zeros((17, 3), dtype=np.float32)
     kp2[10] = (50.0, 50.0, 0.9)
-    s2, b2, sc2 = _frame_signal(kp2, items, person_h)
-    assert s2 == 0.0 and b2 == set() and sc2 == {}
+    s2, b2, sc2, raw2, pocket2 = _frame_signal(kp2, items, person_h)
+    assert s2 == 0.0 and b2 == set() and sc2 == {} and raw2 is False and pocket2 is False
+
+
+def test_conceal_fires_on_gesture_without_held_item() -> None:
+    """THE FIX (хүн юм нуухад): a wrist→pocket gesture with NO detected COCO item
+    fires `conceal` when it was a deliberate MOVE into the pocket (gesture_recently)
+    — most retail merchandise isn't a COCO class, so we can't gate on a held item."""
+    person_h = 300.0
+    kp = np.zeros((17, 3), dtype=np.float32)
+    kp[10] = (400.0, 300.0, 0.9)  # right wrist
+    kp[12] = (400.0, 300.0, 0.9)  # right hip at the wrist → concealment posture
+    # NO items + the gesture latch armed (the wrist just moved into the pocket).
+    _s, behaviors, scores, raw_holding, _p = _frame_signal(
+        kp, [], person_h, gesture_recently=True
+    )
+    assert raw_holding is False  # YOLO saw nothing held...
+    assert "conceal" in behaviors and scores.get("conceal", 0.0) > 0  # ...gesture fires it
+
+
+def test_no_conceal_for_static_hand_at_hip() -> None:
+    """A hand resting at the hip with NO move-into-pocket + NO item is only
+    wrist_to_torso, never conceal — the standing-shopper false positive guard."""
+    person_h = 300.0
+    kp = np.zeros((17, 3), dtype=np.float32)
+    kp[10] = (400.0, 300.0, 0.9)
+    kp[12] = (400.0, 300.0, 0.9)
+    # No item, no recent gesture, no recent hold → static posture.
+    _s, behaviors, _sc, _rh, pocket_now = _frame_signal(kp, [], person_h)
+    assert pocket_now is True and "wrist_to_torso" in behaviors
+    assert "conceal" not in behaviors
+
+
+def test_require_holding_ignores_gesture() -> None:
+    """With require_holding=True, even a deliberate pocket gesture isn't conceal
+    unless an item was actually held — the strict opt-in gate."""
+    person_h = 300.0
+    kp = np.zeros((17, 3), dtype=np.float32)
+    kp[10] = (400.0, 300.0, 0.9)
+    kp[12] = (400.0, 300.0, 0.9)
+    cfg = EdgeConfig(require_holding=True)
+    _s, behaviors, _sc, _rh, _p = _frame_signal(
+        kp, [], person_h, cfg, gesture_recently=True
+    )
+    assert "wrist_to_torso" in behaviors and "conceal" not in behaviors
+
+
+def test_hold_latch_keeps_holding_when_item_hidden() -> None:
+    """held_recently (the caller's latch) keeps `item_pickup` active even with no
+    current item — a recent pickup counts while the item is hidden in concealment."""
+    person_h = 300.0
+    kp = np.zeros((17, 3), dtype=np.float32)
+    kp[10] = (400.0, 300.0, 0.9)
+    kp[12] = (400.0, 300.0, 0.9)
+    _s, behaviors, _sc, raw_holding, _p = _frame_signal(kp, [], person_h, held_recently=True)
+    assert raw_holding is False  # nothing on the wrist this frame
+    assert "item_pickup" in behaviors  # ...but latched holding keeps it active
 
 
 def test_tracker_stable_and_new_ids() -> None:
@@ -285,7 +342,11 @@ def test_decay_is_wall_clock_not_per_frame() -> None:
     # frame_skip can't silently change sensitivity. Same conceal signal + one idle
     # frame: the longer gap leaves the lower retained score.
     persons, items = _conceal_frame()
-    fast, slow = EdgeBehavior("c", _GATEFREE), EdgeBehavior("c", _GATEFREE)
+    # Isolate decay: disable the hold latch so the idle frame banks NOTHING (with
+    # the latch on, a recent pickup keeps item_pickup active into the idle frame,
+    # which is its own behaviour — tested separately).
+    cfg = replace(_GATEFREE, hold_latch_sec=0.0)
+    fast, slow = EdgeBehavior("c", cfg), EdgeBehavior("c", cfg)
     fast.update(persons, items, now=0.0)
     slow.update(persons, items, now=0.0)
     seeded = fast._tracks[1].raw

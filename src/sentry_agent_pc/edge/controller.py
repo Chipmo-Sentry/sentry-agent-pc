@@ -175,12 +175,19 @@ class EdgeController:
         ctrl = get_stream_controller()
         want: dict[str, str] = {}  # camera_id (mediamtx_path) → decode src url
         for c in state.cameras:
-            if c.compute_tier != "edge_pc" or not c.mediamtx_path or not c.rtsp_url:
+            if c.compute_tier != "edge_pc" or not c.mediamtx_path:
                 continue
             # Prefer the local fan-out loopback (single camera pull shared with the
-            # push relay); fall back to the camera directly if the hub is down.
+            # push relay); fall back to the camera's stored RTSP URL if the hub is
+            # down. NB: do NOT require `rtsp_url` — a camera re-registered then
+            # synced from the backend has no local RTSP (the backend stores it
+            # encrypted, never returns plaintext), yet the loopback still exists
+            # because the push relay is feeding it. Skip only when BOTH are absent.
             loopback = ctrl.local_url(c.mediamtx_path)
-            want[c.mediamtx_path] = loopback or c.rtsp_url
+            src = loopback or c.rtsp_url
+            if not src:
+                continue
+            want[c.mediamtx_path] = src
 
         for cid in list(self._workers):
             if cid not in want or self._workers[cid].src_url != want[cid]:

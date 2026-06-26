@@ -447,6 +447,14 @@ echo [start] %date% %time% >> "%LOG%"
 rem Kill ANY remaining instances (incl. a "Шууд харах" webview child, same image)
 rem so nothing keeps the .exe/DLLs locked during the copy.
 taskkill /f /im ChipmoSentryAgent.exe >nul 2>&1
+rem ...AND the agent's child processes: the ffmpeg push/decode workers + the local
+rem fan-out MediaMTX run from the install's bundled bin and SURVIVE the agent exit,
+rem so they keep ffmpeg.exe/mediamtx.exe locked → robocopy returns rc>=8 forever (the
+rem multi-day "copy failed after 60 tries" flap that never applied an update). A
+rem store PC runs only the agent, so killing by image name is safe; the relaunched
+rem agent restarts them.
+taskkill /f /im ffmpeg.exe >nul 2>&1
+taskkill /f /im mediamtx.exe >nul 2>&1
 ping -n 2 127.0.0.1 >nul
 
 set /a n=0

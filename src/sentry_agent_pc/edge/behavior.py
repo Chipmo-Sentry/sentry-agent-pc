@@ -94,6 +94,18 @@ class _Track:
     # (so `interval_*` debounces re-banking). Track-lifetime.
     beh_active_since: dict[str, float] = field(default_factory=dict)
     beh_last_bank: dict[str, float] = field(default_factory=dict)
+    # Hold latch: wall-clock of the last frame the wrist was on an item OR a
+    # concealment fired (the item may be hidden). `holding` stays effective for
+    # `hold_latch_sec` after this so concealing doesn't instantly clear the hold.
+    # -inf = never held (so `now - ts` is +inf → outside the latch window); a 0.0
+    # default would falsely read as "just held" when `now` starts near 0 in tests.
+    hold_last_ts: float = float("-inf")
+    # Concealment-gesture latch: whether the wrist was near a hip last frame (None
+    # until the first frame, so a hand ALREADY at the hip on track start isn't a
+    # spurious "move into pocket") + the wall-clock of the last move INTO the
+    # pocket. Conceal stays armed for `hold_latch_sec` after such a move.
+    wrist_near_hip: bool | None = None
+    conceal_gesture_ts: float = float("-inf")
 
 
 @dataclass(slots=True)
@@ -200,28 +212,49 @@ def _frame_signal(
     items: list[ItemDet],
     person_h: float,
     cfg: EdgeConfig | None = None,
-) -> tuple[float, set[str], dict[str, float]]:
+    *,
+    held_recently: bool = False,
+    gesture_recently: bool = False,
+) -> tuple[float, set[str], dict[str, float], bool, bool]:
     """Instantaneous suspicion increment + active behaviour keys for this frame,
-    plus the per-movement score contribution (drives the episode breakdown)."""
+    the per-movement score contribution (drives the episode breakdown), the RAW
+    wrist-on-item flag and the RAW wrist-near-hip flag (so the caller can drive
+    the hold + concealment-gesture latches).
+
+    ``held_recently`` — a recent pickup still counts as holding while the item is
+    hidden (so concealing it doesn't instantly clear the hold).
+    ``gesture_recently`` — the wrist MOVED into the pocket region recently (a
+    deliberate concealment motion), as opposed to a hand resting statically at the
+    hip. This is the discriminator that lets conceal fire for non-COCO merchandise
+    (YOLO never sees the item) WITHOUT flagging someone just standing — the edge is
+    the upload filter, so it can't lean on the cloud VLM the way the node does."""
     c = cfg or EdgeConfig()
     behaviors: set[str] = set()
     scores: dict[str, float] = {}
     score = 0.0
-    holding = _wrist_on_item(kp, items, person_h, reach_frac=c.reach_frac)
+    raw_holding = _wrist_on_item(kp, items, person_h, reach_frac=c.reach_frac)
+    holding = raw_holding or held_recently
     if holding:
         behaviors.add("item_pickup")
         score += c.w_holding
         scores["item_pickup"] = c.w_holding
-    if _wrist_to_torso(kp, person_h, near_frac=c.near_frac):
+    pocket_now = _wrist_to_torso(kp, person_h, near_frac=c.near_frac)
+    if pocket_now:
         behaviors.add("wrist_to_torso")
-        if holding:
+        # Conceal needs evidence of an ACTION — a held / recently-held item, OR a
+        # deliberate move INTO the pocket — not a hand resting at the hip (the #1
+        # edge false positive). `require_holding` keeps it to the held-item path
+        # only (ignores the gesture); default False also accepts the motion, which
+        # catches pocketing a non-COCO retail item the way the cloud does.
+        conceal = holding or (gesture_recently and not c.require_holding)
+        if conceal:
             behaviors.add("conceal")
             score += c.w_conceal
             scores["conceal"] = c.w_conceal
         else:
             score += c.w_wrist_torso
             scores["wrist_to_torso"] = c.w_wrist_torso
-    return score, behaviors, scores
+    return score, behaviors, scores, raw_holding, pocket_now
 
 
 class EdgeBehavior:
@@ -279,9 +312,28 @@ class EdgeBehavior:
             tr.trail.append((int((person.box[0] + person.box[2]) / 2), int(person.box[3])))
 
             person_h = max(1.0, person.box[3] - person.box[1])
-            _signal, behaviors, frame_scores = _frame_signal(
-                person.keypoints, items, person_h, self.cfg
+            held_recently = (now - tr.hold_last_ts) <= self.cfg.hold_latch_sec
+            gesture_recently = (now - tr.conceal_gesture_ts) <= self.cfg.hold_latch_sec
+            _signal, behaviors, frame_scores, raw_holding, pocket_now = _frame_signal(
+                person.keypoints,
+                items,
+                person_h,
+                self.cfg,
+                held_recently=held_recently,
+                gesture_recently=gesture_recently,
             )
+            # Arm the conceal gesture on a deliberate move INTO the pocket region (a
+            # transition from not-near-hip → near-hip). The first frame seeds the
+            # prior state so a hand ALREADY at the hip isn't counted as a move.
+            if tr.wrist_near_hip is None:
+                tr.wrist_near_hip = pocket_now
+            if pocket_now and not tr.wrist_near_hip:
+                tr.conceal_gesture_ts = now
+            tr.wrist_near_hip = pocket_now
+            # Refresh the hold latch on item contact OR a concealment this frame
+            # (concealment counts as still-holding — the item may be hidden).
+            if raw_holding or "conceal" in behaviors:
+                tr.hold_last_ts = now
             # docs/29 P1c — latch concealment + add zone-aware signals (no-op when
             # the camera has no zones or the frame size is unknown).
             if behaviors & {"conceal", "wrist_to_torso"}:
