@@ -199,6 +199,36 @@ if ($ovLibs) {
 $piArgs += "src\sentry_agent_pc\gui_main.py"
 uv run pyinstaller @piArgs
 
+# ── Trim download/install bloat from the frozen bundle ───────────────────────
+# We infer with OpenVINO *IR* models on GPU→CPU only (see edge/ov_lean.py), so
+# the non-IR model frontends (TensorFlow/PyTorch/Paddle/ONNX/JAX), the Intel NPU
+# plugin, every import .lib, debug .pdb and opencv's unused Haar/LBP cascades are
+# pure download weight. Removing them is BUILD-ONLY and changes no runtime
+# behaviour — the CPU+GPU plugins, core libs and the IR frontend are all kept.
+$dist = "dist\ChipmoSentryAgent"
+if (Test-Path $dist) {
+    $before = (Get-ChildItem $dist -Recurse -File | Measure-Object Length -Sum).Sum
+    $dropNames = @(
+        "openvino_onnx_frontend.dll", "openvino_tensorflow_frontend.dll",
+        "openvino_tensorflow_lite_frontend.dll", "openvino_paddle_frontend.dll",
+        "openvino_pytorch_frontend.dll", "openvino_jax_frontend.dll",
+        "openvino_intel_npu_plugin.dll"
+    )
+    foreach ($n in $dropNames) {
+        Get-ChildItem $dist -Recurse -File -Filter $n -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    }
+    # import libraries + debug symbols are never loaded at runtime
+    Get-ChildItem $dist -Recurse -File -Include *.lib, *.pdb -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    # opencv Haar/LBP cascades (cv2/data/*.xml) — we never run a cascade classifier
+    Get-ChildItem $dist -Recurse -Directory -Filter "data" -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -like "*cv2*" } |
+        ForEach-Object { Get-ChildItem $_.FullName -File -Filter *.xml -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
+    $after = (Get-ChildItem $dist -Recurse -File | Measure-Object Length -Sum).Sum
+    Write-Host ("==> Trimmed bundle: {0:N0} MB -> {1:N0} MB (saved {2:N0} MB)" -f ($before / 1MB), ($after / 1MB), (($before - $after) / 1MB)) -ForegroundColor Green
+}
+
 Write-Host ""
 Write-Host "==> Done. Output: dist\ChipmoSentryAgent\ChipmoSentryAgent.exe (onedir folder)" -ForegroundColor Green
 Write-Host "    Distribute via the installer (Setup.exe) or the onedir zip." -ForegroundColor Green
