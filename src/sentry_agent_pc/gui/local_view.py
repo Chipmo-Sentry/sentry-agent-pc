@@ -523,6 +523,14 @@ class _CameraReader(threading.Thread):
 
             if not getattr(get_settings(), "edge_clips_enabled", True):
                 return None
+            # edge_pc cameras: the headless EdgeController owns recording + upload
+            # 24/7 (docs/32 D1). The live-view tile still runs its pipeline for the
+            # on-screen overlay, but with NO recorder → no double clips/uploads when
+            # the window is open. cloud cameras keep recording here (no controller).
+            cam = _find_camera(self.cam_name)
+            if cam is not None and cam.compute_tier == "edge_pc":
+                log.info("local_view.edge_clips_owned_by_controller", cam=self.cam_name)
+                return None
             pin = self._pin if self._pin is not None and self._pin < len(self.urls) else 0
             src = self.urls[pin] if self.urls else ""
             if "127.0.0.1" not in src and "localhost" not in src:

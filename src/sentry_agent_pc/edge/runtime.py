@@ -88,6 +88,12 @@ class EdgeRuntime:
             return None
         return pipe.process(frame_bgr, now)
 
+    def latest_tracks(self, camera_id: str) -> list[dict[str, object]]:
+        """Per-person tracks from one camera's last analysed frame (cloud overlay
+        shape), or [] if that camera isn't started."""
+        pipe = self._pipes.get(camera_id)
+        return pipe.latest_tracks() if pipe is not None else []
+
     def clips(self) -> list[ClipRecord]:
         return self.store.records()
 

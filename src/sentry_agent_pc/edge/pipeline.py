@@ -63,6 +63,32 @@ class EdgePipeline:
         self.frame_skip = max(1, config.frame_skip)
         self._push_detector_conf()
 
+    def latest_tracks(self) -> list[dict[str, object]]:
+        """Per-person tracks from the last analysed frame, shaped for the cloud live
+        overlay (mirrors the backend LiveTrack: person_id, box [pixels x1,y1,x2,y2
+        at the processed frame size], risk_pct, color band, active behaviours).
+        Empty until the first frame is analysed. Used by the edge-first overlay
+        poster (docs/32 P2b)."""
+        f = self._frame
+        if f is None:
+            return []
+        persons = self._last.persons
+        n = min(len(persons), len(f.person_ids))
+        out: list[dict[str, object]] = []
+        for i in range(n):
+            out.append(
+                {
+                    "person_id": f.person_ids[i],
+                    "box": [float(v) for v in persons[i].box],
+                    "risk_pct": float(f.person_risks[i]) if i < len(f.person_risks) else 0.0,
+                    "color": f.bands[i] if i < len(f.bands) else "green",
+                    "behaviors": sorted(f.person_behaviors[i])
+                    if i < len(f.person_behaviors)
+                    else [],
+                }
+            )
+        return out
+
     def process(self, frame_bgr: NDArray[np.uint8], now: float) -> NDArray[np.uint8]:
         """Run (or reuse) detection + behaviour for this frame, return the overlay."""
         if self._n % self.frame_skip == 0:
