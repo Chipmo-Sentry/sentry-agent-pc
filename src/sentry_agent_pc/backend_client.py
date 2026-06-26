@@ -288,6 +288,7 @@ class BackendClient:
         started_at: float,
         ended_at: float,
         behavior_detail: list[dict[str, Any]] | None = None,
+        clip_id: str | None = None,
     ) -> dict[str, Any]:
         """POST a suspicious clip (multipart) to the cloud VLM host for a verdict.
 
@@ -307,6 +308,11 @@ class BackendClient:
         }
         if behavior_detail:
             data["edge_behavior_detail"] = json.dumps(behavior_detail, ensure_ascii=False)
+        if clip_id:
+            # Edge-first traceability: the backend stores this on the alert as
+            # `edge_clip_id`, so the agent-pc «Сэжигтэй» row and the frontend
+            # «Сэжигтэй үйлдэл» alert share one matchable ID.
+            data["clip_id"] = clip_id
         with open(clip_path, "rb") as fh:  # noqa: PTH123 — httpx wants a file object
             r = self._request(
                 "POST",

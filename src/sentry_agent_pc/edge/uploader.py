@@ -55,6 +55,7 @@ def upload_clip(
                 started_at=rec.started_at,
                 ended_at=rec.ended_at,
                 behavior_detail=rec.behavior_detail,
+                clip_id=rec.clip_id,
             )
         except BackendError as e:
             # status is None for a transport failure (no response) → retriable.

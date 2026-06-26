@@ -176,6 +176,9 @@ _CLIP_COL_CAM = 150
 _CLIP_COL_WHEN = 150
 _CLIP_COL_RISK = 72
 _CLIP_COL_DUR = 64
+# Edge clip id (`{camera_id}_{epoch}`) — the SAME string the backend stores as the
+# alert's `edge_clip_id`, so this row matches its frontend «Сэжигтэй үйлдэл» alert.
+_CLIP_COL_ID = 210
 _CLIP_ROW_BG = UI_SURFACE
 _CLIP_ROW_HOVER = UI_MUTED_HOVER
 
@@ -631,6 +634,7 @@ class AgentApp(ctk.CTk):
             ("Эрсдэл", _CLIP_COL_RISK, "e"),
             ("Зан үйл", 0, "w"),
             ("Хугацаа", _CLIP_COL_DUR, "e"),
+            ("ID", _CLIP_COL_ID, "w"),
         ):
             lbl = ctk.CTkLabel(
                 hdr,
@@ -717,6 +721,16 @@ class AgentApp(ctk.CTk):
             font=ctk.CTkFont(size=11),
             text_color=UI_MUTED_FG,
         ).pack(side="left", padx=8)
+        # Edge clip id — the SAME string the frontend alert shows as its "ID", so
+        # the operator can match this row to its cloud «Сэжигтэй үйлдэл» alert.
+        ctk.CTkLabel(
+            row,
+            text=clip.clip_id,
+            width=_CLIP_COL_ID,
+            anchor="w",
+            font=ctk.CTkFont(size=10, family="Consolas"),
+            text_color=UI_MUTED_FG,
+        ).pack(side="left", padx=8)
         ctk.CTkLabel(
             row,
             text="›",
@@ -765,6 +779,14 @@ class AgentApp(ctk.CTk):
             font=ctk.CTkFont(size=11),
             text_color=UI_MUTED_FG,
         ).pack(anchor="w")
+        # Full edge clip id — matches the frontend «Сэжигтэй үйлдэл» alert's "ID".
+        ctk.CTkLabel(
+            head,
+            text=f"ID: {clip.clip_id}",
+            anchor="w",
+            font=ctk.CTkFont(size=11, family="Consolas"),
+            text_color=UI_MUTED_FG,
+        ).pack(anchor="w", pady=(2, 0))
 
         from sentry_agent_pc.gui.datatable import DataTable
 

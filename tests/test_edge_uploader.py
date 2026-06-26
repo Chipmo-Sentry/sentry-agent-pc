@@ -31,9 +31,11 @@ class _FakeClient:
     def __init__(self, outcomes: list[object]) -> None:
         self.outcomes = list(outcomes)
         self.calls: list[str] = []
+        self.clip_ids: list[object] = []
 
     def agent_upload_clip(self, clip_path: str, *, camera_uuid: str, **kw: Any) -> dict[str, Any]:
         self.calls.append(camera_uuid)
+        self.clip_ids.append(kw.get("clip_id"))
         outcome = self.outcomes.pop(0)
         if outcome != "ok":
             raise BackendError("boom", status=outcome)  # type: ignore[arg-type]
@@ -46,6 +48,9 @@ def test_success_first_try() -> None:
     ok = uploader.upload_clip(client, _rec(), "uuid-1", sleep=delays.append)
     assert ok is True
     assert client.calls == ["uuid-1"]
+    # Edge clip id forwarded → backend stores it as the alert's edge_clip_id so
+    # the agent «Сэжигтэй» row matches the frontend alert.
+    assert client.clip_ids == ["c1"]
     assert delays == []
 
 
