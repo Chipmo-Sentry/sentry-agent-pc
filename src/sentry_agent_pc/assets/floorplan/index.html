@@ -155,6 +155,7 @@
       <div class="toolbar">
         <button data-tool="select" class="tool active">↖ Сонгох</button>
         <button data-tool="wall" class="tool">▭ Хана</button>
+        <button data-tool="room" class="tool">▢ Хана-дөрвөлжин</button>
         <button data-tool="shelf" class="tool">▦ Тавиур</button>
         <button data-tool="exit" class="tool">🚪 Орц/Гарц</button>
         <button data-tool="checkout" class="tool">🛒 Касс</button>
@@ -164,6 +165,8 @@
         <button id="btn-new">🆕 Шинээр эхлэх</button>
         <button id="btn-fit">⤢ Багтаах</button>
         <button id="btn-snap" class="active">⊾ Өнцөг</button>
+        <button id="btn-psnap" title="Цэг-snap (P)">⊙ Цэг</button>
+        <button id="btn-ortho" title="Босоо/хэвтээ түгжээ (O)">90° Босоо</button>
         <button id="btn-del">🗑 Устгах</button>
         <button id="btn-undo">↶</button>
         <button id="btn-redo">↷</button>
@@ -204,13 +207,16 @@
             Enter/давхар дарж дуусга. <b>«Сонгох»</b>: дүрс дээр дарж сонгоод
             <b>нэг чирэлтээр зөөх</b>, булан чирж хэлбэр засах; сонгосон дүрсний
             <b>хэмжээг хажуугаас тоогоор засах</b>. Хана/дөрвөлжин дээр урт/Ө×Ө,
-            талбай (м²) шошго харагдана. Space+чирэх = гүйлгэх. Камер дээр «📐»-аар
-            калибровк.
+            талбай (м²) шошго харагдана. <b>«⊙ Цэг»</b> (P) асаавал цэгүүд байгаа
+            дүрсийн булан дээр татагдана. <b>«▢ Хана-дөрвөлжин»</b> — нэг чирэлтээр
+            дэлгүүрийн хүрээ. <b>«90° Босоо»</b> (O) — хана зөвхөн босоо/хэвтээ.
+            Хана зурж байхад <b>гар дээр тоо дармагц</b> урт-талбар нээгдэнэ; эхэнд
+            нь буцаж очвол гогцоо автоматаар хаагдана. Space+чирэх = гүйлгэх.
           </p>
-          <div class="keys">⌨ 1 Сонгох · 2 Хана · 3 Тавиур · 4 Орц · 5 Касс · 6 Камер
-Тавиур/Орц/Касс: чирэх эсвэл Ө×Ө(м) · Хана: урт(м)+Enter
+          <div class="keys">⌨ 1 Сонгох · 2 Хана · 3 Хана-дөрвөлжин · 4 Тавиур · 5 Орц · 6 Касс · 7 Камер
+Хана: дарж зур, тоо бичээд урт, эхэндээ очвол хаах · Тавиур: чирэх эсвэл Ө×Ө(м)
 Enter дуусгах · Esc болих · Del устгах · Space+чирэх гүйлгэх
-G өнцөг-snap · F багтаах · Ctrl+Z/Y · Ctrl+S</div>
+G өнцөг · P цэг-snap · O босоо · F багтаах · Ctrl+Z/Y · Ctrl+S</div>
           <h2 style="margin-top:14px">Элементүүд</h2>
           <div id="elements"></div>
         </aside>

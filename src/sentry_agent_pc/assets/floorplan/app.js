@@ -49,6 +49,9 @@ const camStatus = {}; // camera_id → { online: bool|undefined } from a live ch
 const REPROJ_WARN = 0.05; // >5% reprojection error = a shaky calibration (yellow)
 let tool = "select";
 let snapOn = true;
+let pointSnapOn = false; // snap new points onto existing shape corners (toggle «⊙ Цэг»)
+let orthoOn = false; // lock wall segments to 0/90° (toggle «90°»)
+let snapMarker = null; // highlight ring shown over the active snap target
 let draft = null; // { type, pts: [[x,y],...] } while drawing
 let rectDraft = null; // { type, start:[x,y] } while Shift-dragging a rectangle
 let marquee = null; // { start:[x,y] } while rubber-band selecting an area
@@ -100,6 +103,50 @@ function snapSeg(prev, raw, shift) {
 function pointerPlan() {
   const p = stage.getRelativePointerPosition();
   return [p.x, p.y];
+}
+
+// ── point snap (to existing corners) + ortho lock ───────────────────────────
+// Every corner of every wall/fixture is a candidate the new point can latch onto.
+function snapCandidates() {
+  const pts = [];
+  PLAN.walls.forEach((w) => w.points.forEach((p) => pts.push(p)));
+  PLAN.fixtures.forEach((f) => f.points.forEach((p) => pts.push(p)));
+  return pts;
+}
+// Nearest existing corner within ~12 px (screen) of `raw`, or null. Toggle-gated.
+function snapPoint(raw) {
+  if (!pointSnapOn) return null;
+  const thr = 12 / (stage.scaleX() || 1);
+  let best = null, bd = thr;
+  for (const p of snapCandidates()) {
+    const d = Math.hypot(p[0] - raw[0], p[1] - raw[1]);
+    if (d < bd) { bd = d; best = p; }
+  }
+  return best ? [best[0], best[1]] : null;
+}
+// Lock a segment to pure horizontal/vertical (keep the longer axis).
+function orthoSeg(prev, raw) {
+  return Math.abs(raw[0] - prev[0]) >= Math.abs(raw[1] - prev[1])
+    ? [raw[0], prev[1]] : [prev[0], raw[1]];
+}
+// The point a wall vertex should land on: existing-corner snap wins, else ortho
+// lock (if on), else the 15° angle snap.
+function wallPoint(prev, raw) {
+  const sp = snapPoint(raw);
+  if (sp) return sp;
+  if (!prev) return raw;
+  if (orthoOn) return orthoSeg(prev, raw);
+  return snapSeg(prev, raw, false);
+}
+// Show / hide the snap-target highlight ring at a plan point.
+function showSnapMarker(p, color) {
+  clearSnapMarker();
+  const r = 7 / (stage.scaleX() || 1);
+  snapMarker = new Konva.Circle({ x: p[0], y: p[1], radius: r, stroke: color || "#22d3ee", strokeWidth: 2 / (stage.scaleX() || 1), listening: false });
+  uiLayer.add(snapMarker);
+}
+function clearSnapMarker() {
+  if (snapMarker) { snapMarker.destroy(); snapMarker = null; }
 }
 
 // ── zoom / pan ──────────────────────────────────────────────────────────
@@ -471,6 +518,7 @@ let previewLine = null;
 function cancelDraft() {
   draft = null;
   if (previewLine) { previewLine.destroy(); previewLine = null; }
+  clearSnapMarker();
   hideLenInput();
   uiLayer.batchDraw();
   setStatus("");
@@ -512,22 +560,36 @@ stage.on("mousedown", (e) => {
     return;
   }
   if (tool === "camera") { placeCamera(raw); return; }
+  // Room tool: drag a rectangle that becomes 4 connected WALLS (store outline).
+  if (tool === "room") { startRect(raw); return; }
   // Fixtures (тавиур/орц-гарц/касс) are boxes. If a width×height (m) is typed,
   // one click drops that exact box; otherwise just drag a rectangle (no Shift).
   if (FIX[tool]) {
     const dims = rectDims();
-    if (dims) placeRectExact(raw, dims.w, dims.h);
+    if (dims) placeRectExact(snapPoint(raw) || raw, dims.w, dims.h);
     else startRect(raw);
     return;
   }
-  // wall: add a (snapped) polyline vertex; offer numeric length for the next one.
+  // wall: snap the new vertex (corner-snap → ortho → angle); auto-close near start.
   const prev = draft && draft.pts.length ? draft.pts[draft.pts.length - 1] : null;
-  const p = snapSeg(prev, raw, false);
-  if (!draft) draft = { type: tool, pts: [] };
+  if (draft && draft.pts.length >= 3 && nearStart(raw)) {
+    draft.pts.push([...draft.pts[0]]); // close the loop cleanly
+    finishDraft();
+    return;
+  }
+  const p = wallPoint(prev, raw);
+  if (!draft) draft = { type: "wall", pts: [] };
   draft.pts.push([round2(p[0]), round2(p[1])]);
   drawPreview(raw, false);
   showLenInput();
 });
+
+// True if `raw` is within ~12 px of the open wall's start vertex (auto-close).
+function nearStart(raw) {
+  if (!draft || !draft.pts.length) return false;
+  const s = draft.pts[0];
+  return Math.hypot(raw[0] - s[0], raw[1] - s[1]) < 12 / (stage.scaleX() || 1);
+}
 
 // Read the typed fixture width×height (m), or null if not both > 0.
 function rectDims() {
@@ -549,8 +611,13 @@ stage.on("mousemove", () => {
   lastPointer = pointerPlan();
   if (rectDraft) { previewRect(lastPointer); return; }
   if (marquee) { growMarquee(lastPointer); return; }
-  if (!draft) return;
-  drawPreview(lastPointer, false);
+  if (draft) { drawPreview(lastPointer, false); return; }
+  // Not drawing yet: still preview the corner-snap target for the draw tools.
+  if (pointSnapOn && (tool === "wall" || tool === "room" || FIX[tool])) {
+    const sp = snapPoint(lastPointer);
+    if (sp) showSnapMarker(sp, "#22d3ee"); else clearSnapMarker();
+    uiLayer.batchDraw();
+  } else if (snapMarker) { clearSnapMarker(); uiLayer.batchDraw(); }
 });
 
 stage.on("mouseup", () => {
@@ -560,11 +627,21 @@ stage.on("mouseup", () => {
 
 function drawPreview(raw, shift) {
   if (previewLine) previewLine.destroy();
+  clearSnapMarker();
   if (!draft) return;
   const color = draft.type === "wall" ? WALL_COLOR : (FIX[draft.type] || {}).color;
   const pts = draft.pts.slice();
   const last = pts[pts.length - 1];
-  const hover = snapSeg(last, raw, shift);
+  // Hover vertex + a marker for what it will latch onto.
+  let hover, closing = false;
+  if (draft.type === "wall" && pts.length >= 3 && nearStart(raw)) {
+    hover = pts[0].slice(); closing = true;
+    showSnapMarker(hover, "#22c55e"); // green ring = click will CLOSE the loop
+  } else {
+    hover = draft.type === "wall" ? wallPoint(last, raw) : snapSeg(last, raw, shift);
+    const sp = snapPoint(raw);
+    if (sp) showSnapMarker(sp, "#22d3ee"); // cyan ring = snapping to a corner
+  }
   const flat = pts.flat().concat(hover);
   previewLine = new Konva.Line({ points: flat, stroke: color, strokeWidth: 2, dash: [6, 4], listening: false });
   uiLayer.add(previewLine);
@@ -573,7 +650,7 @@ function drawPreview(raw, shift) {
   if (last) {
     const ang = ((Math.atan2(hover[1] - last[1], hover[0] - last[0]) * 180) / Math.PI + 360) % 360;
     const len = Math.hypot(hover[0] - last[0], hover[1] - last[1]);
-    setStatus(`∠ ${ang.toFixed(0)}°  ·  урт ${fmtM(len)} м`);
+    setStatus(closing ? `Гогцоо хаах — урт ${fmtM(len)} м` : `∠ ${ang.toFixed(0)}°  ·  урт ${fmtM(len)} м`);
   }
   uiLayer.batchDraw();
 }
@@ -591,26 +668,32 @@ function finishDraft() {
 
 stage.on("dblclick", () => { if (draft) finishDraft(); });
 
-// ── drag rectangle (fixtures) ───────────────────────────────────────────────
+// ── drag rectangle (fixtures + room walls) ──────────────────────────────────
 function startRect(raw) {
   cancelDraft();
-  rectDraft = { type: tool, start: raw };
-  setStatus("Тэгш өнцөгт — чирээд тавь");
+  rectDraft = { type: tool, start: snapPoint(raw) || raw }; // corner-snap the start
+  setStatus(tool === "room" ? "Хана-дөрвөлжин — чирээд тавь" : "Тэгш өнцөгт — чирээд тавь");
 }
-function previewRect(raw) {
+function previewRect(rawIn) {
   if (previewLine) previewLine.destroy();
+  clearSnapMarker();
+  const snapped = snapPoint(rawIn);
+  const raw = snapped || rawIn;
+  if (snapped) showSnapMarker(raw, "#22d3ee");
   const [x0, y0] = rectDraft.start;
-  const color = (FIX[rectDraft.type] || {}).color || "#999";
+  const isRoom = rectDraft.type === "room";
+  const color = isRoom ? WALL_COLOR : ((FIX[rectDraft.type] || {}).color || "#999");
   previewLine = new Konva.Line({
     points: [x0, y0, raw[0], y0, raw[0], raw[1], x0, raw[1]],
-    stroke: color, strokeWidth: 2, dash: [6, 4], closed: true, fill: color + "22", listening: false,
+    stroke: color, strokeWidth: 2, dash: [6, 4], closed: true,
+    fill: isRoom ? undefined : color + "22", listening: false,
   });
   uiLayer.add(previewLine);
   uiLayer.batchDraw();
   setStatus(`▭ ${fmtM(Math.abs(raw[0] - x0))} × ${fmtM(Math.abs(raw[1] - y0))} м`);
 }
 function finishRect() {
-  const raw = pointerPlan();
+  const raw = snapPoint(pointerPlan()) || pointerPlan();
   const [x0, y0] = rectDraft.start;
   const t = rectDraft.type;
   cancelRect();
@@ -618,13 +701,20 @@ function finishRect() {
   if (w < 0.2 || h < 0.2) { setStatus("Хэт жижиг — болилоо"); return; } // < 20 cm
   const x1 = round2(Math.min(x0, raw[0])), y1 = round2(Math.min(y0, raw[1]));
   const x2 = round2(Math.max(x0, raw[0])), y2 = round2(Math.max(y0, raw[1]));
-  PLAN.fixtures.push({ type: t, points: [[x1, y1], [x2, y1], [x2, y2], [x1, y2]] });
+  if (t === "room") {
+    // four connected walls (a closed loop) — the store outline in one drag
+    PLAN.walls.push({ points: [[x1, y1], [x2, y1], [x2, y2], [x1, y2], [x1, y1]] });
+    setStatus(`▭ Хана-дөрвөлжин ${fmtM(w)} × ${fmtM(h)} м нэмэгдлээ`);
+  } else {
+    PLAN.fixtures.push({ type: t, points: [[x1, y1], [x2, y1], [x2, y2], [x1, y2]] });
+    setStatus(`▦ ${fmtM(w)} × ${fmtM(h)} м нэмэгдлээ`);
+  }
   pushUndo();
   render();
-  setStatus(`▦ ${fmtM(w)} × ${fmtM(h)} м нэмэгдлээ`);
 }
 function cancelRect() {
   rectDraft = null;
+  clearSnapMarker();
   if (previewLine) { previewLine.destroy(); previewLine = null; uiLayer.batchDraw(); }
 }
 
@@ -1040,6 +1130,25 @@ document.getElementById("btn-snap").onclick = () => {
   document.getElementById("btn-snap").classList.toggle("active", snapOn);
   setStatus("Өнцөг-snap " + (snapOn ? "ON" : "OFF"));
 };
+function togglePointSnap() {
+  pointSnapOn = !pointSnapOn;
+  const b = document.getElementById("btn-psnap");
+  if (b) b.classList.toggle("active", pointSnapOn);
+  if (!pointSnapOn) { clearSnapMarker(); uiLayer.batchDraw(); }
+  setStatus("Цэг-snap " + (pointSnapOn ? "ON" : "OFF"));
+}
+function toggleOrtho() {
+  orthoOn = !orthoOn;
+  const b = document.getElementById("btn-ortho");
+  if (b) b.classList.toggle("active", orthoOn);
+  setStatus("Босоо/хэвтээ түгжээ " + (orthoOn ? "ON" : "OFF"));
+}
+{
+  const bp = document.getElementById("btn-psnap");
+  if (bp) bp.onclick = togglePointSnap;
+  const bo = document.getElementById("btn-ortho");
+  if (bo) bo.onclick = toggleOrtho;
+}
 document.getElementById("calib-save").onclick = saveCalibration;
 document.getElementById("calib-cancel").onclick = closeCalibration;
 document.getElementById("calib-undo").onclick = undoCalibPoint;
@@ -1065,19 +1174,27 @@ if (planBtn) planBtn.onclick = planApply;
 });
 
 // ── keyboard shortcuts ──────────────────────────────────────────────────────
-const TOOL_KEYS = ["select", "wall", "shelf", "exit", "checkout", "camera"];
+const TOOL_KEYS = ["select", "wall", "room", "shelf", "exit", "checkout", "camera"];
 window.addEventListener("keydown", (e) => {
   // Typing in an input (e.g. length) must not trigger tool shortcuts.
   if (e.target && e.target.tagName === "INPUT") return;
   if (e.ctrlKey && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); return; }
   if (e.ctrlKey && e.key.toLowerCase() === "y") { e.preventDefault(); redo(); return; }
   if (e.ctrlKey && e.key.toLowerCase() === "s") { e.preventDefault(); save(); return; }
-  if (e.key >= "1" && e.key <= "6") setTool(TOOL_KEYS[+e.key - 1]);
+  // While drawing a wall, typing a digit/decimal opens the length box pre-filled,
+  // so you can set the length without reaching for the toolbar.
+  if (draft && draft.type === "wall" && /^[0-9.]$/.test(e.key)) {
+    const i = document.getElementById("len-input");
+    if (i) { showLenInput(); i.value = e.key; i.focus(); e.preventDefault(); return; }
+  }
+  if (e.key >= "1" && e.key <= "7") setTool(TOOL_KEYS[+e.key - 1]);
   else if (e.key === "Enter") finishDraft();
   else if (e.key === "Escape") { cancelDraft(); cancelRect(); cancelMarquee(); deselect(); }
   else if (e.key === "Backspace" && draft) { draft.pts.pop(); if (!draft.pts.length) cancelDraft(); else drawPreview(draft.pts[draft.pts.length - 1], false); }
   else if (e.key === "Delete") deleteSelection();
   else if (e.key.toLowerCase() === "g") document.getElementById("btn-snap").click();
+  else if (e.key.toLowerCase() === "p") togglePointSnap();
+  else if (e.key.toLowerCase() === "o") toggleOrtho();
   else if (e.key.toLowerCase() === "f") fit();
   else if (e.key === " " && !panning) { e.preventDefault(); panning = true; stage.draggable(true); stage.container().style.cursor = "grab"; }
 });
