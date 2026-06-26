@@ -33,6 +33,17 @@ class EdgeConfig:
     reach_frac: float = 0.35  # wrist→item proximity as a fraction of person height
     near_frac: float = 0.18  # wrist→hip (concealment) proximity fraction
     min_kp_conf: float = 0.30
+    # Concealment gating (mirrors the cloud engine). Most retail merchandise is
+    # NOT a COCO class, so requiring a held COCO item silently disabled "хүн юм
+    # нуухад" detection — the #1 "it never catches me" cause. Default OFF → conceal
+    # fires on the wrist→pocket/waist gesture ALONE (the cloud VLM verifies the
+    # clip downstream, so a stray reach is filtered). Set True to restore the
+    # strict "must have picked up a COCO item first" gate.
+    require_holding: bool = False
+    # Keep "holding" latched this many seconds after the wrist last touched an
+    # item, so the act of concealing (which HIDES the item from YOLO) doesn't
+    # instantly clear the hold — concealment then counts as still-holding.
+    hold_latch_sec: float = 1.5
     # docs/29 P1c (edge parity) — zone-aware signals. exit_after_concealment is
     # strong (a concealed person entering an exit zone should push the gate open
     # so the clip is recorded + sent to the cloud VLM); repeated_shelf_visit is a

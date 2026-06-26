@@ -64,6 +64,29 @@ def test_edge_pc_camera_starts_worker(patched) -> None:
     assert c._workers["cam_a"].started is True  # noqa: SLF001
 
 
+def test_edge_pc_no_rtsp_but_loopback_starts(patched, monkeypatch) -> None:
+    # A camera re-registered + synced from the backend has NO local rtsp_url, but
+    # the push relay's loopback exists → the worker must still start off the hub.
+    monkeypatch.setattr(
+        ctrl_mod,
+        "get_stream_controller",
+        lambda: SimpleNamespace(local_url=lambda p: f"rtsp://127.0.0.1:18554/{p}"),
+    )
+    patched([_cam("edge_pc", path="cam_a", rtsp=None)])
+    c = EdgeController()
+    c.refresh()
+    assert set(c._workers) == {"cam_a"}  # noqa: SLF001
+    assert c._workers["cam_a"].src_url == "rtsp://127.0.0.1:18554/cam_a"  # noqa: SLF001
+
+
+def test_edge_pc_no_rtsp_no_loopback_skipped(patched) -> None:
+    # Neither a loopback (default fixture local_url→None) nor a stored rtsp → skip.
+    patched([_cam("edge_pc", path="cam_a", rtsp=None)])
+    c = EdgeController()
+    c.refresh()
+    assert c._workers == {}  # noqa: SLF001
+
+
 def test_removed_camera_stops_worker(patched) -> None:
     patched([_cam("edge_pc", path="cam_a")])
     c = EdgeController()

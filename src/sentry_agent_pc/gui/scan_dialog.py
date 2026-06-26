@@ -119,6 +119,8 @@ class ScanDialog(ctk.CTkToplevel):
         # Cancels the in-flight background scan (on close or rescan) so its ONVIF
         # wait + LAN sweep wind down instead of running to completion detached.
         self._scan_cancel: threading.Event | None = None
+        # Failures in the current register pass; 0 → auto-close on completion.
+        self._reg_failures = 0
 
         # Bottom button bar FIRST so it stays visible when results fill up.
         self.btn_row = ctk.CTkFrame(self, fg_color="transparent")
@@ -291,14 +293,28 @@ class ScanDialog(ctk.CTkToplevel):
             return
         self.register_btn.configure(state="disabled")
         self.rescan_btn.configure(state="disabled")
+        self._reg_failures = 0
         self._register_next(selected, 0)
 
     def _register_next(self, rows: list[_DeviceRow], idx: int) -> None:
         if idx >= len(rows):
-            self.info_lbl.configure(text="Бүртгэл дууслаа.", text_color="#4ADE80")
             self.on_done()
-            self.register_btn.configure(state="normal")
-            self.rescan_btn.configure(state="normal")
+            if self._reg_failures == 0:
+                # Every selected camera registered → the operator's work here is
+                # done, so close automatically after a beat (long enough to read
+                # the green success on each row). On any failure we stay open so
+                # the error + retry remain visible.
+                self.info_lbl.configure(
+                    text="Бүртгэл амжилттай — цонх хаагдаж байна…", text_color="#4ADE80"
+                )
+                self.after(1200, self._safe_destroy)
+            else:
+                self.info_lbl.configure(
+                    text=f"Бүртгэл дууслаа — {self._reg_failures} камер амжилтгүй.",
+                    text_color="#FBBF24",
+                )
+                self.register_btn.configure(state="normal")
+                self.rescan_btn.configure(state="normal")
             return
 
         row = rows[idx]
@@ -334,10 +350,20 @@ class ScanDialog(ctk.CTkToplevel):
                 res_txt = f"{res[0]}×{res[1]}" if res else ""
                 row.set_status(f"✅ {r.get('codec', '').upper()} {res_txt}", "#4ADE80")
             else:
+                self._reg_failures += 1
                 row.set_status(f"❌ {r.get('error', 'алдаа')[:60]}", "#FF6B6B")
             self._register_next(rows, idx + 1)
 
         self._run_bg(work, done)
+
+    def _safe_destroy(self) -> None:
+        # Auto-close target: the dialog may already be gone (user clicked Хаах
+        # during the delay), so guard the scheduled destroy.
+        try:
+            if self.winfo_exists():
+                self.destroy()
+        except tk.TclError:
+            pass
 
     def destroy(self) -> None:
         # Closing the dialog cancels any running scan so its ONVIF wait + LAN
