@@ -45,6 +45,7 @@
       button.primary { background: var(--primary); color: #fff; border-color: var(--primary); font-weight: 600; }
       button.primary:hover { background: var(--primary2); }
       .body { flex: 1; display: flex; min-height: 0; }
+      .canvas-wrap { flex: 1; position: relative; display: flex; min-width: 0; min-height: 0; }
       #canvas-holder { flex: 1; background: #0e0e10; position: relative; }
       aside {
         width: 250px; border-left: 1px solid var(--border); background: var(--panel);
@@ -109,11 +110,37 @@
         font-size: 12px; color: var(--muted);
       }
       #len-wrap.len-hidden { display: none; }
-      #len-input {
-        width: 70px; background: var(--panel2); color: var(--fg);
+      #len-input, #rw-input, #rh-input {
+        width: 64px; background: var(--panel2); color: var(--fg);
         border: 1px solid var(--primary); border-radius: 6px; padding: 5px 7px; font-size: 13px;
       }
       .len-hint { color: #6f6f78; font-size: 11px; }
+      /* fixture width×height inputs (shown only in a fixture tool) */
+      #rect-wrap {
+        display: inline-flex; align-items: center; gap: 6px; padding: 0 8px;
+        font-size: 12px; color: var(--muted);
+      }
+      #rect-wrap.len-hidden { display: none; }
+      /* on-canvas scale bar (bottom-left) */
+      #scalebar {
+        position: absolute; left: 14px; bottom: 14px; height: 0;
+        border-bottom: 3px solid var(--fg); border-left: 2px solid var(--fg);
+        border-right: 2px solid var(--fg); padding-bottom: 3px; min-width: 24px;
+        color: var(--fg); font-size: 11px; text-align: center; line-height: 1;
+        background: rgba(10,10,10,0.55); pointer-events: none; white-space: nowrap;
+      }
+      /* plan real-size + selected-shape dimension panel */
+      #plan-size { margin: 8px 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+      #plan-size input { width: 58px; background: var(--panel2); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 6px; font-size: 12px; }
+      #plan-apply { padding: 5px 9px; font-size: 12px; }
+      #totals { margin: 8px 0; padding: 8px 10px; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; font-size: 12px; color: var(--muted); line-height: 1.7; }
+      #shape-settings { margin: 10px 0; padding: 10px; background: var(--panel2); border: 1px solid var(--primary); border-radius: 8px; }
+      #shape-settings.cs-hidden { display: none; }
+      #shape-settings h2 { font-size: 13px; margin: 0 0 8px; }
+      .ss-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); margin: 5px 0; }
+      .ss-row input { width: 90px; background: var(--panel); color: var(--fg); border: 1px solid var(--primary); border-radius: 6px; padding: 5px 7px; font-size: 13px; }
+      .ss-muted { font-size: 11.5px; color: #8a8a93; margin: 5px 0; line-height: 1.6; }
+      #shape-settings button { margin-top: 6px; width: 100%; }
     </style>
   </head>
   <body>
@@ -141,31 +168,47 @@
         <button id="btn-undo">↶</button>
         <button id="btn-redo">↷</button>
         <span id="len-wrap" class="len-hidden">
-          урт <input id="len-input" type="number" min="1" step="1" placeholder="px" />
+          урт (м) <input id="len-input" type="number" min="0.01" step="0.01" placeholder="м" />
           <span class="len-hint">+Enter</span>
+        </span>
+        <span id="rect-wrap" class="len-hidden">
+          өргөн <input id="rw-input" type="number" min="0.1" step="0.01" placeholder="м" />
+          × өндөр <input id="rh-input" type="number" min="0.1" step="0.01" placeholder="м" />
+          <span class="len-hint">бичээд товш</span>
         </span>
       </div>
 
       <div class="body">
-        <div id="canvas-holder"></div>
+        <div class="canvas-wrap">
+          <div id="canvas-holder"></div>
+          <div id="scalebar">10 м</div>
+        </div>
         <aside>
+          <h2>Талбайн хэмжээ</h2>
+          <div id="plan-size">
+            <input id="plan-w" type="number" min="1" step="0.1" /> ×
+            <input id="plan-h" type="number" min="1" step="0.1" /> м
+            <button id="plan-apply">Тавих</button>
+          </div>
+          <div id="totals"></div>
+          <div id="shape-settings" class="cs-hidden"></div>
           <h2>Байрлуулах камер</h2>
           <select id="cam-pick"></select>
           <div id="cam-settings" class="cs-hidden"></div>
           <p class="hint">
-            «📐 Жишээ загвар» — бэлэн дэлгүүрийн план ачаалж, өөрийнхөө дэлгүүрт
-            тааруулж засна (шууд ашиглах эсвэл бага зэрэг өөрчлөх). «🆕 Шинээр
-            эхлэх» — бүгдийг цэвэрлэж хоосноос зурна. «Камер» горимд камераа
-            байрлуул. <b>«Тавиур/Орц/Касс» горимд зүгээр чирээд тэгш өнцөгт</b> зур
-            (Shift хэрэггүй). <b>«Хана» горимд</b> дараалан дарж зурна; чиглэлээ
-            заагаад <b>урт (px) бичээд Enter</b> дарвал тухайн уртаар яг тавина,
-            давхар дарж/Enter-ээр дуусга. <b>«Сонгох» горимд</b>: элемент дарж
-            сонгоод чирч зөөх/эргүүлэх/булан засах; хоосон зайд чирж <b>талбар
-            сонгоод</b> олон объектыг Del/«🗑 Устгах»-аар устга. Space+чирэх = гүйлгэх.
-            Камер дээр «📐»-аар калибровк (камер-зураг ‖ план 4+ цэг).
+            Бүх хэмжээ <b>метрээр</b>. «Талбайн хэмжээ»-нд дэлгүүрийнхээ
+            өргөн×өндрийг метрээр оруул (анхдагч 200×200). <b>«Тавиур/Орц/Касс»</b>:
+            чирээд тэгш өнцөгт зур, эсвэл <b>өргөн×өндрийг метрээр бичээд</b> нэг
+            товшилтоор тавь. <b>«Хана»</b>: дараалан дарж зур; чиглэлээ заагаад
+            <b>урт (м, 2 орон) бичээд Enter</b> дарвал яг тэр уртаар тавина, хоосон
+            Enter/давхар дарж дуусга. <b>«Сонгох»</b>: дүрс дээр дарж сонгоод
+            <b>нэг чирэлтээр зөөх</b>, булан чирж хэлбэр засах; сонгосон дүрсний
+            <b>хэмжээг хажуугаас тоогоор засах</b>. Хана/дөрвөлжин дээр урт/Ө×Ө,
+            талбай (м²) шошго харагдана. Space+чирэх = гүйлгэх. Камер дээр «📐»-аар
+            калибровк.
           </p>
           <div class="keys">⌨ 1 Сонгох · 2 Хана · 3 Тавиур · 4 Орц · 5 Касс · 6 Камер
-Тавиур/Орц/Касс: чирэх=тэгш өнцөгт · Хана: урт+Enter
+Тавиур/Орц/Касс: чирэх эсвэл Ө×Ө(м) · Хана: урт(м)+Enter
 Enter дуусгах · Esc болих · Del устгах · Space+чирэх гүйлгэх
 G өнцөг-snap · F багтаах · Ctrl+Z/Y · Ctrl+S</div>
           <h2 style="margin-top:14px">Элементүүд</h2>

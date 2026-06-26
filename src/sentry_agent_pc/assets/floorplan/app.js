@@ -17,7 +17,33 @@ const CAM_COLOR = "#2563EB"; // brand royal-blue (the camera is the Sentry eleme
 const SNAP_DEG = 15;
 const ROT_SNAPS = [0, 45, 90, 135, 180, 225, 270, 315];
 
-let PLAN = { version: 1, size: [1000, 800], walls: [], fixtures: [], cameras: [] };
+// ── real-world scale ────────────────────────────────────────────────────────
+// 1 plan-unit == 1 METRE. PLAN.size therefore IS the store's real width × height
+// in metres (default 200×200 m), so lengths are entered/shown directly in metres.
+const DEFAULT_SIZE_M = [200, 200];
+const GRID_MINOR_M = 5; // faint grid line every 5 m
+const GRID_MAJOR_M = 25; // brighter, labelled grid line every 25 m
+const COORD_DP = 2; // store coords to 2 dp → 1 cm precision
+const SHOW_AREA = true; // show m² on fixtures + a store-area total
+
+const round2 = (v) => Math.round(v * 100) / 100;
+const fmtM = (u) => round2(u).toFixed(COORD_DP); // "12.50"
+// polygon area via the shoelace formula → m² (points are metres)
+function polyArea(pts) {
+  let a = 0;
+  for (let i = 0, n = pts.length; i < n; i++) {
+    const p = pts[i], q = pts[(i + 1) % n];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return Math.abs(a) / 2;
+}
+// width × height of a points bounding box, in metres
+function bbox(pts) {
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+}
+
+let PLAN = { version: 1, size: DEFAULT_SIZE_M.slice(), walls: [], fixtures: [], cameras: [] };
 let cameras = []; // registered cameras [{camera_id, name}]
 const camStatus = {}; // camera_id → { online: bool|undefined } from a live check
 const REPROJ_WARN = 0.05; // >5% reprojection error = a shaky calibration (yellow)
@@ -102,6 +128,9 @@ function setTool(t) {
   // the click handler would need a 2nd drag). Off in draw modes so it can't
   // interfere with drawing.
   setShapesDraggable(t === "select");
+  // Show the fixture width×height inputs only in a fixture tool.
+  const rw = document.getElementById("rect-wrap");
+  if (rw) rw.classList.toggle("len-hidden", !FIX[t]);
   stage.container().style.cursor = t === "select" ? "default" : "crosshair";
 }
 
@@ -124,8 +153,34 @@ function render() {
   camLayer.draw();
   drawGrid();
   renderElements();
+  renderTotals();
   // Nodes are recreated non-draggable; restore one-gesture move in select mode.
   setShapesDraggable(tool === "select");
+}
+
+// Sidebar readout: store dimensions/area + element counts (metres, m²).
+function renderTotals() {
+  const el = document.getElementById("totals");
+  if (!el) return;
+  const [pw, ph] = PLAN.size;
+  const fixArea = PLAN.fixtures.reduce((s, f) => s + polyArea(f.points), 0);
+  el.innerHTML =
+    `Талбай: <b>${fmtM(pw)} × ${fmtM(ph)} м</b> · ${Math.round(pw * ph).toLocaleString()} м²<br>` +
+    (SHOW_AREA ? `Объект эзэлхүүн: <b>${fmtM(fixArea)} м²</b><br>` : "") +
+    `Тавиур/объект: <b>${PLAN.fixtures.length}</b> · Хана: <b>${PLAN.walls.length}</b> · Камер: <b>${PLAN.cameras.length}</b>`;
+  const wi = document.getElementById("plan-w"), hi = document.getElementById("plan-h");
+  if (wi && document.activeElement !== wi) wi.value = fmtM(pw);
+  if (hi && document.activeElement !== hi) hi.value = fmtM(ph);
+}
+// Set the store's real width × height (metres) and refit.
+function setPlanSize(w, h) {
+  if (!(w > 0 && h > 0)) return;
+  PLAN.size = [round2(w), round2(h)];
+  deselect();
+  pushUndo();
+  render();
+  fit();
+  setStatus(`Талбайн хэмжээ ${fmtM(w)} × ${fmtM(h)} м`);
 }
 
 function makeLine(pts, color, closed, kind, idx, label) {
@@ -148,13 +203,45 @@ function makeLine(pts, color, closed, kind, idx, label) {
   });
   if (label && pts.length) {
     const t = new Konva.Text({
-      x: pts[0][0] + 4, y: pts[0][1] - 16, text: label, fontSize: 13,
-      fontStyle: "bold", fill: color, listening: false,
+      x: pts[0][0] + 4, y: pts[0][1] - 16 / stage.scaleX(), text: label,
+      fontSize: 13 / stage.scaleX(), fontStyle: "bold", fill: color, listening: false,
     });
     line._label = t;
     shapeLayer.add(t);
   }
+  addDimLabels(pts, color, kind);
   return line;
+}
+
+// Always-on measurement labels (metres): per-segment length for walls; a centred
+// «W × H м» + area «… м²» for fixtures. Counter-scaled so they read ~constant on
+// screen; rebuilt every render(), so no manual cleanup.
+function addDimLabels(pts, color, kind) {
+  const fs = 11 / stage.scaleX();
+  const mk = (x, y, text, opts) => shapeLayer.add(new Konva.Text(Object.assign(
+    { x, y, text, fontSize: fs, fill: "#cbd5e1", listening: false, fontStyle: "bold" }, opts || {})));
+  if (kind === "wall") {
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1];
+      const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (len < 1e-6) continue;
+      // nudge the label just off the segment midpoint (perpendicular)
+      const nx = -(b[1] - a[1]) / len, ny = (b[0] - a[0]) / len;
+      mk((a[0] + b[0]) / 2 + nx * fs * 0.6, (a[1] + b[1]) / 2 + ny * fs * 0.6, `${fmtM(len)} м`, { fill: "#e2e8f0" });
+    }
+  } else {
+    const b = bbox(pts);
+    const lines = [`${fmtM(b.w)} × ${fmtM(b.h)} м`];
+    if (SHOW_AREA) lines.push(`${fmtM(polyArea(pts))} м²`);
+    const t = new Konva.Text({
+      text: lines.join("\n"), fontSize: fs, fill: color, fontStyle: "bold",
+      align: "center", lineHeight: 1.15, listening: false,
+    });
+    t.position({ x: b.x + b.w / 2, y: b.y + b.h / 2 });
+    t.offsetX(t.width() / 2);
+    t.offsetY(t.height() / 2);
+    shapeLayer.add(t);
+  }
 }
 
 // Status badge color + mark for a camera icon: red=offline, yellow=needs/shaky
@@ -215,13 +302,36 @@ function makeCamera(cam, idx) {
 function drawGrid() {
   gridLayer.destroyChildren();
   const [pw, ph] = PLAN.size;
-  const step = 50;
-  for (let x = 0; x <= pw; x += step)
-    gridLayer.add(new Konva.Line({ points: [x, 0, x, ph], stroke: "#1c1c20", strokeWidth: 1 / stage.scaleX() }));
-  for (let y = 0; y <= ph; y += step)
-    gridLayer.add(new Konva.Line({ points: [0, y, pw, y], stroke: "#1c1c20", strokeWidth: 1 / stage.scaleX() }));
-  gridLayer.add(new Konva.Rect({ x: 0, y: 0, width: pw, height: ph, stroke: "#33333a", strokeWidth: 1 / stage.scaleX() }));
+  const sx = stage.scaleX() || 1;
+  // Too many minor lines (a very large plan) → drop them, keep the major grid.
+  const minor = pw / GRID_MINOR_M > 600 || ph / GRID_MINOR_M > 600 ? GRID_MAJOR_M : GRID_MINOR_M;
+  const isMajor = (v) => Math.abs(v % GRID_MAJOR_M) < 1e-6 || Math.abs((v % GRID_MAJOR_M) - GRID_MAJOR_M) < 1e-6;
+  const fs = 10 / sx;
+  for (let x = 0; x <= pw + 1e-6; x += minor) {
+    const major = isMajor(x);
+    gridLayer.add(new Konva.Line({ points: [x, 0, x, ph], stroke: major ? "#2b2b33" : "#191920", strokeWidth: (major ? 1.2 : 1) / sx, listening: false }));
+    if (major && x > 0) gridLayer.add(new Konva.Text({ x: x + 2 / sx, y: 2 / sx, text: String(Math.round(x)), fontSize: fs, fill: "#52525b", listening: false }));
+  }
+  for (let y = 0; y <= ph + 1e-6; y += minor) {
+    const major = isMajor(y);
+    gridLayer.add(new Konva.Line({ points: [0, y, pw, y], stroke: major ? "#2b2b33" : "#191920", strokeWidth: (major ? 1.2 : 1) / sx, listening: false }));
+    if (major && y > 0) gridLayer.add(new Konva.Text({ x: 2 / sx, y: y + 2 / sx, text: String(Math.round(y)), fontSize: fs, fill: "#52525b", listening: false }));
+  }
+  gridLayer.add(new Konva.Rect({ x: 0, y: 0, width: pw, height: ph, stroke: "#3f3f46", strokeWidth: 1.5 / sx, listening: false }));
   gridLayer.draw();
+  updateScaleBar();
+}
+
+// A bottom-left scale bar: pick a "nice" metre length that's ≤ ~130 px on screen.
+function updateScaleBar() {
+  const bar = document.getElementById("scalebar");
+  if (!bar) return;
+  const sx = stage.scaleX() || 1;
+  const nice = [0.5, 1, 2, 5, 10, 20, 25, 50, 100, 200, 500];
+  let m = nice[0];
+  for (const n of nice) { if (n * sx <= 130) m = n; }
+  bar.style.width = Math.round(m * sx) + "px";
+  bar.textContent = m >= 1 ? `${m} м` : `${m * 100} см`;
 }
 
 // ── selection / transform / vertex editing ──────────────────────────────
@@ -232,6 +342,7 @@ function deselect() {
   selectedNode = null;
   clearMarqueeSel();
   hideCameraSettings();
+  hideShapeSettings();
   uiLayer.draw();
 }
 
@@ -257,25 +368,102 @@ function selectShape(line, kind, idx) {
       strokeWidth: 1, draggable: true,
     });
     a.on("dragmove", () => {
-      arr[vi] = [a.x(), a.y()];
+      arr[vi] = [round2(a.x()), round2(a.y())];
       line.points(arr.flat());
-      if (line._label) line._label.position({ x: arr[0][0] + 4, y: arr[0][1] - 16 });
+      if (line._label) line._label.position({ x: arr[0][0] + 4, y: arr[0][1] - 16 / stage.scaleX() });
       shapeLayer.batchDraw();
     });
-    a.on("dragend", pushUndo);
+    a.on("dragend", () => { pushUndo(); reselectShape(selectedNode.kind, idx); }); // refresh dim labels
     vertexAnchors.push(a);
     uiLayer.add(a);
   });
   // Moving the whole shape bakes the offset back into the points.
   line.on("dragend", () => {
     const ox = line.x(), oy = line.y();
-    arr.forEach((p) => { p[0] += ox; p[1] += oy; });
+    arr.forEach((p) => { p[0] = round2(p[0] + ox); p[1] = round2(p[1] + oy); });
     line.points(arr.flat());
     line.position({ x: 0, y: 0 });
     pushUndo();
-    selectShape(line, kind, idx); // refresh anchors at new spot
+    reselectShape(kind === "wall" ? "walls" : "fixtures", idx); // refresh anchors + dim labels
   });
+  showShapeSettings(selectedNode.kind, idx);
   uiLayer.draw();
+}
+
+// ── selected-shape dimension panel (edit width×height / wall length in m) ────
+function hideShapeSettings() {
+  const el = document.getElementById("shape-settings");
+  if (el) { el.classList.add("cs-hidden"); el.innerHTML = ""; }
+}
+function showShapeSettings(kindPlural, idx) {
+  const el = document.getElementById("shape-settings");
+  if (!el) return;
+  if (kindPlural === "fixtures") {
+    const f = PLAN.fixtures[idx];
+    const b = bbox(f.points);
+    el.innerHTML =
+      `<h2>▦ ${(FIX[f.type] || {}).label || f.type}</h2>` +
+      `<div class="ss-row">өргөн (м)<input id="ss-w" type="number" min="0.1" step="0.01" value="${fmtM(b.w)}"></div>` +
+      `<div class="ss-row">өндөр (м)<input id="ss-h" type="number" min="0.1" step="0.01" value="${fmtM(b.h)}"></div>` +
+      `<div class="ss-muted">Талбай: ${fmtM(polyArea(f.points))} м²</div>` +
+      `<button id="ss-apply" class="primary">Хэмжээ тавих</button>`;
+    el.classList.remove("cs-hidden");
+    const apply = () => {
+      const w = parseFloat(document.getElementById("ss-w").value);
+      const h = parseFloat(document.getElementById("ss-h").value);
+      if (w > 0 && h > 0) resizeFixture(idx, w, h);
+    };
+    document.getElementById("ss-apply").onclick = apply;
+  } else if (kindPlural === "walls") {
+    const segs = [];
+    const pts = PLAN.walls[idx].points;
+    for (let i = 0; i < pts.length - 1; i++) segs.push(Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]));
+    if (segs.length === 1) {
+      el.innerHTML =
+        `<h2>▭ Хана</h2>` +
+        `<div class="ss-row">урт (м)<input id="ss-l" type="number" min="0.1" step="0.01" value="${fmtM(segs[0])}"></div>` +
+        `<button id="ss-apply" class="primary">Урт тавих</button>`;
+      el.classList.remove("cs-hidden");
+      document.getElementById("ss-apply").onclick = () => {
+        const l = parseFloat(document.getElementById("ss-l").value);
+        if (l > 0) setWallLen(idx, l);
+      };
+    } else {
+      el.innerHTML =
+        `<h2>▭ Хана</h2>` +
+        `<div class="ss-muted">${segs.map((s, i) => `${i + 1}: ${fmtM(s)} м`).join("<br>")}</div>` +
+        `<div class="ss-muted">Нийт: ${fmtM(segs.reduce((a, b) => a + b, 0))} м</div>`;
+      el.classList.remove("cs-hidden");
+    }
+  } else {
+    hideShapeSettings();
+  }
+}
+// Re-render then re-select the same shape (panel + anchors stay live after edit).
+function reselectShape(kindPlural, idx) {
+  render();
+  const singular = kindPlural === "walls" ? "wall" : "fixture";
+  let n = null;
+  shapeLayer.find("Line").forEach((l) => { if (l.name() === `${singular}:${idx}`) n = l; });
+  if (n) selectShape(n, singular, idx);
+}
+function resizeFixture(idx, w, h) {
+  const f = PLAN.fixtures[idx];
+  const b = bbox(f.points);
+  const x1 = round2(b.x), y1 = round2(b.y), x2 = round2(b.x + w), y2 = round2(b.y + h);
+  f.points = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
+  pushUndo();
+  reselectShape("fixtures", idx);
+  setStatus(`Хэмжээ ${fmtM(w)} × ${fmtM(h)} м`);
+}
+function setWallLen(idx, l) {
+  const pts = PLAN.walls[idx].points;
+  const a = pts[0], b = pts[1];
+  const d = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+  pts[1] = [round2(a[0] + ((b[0] - a[0]) / d) * l), round2(a[1] + ((b[1] - a[1]) / d) * l)];
+  pushUndo();
+  reselectShape("walls", idx);
+  setStatus(`Урт ${fmtM(l)} м`);
 }
 
 // ── drawing ──────────────────────────────────────────────────────────────
@@ -302,16 +490,16 @@ function hideLenInput() {
   if (i) i.value = "";
 }
 function applyLenInput() {
-  const len = parseFloat(document.getElementById("len-input").value);
+  const len = parseFloat(document.getElementById("len-input").value); // metres
   if (!draft || !draft.pts.length || !(len > 0)) return;
   const last = draft.pts[draft.pts.length - 1];
   const aim = snapSeg(last, lastPointer || [last[0] + 1, last[1]], false);
-  let dx = aim[0] - last[0], dy = aim[1] - last[1];
+  const dx = aim[0] - last[0], dy = aim[1] - last[1];
   const d = Math.hypot(dx, dy) || 1;
-  draft.pts.push([+(last[0] + (dx / d) * len).toFixed(1), +(last[1] + (dy / d) * len).toFixed(1)]);
+  draft.pts.push([round2(last[0] + (dx / d) * len), round2(last[1] + (dy / d) * len)]);
   document.getElementById("len-input").value = "";
   drawPreview(draft.pts[draft.pts.length - 1], false);
-  setStatus(`Сегмент ${len} нэмэгдлээ — чиглэл заагаад дахин урт оруул, эсвэл Enter-ээр дуусга`);
+  setStatus(`Сегмент ${fmtM(len)} м нэмэгдлээ — чиглэл заагаад дахин урт оруул, эсвэл Enter-ээр дуусга`);
 }
 
 stage.on("mousedown", (e) => {
@@ -324,16 +512,38 @@ stage.on("mousedown", (e) => {
     return;
   }
   if (tool === "camera") { placeCamera(raw); return; }
-  // Fixtures (тавиур/орц-гарц/касс) are boxes → just drag a rectangle (no Shift).
-  if (FIX[tool]) { startRect(raw); return; }
+  // Fixtures (тавиур/орц-гарц/касс) are boxes. If a width×height (m) is typed,
+  // one click drops that exact box; otherwise just drag a rectangle (no Shift).
+  if (FIX[tool]) {
+    const dims = rectDims();
+    if (dims) placeRectExact(raw, dims.w, dims.h);
+    else startRect(raw);
+    return;
+  }
   // wall: add a (snapped) polyline vertex; offer numeric length for the next one.
   const prev = draft && draft.pts.length ? draft.pts[draft.pts.length - 1] : null;
   const p = snapSeg(prev, raw, false);
   if (!draft) draft = { type: tool, pts: [] };
-  draft.pts.push(p);
+  draft.pts.push([round2(p[0]), round2(p[1])]);
   drawPreview(raw, false);
   showLenInput();
 });
+
+// Read the typed fixture width×height (m), or null if not both > 0.
+function rectDims() {
+  const w = parseFloat((document.getElementById("rw-input") || {}).value);
+  const h = parseFloat((document.getElementById("rh-input") || {}).value);
+  return w > 0 && h > 0 ? { w, h } : null;
+}
+// Drop a fixture rectangle of an EXACT size (metres), top-left at the click.
+function placeRectExact(raw, w, h) {
+  const x1 = round2(raw[0]), y1 = round2(raw[1]);
+  const x2 = round2(x1 + w), y2 = round2(y1 + h);
+  PLAN.fixtures.push({ type: tool, points: [[x1, y1], [x2, y1], [x2, y2], [x1, y2]] });
+  pushUndo();
+  render();
+  setStatus(`▦ ${fmtM(w)} × ${fmtM(h)} м нэмэгдлээ`);
+}
 
 stage.on("mousemove", () => {
   lastPointer = pointerPlan();
@@ -363,7 +573,7 @@ function drawPreview(raw, shift) {
   if (last) {
     const ang = ((Math.atan2(hover[1] - last[1], hover[0] - last[0]) * 180) / Math.PI + 360) % 360;
     const len = Math.hypot(hover[0] - last[0], hover[1] - last[1]);
-    setStatus(`∠ ${ang.toFixed(0)}°  ·  урт ${len.toFixed(0)}`);
+    setStatus(`∠ ${ang.toFixed(0)}°  ·  урт ${fmtM(len)} м`);
   }
   uiLayer.batchDraw();
 }
@@ -397,7 +607,7 @@ function previewRect(raw) {
   });
   uiLayer.add(previewLine);
   uiLayer.batchDraw();
-  setStatus(`▭ ${Math.abs(raw[0] - x0).toFixed(0)} × ${Math.abs(raw[1] - y0).toFixed(0)}`);
+  setStatus(`▭ ${fmtM(Math.abs(raw[0] - x0))} × ${fmtM(Math.abs(raw[1] - y0))} м`);
 }
 function finishRect() {
   const raw = pointerPlan();
@@ -405,13 +615,13 @@ function finishRect() {
   const t = rectDraft.type;
   cancelRect();
   const w = Math.abs(raw[0] - x0), h = Math.abs(raw[1] - y0);
-  if (w < 5 || h < 5) { setStatus("Хэт жижиг — болилоо"); return; }
-  const x1 = Math.min(x0, raw[0]), y1 = Math.min(y0, raw[1]);
-  const x2 = Math.max(x0, raw[0]), y2 = Math.max(y0, raw[1]);
+  if (w < 0.2 || h < 0.2) { setStatus("Хэт жижиг — болилоо"); return; } // < 20 cm
+  const x1 = round2(Math.min(x0, raw[0])), y1 = round2(Math.min(y0, raw[1]));
+  const x2 = round2(Math.max(x0, raw[0])), y2 = round2(Math.max(y0, raw[1]));
   PLAN.fixtures.push({ type: t, points: [[x1, y1], [x2, y1], [x2, y2], [x1, y2]] });
   pushUndo();
   render();
-  setStatus("Тэгш өнцөгт нэмэгдлээ");
+  setStatus(`▦ ${fmtM(w)} × ${fmtM(h)} м нэмэгдлээ`);
 }
 function cancelRect() {
   rectDraft = null;
@@ -792,15 +1002,17 @@ const TEMPLATE = {
   ],
 };
 function loadTemplate() {
-  PLAN.size = [1000, 800];
-  PLAN.walls = JSON.parse(JSON.stringify(TEMPLATE.walls));
-  PLAN.fixtures = JSON.parse(JSON.stringify(TEMPLATE.fixtures));
+  const K = 0.05; // template is authored in 1000×800 units → a realistic 50×40 m store
+  const sc = (pts) => pts.map(([x, y]) => [round2(x * K), round2(y * K)]);
+  PLAN.size = [50, 40];
+  PLAN.walls = TEMPLATE.walls.map((w) => ({ points: sc(w.points) }));
+  PLAN.fixtures = TEMPLATE.fixtures.map((f) => ({ type: f.type, points: sc(f.points) }));
   // keep PLAN.cameras — the user's placed cameras are theirs
   deselect();
   pushUndo();
   render();
   fit();
-  setStatus("Жишээ загвар ачаалагдлаа — өөрийн дэлгүүрт тааруулж засаарай");
+  setStatus("Жишээ загвар (50 × 40 м) ачаалагдлаа — өөрийн дэлгүүрт тааруулж засаарай");
 }
 
 // ── fit ─────────────────────────────────────────────────────────────────────
@@ -840,6 +1052,16 @@ document.getElementById("len-input").addEventListener("keydown", (e) => {
     else if (draft) { e.target.blur(); finishDraft(); }
   } else if (e.key === "Escape") { e.target.blur(); }
   e.stopPropagation(); // don't let digits hit the tool shortcuts below
+});
+
+// Plan real-size (W×H metres) controls.
+const planApply = () =>
+  setPlanSize(parseFloat(document.getElementById("plan-w").value), parseFloat(document.getElementById("plan-h").value));
+const planBtn = document.getElementById("plan-apply");
+if (planBtn) planBtn.onclick = planApply;
+["plan-w", "plan-h"].forEach((id) => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); planApply(); } e.stopPropagation(); });
 });
 
 // ── keyboard shortcuts ──────────────────────────────────────────────────────
@@ -913,7 +1135,7 @@ async function boot() {
 function normalize(p) {
   return {
     version: p.version || 1,
-    size: p.size && p.size.length === 2 ? p.size : [1000, 800],
+    size: p.size && p.size.length === 2 ? p.size : DEFAULT_SIZE_M.slice(),
     walls: (p.walls || []).map((w) => ({ points: w.points || [] })),
     fixtures: (p.fixtures || []).map((f) => ({ id: f.id, type: f.type, points: f.points || [] })),
     cameras: (p.cameras || []).map((c) => ({
