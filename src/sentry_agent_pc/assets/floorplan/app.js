@@ -20,7 +20,7 @@ const ROT_SNAPS = [0, 45, 90, 135, 180, 225, 270, 315];
 // ── real-world scale ────────────────────────────────────────────────────────
 // 1 plan-unit == 1 METRE. PLAN.size therefore IS the store's real width × height
 // in metres (default 200×200 m), so lengths are entered/shown directly in metres.
-const DEFAULT_SIZE_M = [200, 200];
+const DEFAULT_SIZE_M = [40, 30]; // realistic store; adjustable via «Талбайн хэмжээ»
 const GRID_MINOR_M = 5; // faint grid line every 5 m
 const GRID_MAJOR_M = 25; // brighter, labelled grid line every 25 m
 const COORD_DP = 2; // store coords to 2 dp → 1 cm precision
@@ -645,8 +645,8 @@ function drawPreview(raw, shift) {
   const flat = pts.flat().concat(hover);
   previewLine = new Konva.Line({ points: flat, stroke: color, strokeWidth: 2, dash: [6, 4], listening: false });
   uiLayer.add(previewLine);
-  // vertex dots
-  pts.forEach((p) => uiLayer.add(new Konva.Circle({ x: p[0], y: p[1], radius: 4 / stage.scaleX(), fill: color, listening: false })));
+  // (no per-vertex dots — the dashed preview line + snap ring are enough, and
+  //  loose dots were never cleaned up → they lingered after drawing.)
   if (last) {
     const ang = ((Math.atan2(hover[1] - last[1], hover[0] - last[0]) * 180) / Math.PI + 360) % 360;
     const len = Math.hypot(hover[0] - last[0], hover[1] - last[1]);
@@ -1092,9 +1092,9 @@ const TEMPLATE = {
   ],
 };
 function loadTemplate() {
-  const K = 0.05; // template is authored in 1000×800 units → a realistic 50×40 m store
+  const K = 0.03; // template authored in 1000×800 units → a realistic 30×24 m store
   const sc = (pts) => pts.map(([x, y]) => [round2(x * K), round2(y * K)]);
-  PLAN.size = [50, 40];
+  PLAN.size = [30, 24];
   PLAN.walls = TEMPLATE.walls.map((w) => ({ points: sc(w.points) }));
   PLAN.fixtures = TEMPLATE.fixtures.map((f) => ({ type: f.type, points: sc(f.points) }));
   // keep PLAN.cameras — the user's placed cameras are theirs
@@ -1102,7 +1102,7 @@ function loadTemplate() {
   pushUndo();
   render();
   fit();
-  setStatus("Жишээ загвар (50 × 40 м) ачаалагдлаа — өөрийн дэлгүүрт тааруулж засаарай");
+  setStatus("Жишээ загвар (30 × 24 м) ачаалагдлаа — өөрийн дэлгүүрт тааруулж засаарай");
 }
 
 // ── fit ─────────────────────────────────────────────────────────────────────
