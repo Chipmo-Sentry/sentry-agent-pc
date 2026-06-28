@@ -1474,7 +1474,10 @@ class AgentApp(ctk.CTk):
         try:
             ico = resources.icon_ico()
             if ico.exists():
-                self.iconbitmap(default=str(ico))
+                # Passing this as ``default=`` does not reliably update the
+                # already-created main window; PyInstaller's embedded icon can
+                # remain visible. Set this window's icon directly.
+                self.iconbitmap(str(ico))
         except Exception as e:  # noqa: BLE001 — icon is cosmetic
             log.debug("window.icon_failed", error=str(e))
 
@@ -1925,7 +1928,7 @@ def set_dpi_awareness() -> None:
             ScalingTracker,
         )
 
-        ScalingTracker.activate_high_dpi_awareness = classmethod(lambda cls: None)
+        ScalingTracker.activate_high_dpi_awareness = classmethod(lambda _cls: None)
 
     # Prefer Per-Monitor-v2 (Win10 1703+); fall back to v1, then system-aware.
     # The v2 context is the pseudo-handle -4 passed as a void*.

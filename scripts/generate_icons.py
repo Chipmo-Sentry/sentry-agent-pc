@@ -36,7 +36,12 @@ FILL = 0.96  # logo fills 96% of each icon (≈2% margin) — full-bleed looks c
 
 
 def _render_master() -> Image.Image:
-    """Rasterize the SVG once at high resolution → a tight (cropped) RGBA master."""
+    """Rasterize the SVG once at high resolution into a transparent RGBA master.
+
+    reportlab's raster backend only emits RGB and always paints an opaque
+    background. Render against black and white, then recover alpha and the
+    original foreground color from those two composites.
+    """
     from reportlab.graphics import renderPM
     from svglib.svglib import svg2rlg
 
@@ -45,10 +50,21 @@ def _render_master() -> Image.Image:
     drawing.width *= scale
     drawing.height *= scale
     drawing.scale(scale, scale)
-    out = ASSETS / "icons" / "_master.png"
-    renderPM.drawToFile(drawing, str(out), fmt="PNG")
-    master = Image.open(out).convert("RGBA")
-    out.unlink(missing_ok=True)
+    black = renderPM.drawToPIL(drawing, bg=0x000000).convert("RGB")
+    white = renderPM.drawToPIL(drawing, bg=0xFFFFFF).convert("RGB")
+
+    pixels: list[tuple[int, int, int, int]] = []
+    for black_px, white_px in zip(black.getdata(), white.getdata(), strict=True):
+        matte = round(sum(w - b for b, w in zip(black_px, white_px, strict=True)) / 3)
+        alpha = max(0, min(255, 255 - matte))
+        if alpha == 0:
+            pixels.append((0, 0, 0, 0))
+            continue
+        rgb = tuple(max(0, min(255, round(channel * 255 / alpha))) for channel in black_px)
+        pixels.append((*rgb, alpha))
+
+    master = Image.new("RGBA", black.size)
+    master.putdata(pixels)
     bbox = master.split()[3].getbbox()  # trim any stray transparent border
     return master.crop(bbox) if bbox else master
 
