@@ -1925,7 +1925,7 @@ def set_dpi_awareness() -> None:
             ScalingTracker,
         )
 
-        ScalingTracker.activate_high_dpi_awareness = classmethod(lambda cls: None)
+        ScalingTracker.activate_high_dpi_awareness = classmethod(lambda _cls: None)
 
     # Prefer Per-Monitor-v2 (Win10 1703+); fall back to v1, then system-aware.
     # The v2 context is the pseudo-handle -4 passed as a void*.
