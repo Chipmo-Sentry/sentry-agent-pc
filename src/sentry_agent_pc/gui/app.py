@@ -1889,8 +1889,59 @@ def set_app_user_model_id() -> None:
         windll.shell32.SetCurrentProcessExplicitAppUserModelID(_APP_USER_MODEL_ID)
 
 
+def set_dpi_awareness() -> None:
+    """Claim Per-Monitor-v2 DPI awareness so Windows renders the title-bar and
+    taskbar icon (and the whole UI) crisply at the monitor's scale.
+
+    CustomTkinter only sets Per-Monitor *v1* (`SetProcessDpiAwareness(2)`),
+    whose non-client area — the title bar and the icon that lives in it — is NOT
+    rescaled by Windows. On a scaled display (125/150/175%) the icon is then
+    bitmap-stretched and looks blurry, both in the title bar and on the taskbar.
+    v2 rescales the non-client area, which fixes it.
+
+    We set awareness ourselves and neutralise CTk's own attempt (it is not
+    exception-guarded and would raise E_ACCESSDENIED once awareness is already
+    set), while leaving CTk's widget-scaling math untouched so the UI still
+    scales. Idempotent and a no-op off Windows. Must run before the first Tk
+    window is created.
+    """
+    import sys
+
+    if not sys.platform.startswith("win"):
+        return
+    import ctypes
+
+    # getattr avoids a platform-dependent mypy ignore: ctypes.windll only exists
+    # on Windows, but this branch is only reached there (mirrors the helper above).
+    windll = getattr(ctypes, "windll")  # noqa: B009
+
+    # Stop CTk from calling SetProcessDpiAwareness() itself — that call lives in
+    # ScalingTracker.activate_high_dpi_awareness() and is unguarded, so it would
+    # crash once we've claimed awareness below. Replacing only this method (not
+    # the public deactivate_automatic_dpi_awareness toggle) keeps CTk's
+    # per-monitor widget-scaling math intact, so the UI is not left tiny.
+    with contextlib.suppress(Exception):
+        from customtkinter.windows.widgets.scaling.scaling_tracker import (
+            ScalingTracker,
+        )
+
+        ScalingTracker.activate_high_dpi_awareness = classmethod(lambda cls: None)
+
+    # Prefer Per-Monitor-v2 (Win10 1703+); fall back to v1, then system-aware.
+    # The v2 context is the pseudo-handle -4 passed as a void*.
+    with contextlib.suppress(Exception):
+        if windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+            return
+    with contextlib.suppress(Exception):
+        windll.shcore.SetProcessDpiAwareness(2)
+        return
+    with contextlib.suppress(Exception):
+        windll.user32.SetProcessDPIAware()
+
+
 def run(minimized: bool = False) -> None:
     """GUI entry point. `minimized=True` (auto-start) launches hidden in the tray."""
+    set_dpi_awareness()  # before the first Tk window → crisp title-bar/taskbar icon
     set_app_user_model_id()  # before the first Tk window → taskbar icon binds
     app = AgentApp()
     if minimized:

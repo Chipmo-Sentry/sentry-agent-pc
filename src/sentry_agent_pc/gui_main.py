@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 
-from sentry_agent_pc.gui.app import run, set_app_user_model_id
+from sentry_agent_pc.gui.app import run, set_app_user_model_id, set_dpi_awareness
 from sentry_agent_pc.gui.floor_plan_web import maybe_run_floor_plan_from_argv
 from sentry_agent_pc.gui.live_view import maybe_run_live_view_from_argv
 from sentry_agent_pc.logging_setup import configure_logging
@@ -17,8 +17,10 @@ from sentry_agent_pc.logging_setup import configure_logging
 
 def main() -> None:
     configure_logging()
-    # Bind the taskbar identity before ANY Tk window is created — including the
-    # webview child paths below, which never reach run().
+    # Claim DPI awareness + bind the taskbar identity before ANY Tk/webview
+    # window is created — including the live-view + floor-plan child paths
+    # below, which never reach run(). Both are process-wide and one-shot.
+    set_dpi_awareness()
     set_app_user_model_id()
     # The same .exe doubles as the live-view + floor-plan webview child processes.
     if maybe_run_live_view_from_argv(sys.argv):
