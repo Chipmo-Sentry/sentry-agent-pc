@@ -61,6 +61,21 @@ def _find_camera(cam_name: str) -> CameraRecord | None:
     return None
 
 
+def _resolve_open_vocab() -> bool:
+    """Per-store ``open_vocab_items`` flag for the GUI preview's edge detector.
+
+    The detector picks its item model at construction, so we read the flag once
+    here rather than via the hot-apply config-poller (which only pushes
+    thresholds). Best-effort: any backend/parse blip → False (COCO item model)."""
+    try:
+        from sentry_agent_pc.backend_client import BackendClient
+        from sentry_agent_pc.edge.config import EdgeConfig
+
+        return EdgeConfig.from_dict(BackendClient().agent_edge_config()).open_vocab_items
+    except Exception:  # noqa: BLE001 — preview must never fail on a config blip
+        return False
+
+
 # RTSP over TCP is far more reliable than the UDP default on busy LANs. Must be
 # set before the first cv2 VideoCapture is created.
 #
@@ -487,7 +502,10 @@ class _CameraReader(threading.Thread):
             from sentry_agent_pc.edge.ov_lean import LeanOpenVinoDetector
             from sentry_agent_pc.edge.pipeline import EdgePipeline
 
-            detector = LeanOpenVinoDetector()
+            # open_vocab is a construction-time model swap (not a hot-applyable
+            # threshold), so resolve it once here before building the detector.
+            # Best-effort: a config blip just falls back to the COCO item model.
+            detector = LeanOpenVinoDetector(open_vocab=_resolve_open_vocab())
         except Exception as e:  # noqa: BLE001 — no model/openvino → decode shows raw
             self._edge_failed = True
             self._edge_err = str(e)[:160]

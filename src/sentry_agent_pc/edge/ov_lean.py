@@ -17,6 +17,7 @@ Boxes/keypoints are in the letterboxed input space (e.g. 0-640); we scale back.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -160,8 +161,66 @@ def decode_det_output(
     return out
 
 
+def load_vocab(xml: Path) -> list[str] | None:
+    """Read the sibling ``vocab.json`` next to an open-vocab item IR.
+
+    The export script (scripts/export_yoloe_items.py) bakes a fixed retail
+    vocabulary into the YOLOE/YOLO-World head and writes the ordered class names
+    alongside the IR, so decode can map argmax → label without ultralytics. The
+    file is a JSON list of strings; class id ``i`` is ``vocab[i]``."""
+    path = xml.parent / "vocab.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        log.warning("ov_lean.vocab_read_failed", path=str(path), error=str(e))
+        return None
+    if not isinstance(data, list) or not all(isinstance(s, str) for s in data):
+        log.warning("ov_lean.vocab_malformed", path=str(path))
+        return None
+    return data
+
+
+def decode_openvocab_output(
+    raw: NDArray[np.float32], scale: float, pad_x: float, pad_y: float,
+    vocab: list[str], *, conf: float = 0.40, iou: float = 0.5,
+) -> list[ItemDet]:
+    """[1, 4+K, N] (or [4+K, N]) → item boxes for an open-vocab detector.
+
+    Unlike ``decode_det_output`` (80 COCO classes, then keep a retail subset),
+    EVERY class here IS a retail item — the vocabulary was chosen at export time
+    to be exactly "things a shopper can pick up". So we keep all classes and label
+    each box with ``vocab[argmax]``. K is read from the tensor, not assumed, and a
+    vocab/tensor length mismatch is tolerated (extra classes are dropped) so a
+    stale vocab.json can't crash the shipped detector."""
+    arr = np.squeeze(raw)
+    if arr.ndim != 2 or arr.shape[0] < 5:
+        return []
+    k = arr.shape[0] - 4
+    arr = arr.T  # [N, 4+K]
+    cls = arr[:, 4 : 4 + k].argmax(axis=1)
+    scores = arr[:, 4 : 4 + k].max(axis=1)
+    keep = (scores >= conf) & (cls < len(vocab))
+    arr, scores, cls = arr[keep], scores[keep], cls[keep]
+    if arr.shape[0] == 0:
+        return []
+    xyxy = np.array(
+        [_xywh_to_xyxy_scaled(b, scale, pad_x, pad_y) for b in arr[:, :4]], dtype=np.float32
+    )
+    out: list[ItemDet] = []
+    for idx in _nms(xyxy, scores, iou):
+        out.append(ItemDet(vocab[int(cls[idx])], tuple(xyxy[idx].tolist()), float(scores[idx])))
+    return out
+
+
 class LeanOpenVinoDetector:
-    """Shipped detector: YOLO pose + item via the bundled OpenVINO runtime + IR."""
+    """Shipped detector: YOLO pose + item via the bundled OpenVINO runtime + IR.
+
+    Pose is always the stock yolo11n-pose IR. The ITEM model is either the stock
+    COCO yolo11n (80 classes, ~10 retail-relevant) or — when ``open_vocab=True``
+    and the IR is bundled — a YOLOE/YOLO-World IR exported with a retail vocabulary
+    so any held merchandise is detected, not just the COCO handful."""
 
     def __init__(
         self,
@@ -172,11 +231,31 @@ class LeanOpenVinoDetector:
         person_conf: float = 0.35,
         item_conf: float = 0.40,
         min_kp_conf: float = 0.30,
+        open_vocab: bool = False,
     ) -> None:
         import openvino as ov  # bundled at runtime — lazy so imports work in CI
 
         pose = Path(pose_xml) if pose_xml else bundled_model_xml("yolo11n-pose_openvino_model")
-        item = Path(item_xml) if item_xml else bundled_model_xml("yolo11n_openvino_model")
+        # Open-vocab path: prefer the retail-vocabulary IR if it's bundled, else
+        # fall back to COCO so flipping the flag on a box without the IR is safe.
+        self._vocab: list[str] | None = None
+        item: Path | None
+        if item_xml:
+            item = Path(item_xml)
+        elif open_vocab:
+            ov_item = bundled_model_xml("yoloe_items_openvino_model")
+            if ov_item is not None:
+                vocab = load_vocab(ov_item)
+                if vocab:
+                    item, self._vocab = ov_item, vocab
+                else:
+                    log.warning("ov_lean.openvocab_no_vocab_fallback_coco")
+                    item = bundled_model_xml("yolo11n_openvino_model")
+            else:
+                log.warning("ov_lean.openvocab_ir_missing_fallback_coco")
+                item = bundled_model_xml("yolo11n_openvino_model")
+        else:
+            item = bundled_model_xml("yolo11n_openvino_model")
         if pose is None or item is None:
             raise FileNotFoundError("bundled OpenVINO model IR not found (build_exe must drop it in bin/)")
         core = ov.Core()
@@ -186,6 +265,8 @@ class LeanOpenVinoDetector:
         self._person_conf = person_conf
         self._item_conf = item_conf
         self._min_kp_conf = min_kp_conf
+        if self._vocab is not None:
+            log.info("ov_lean.openvocab_active", classes=len(self._vocab))
 
     @staticmethod
     def _compile(core: Any, xml: Path, dev: str) -> Any:
@@ -223,5 +304,10 @@ class LeanOpenVinoDetector:
         persons = decode_pose_output(
             pose_raw, scale, pad_x, pad_y, conf=self._person_conf, min_kp_conf=self._min_kp_conf
         )
-        items = decode_det_output(item_raw, scale, pad_x, pad_y, conf=self._item_conf)
+        if self._vocab is not None:
+            items = decode_openvocab_output(
+                item_raw, scale, pad_x, pad_y, self._vocab, conf=self._item_conf
+            )
+        else:
+            items = decode_det_output(item_raw, scale, pad_x, pad_y, conf=self._item_conf)
         return DetectResult(persons=persons, items=items)

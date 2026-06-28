@@ -26,6 +26,16 @@ class EdgeConfig:
     person_conf: float = 0.35
     item_conf: float = 0.40
     frame_skip: int = 3  # run YOLO every Nth decoded frame
+    # Open-vocabulary item detection. COCO has only ~10 retail-relevant classes,
+    # so most merchandise a shopper can pick up (snacks, cartons, jars, cosmetics)
+    # is INVISIBLE to the stock yolo11n item model — the root cause behind
+    # "concealment never fires" (see require_holding). When True, the lean detector
+    # swaps the COCO item model for a YOLOE/YOLO-World IR exported with a retail
+    # vocabulary (bin/yoloe_items_openvino_model + vocab.json), so "хүний барьж
+    # болох зүйл" is detected generically. Default OFF for a shadow-style rollout:
+    # ship the IR, flip the flag per-store from superadmin, compare, then default on.
+    # Falls back to the COCO model if the open-vocab IR isn't bundled.
+    open_vocab_items: bool = False
     # Behaviour signal weights + geometry
     w_holding: float = 5.0
     w_conceal: float = 14.0

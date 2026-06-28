@@ -46,7 +46,7 @@ def _detector_factory(_cfg: EdgeConfig) -> Detector:
     # model just won't run edge). Raises → caller logs and skips the camera.
     from sentry_agent_pc.edge.ov_lean import LeanOpenVinoDetector
 
-    return LeanOpenVinoDetector()
+    return LeanOpenVinoDetector(open_vocab=_cfg.open_vocab_items)
 
 
 class _CamWorker:

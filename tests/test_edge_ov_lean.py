@@ -4,14 +4,18 @@ undo, NMS, keypoint decode) against synthetic YOLO11 output tensors. No openvino
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 
 from sentry_agent_pc.edge.ov_lean import (
     _nms,
     _xywh_to_xyxy_scaled,
     decode_det_output,
+    decode_openvocab_output,
     decode_pose_output,
     letterbox,
+    load_vocab,
 )
 
 
@@ -99,3 +103,70 @@ def test_decode_handles_empty_and_malformed() -> None:
     assert decode_pose_output(np.zeros((1, 56, 4), np.float32), 1.0, 0.0, 0.0, conf=0.9) == []
     assert decode_det_output(np.zeros((1, 84, 4), np.float32), 1.0, 0.0, 0.0, conf=0.9) == []
     assert decode_pose_output(np.zeros((1, 10, 4), np.float32), 1.0, 0.0, 0.0) == []  # wrong shape
+
+
+# --- open-vocabulary item decode (YOLOE / YOLO-World) -------------------------
+
+_VOCAB = ["bottle", "snack bag", "carton"]  # K=3 → tensor is [1, 4+3, N]
+
+
+def test_decode_openvocab_labels_from_vocab_and_reads_k_from_tensor() -> None:
+    raw = np.zeros((1, 4 + len(_VOCAB), 2), dtype=np.float32)
+    # anchor 0 — class 1 ("snack bag") at (200,200,30,30) → xyxy (185,185,215,215)
+    raw[0, 0, 0], raw[0, 1, 0], raw[0, 2, 0], raw[0, 3, 0] = 200, 200, 30, 30
+    raw[0, 4 + 1, 0] = 0.8
+    # anchor 1 — below conf → dropped
+    raw[0, 4 + 0, 1] = 0.1
+
+    items = decode_openvocab_output(raw, 1.0, 0.0, 0.0, _VOCAB, conf=0.40)
+    assert len(items) == 1
+    assert items[0].label == "snack bag"  # EVERY class is an item; label = vocab[argmax]
+    assert abs(items[0].box[0] - 185) < 1
+
+
+def test_decode_openvocab_nms_suppresses_overlap() -> None:
+    raw = np.zeros((1, 4 + len(_VOCAB), 2), dtype=np.float32)
+    raw[0, 0, 0], raw[0, 1, 0], raw[0, 2, 0], raw[0, 3, 0] = 100, 100, 40, 40
+    raw[0, 4 + 0, 0] = 0.9
+    raw[0, 0, 1], raw[0, 1, 1], raw[0, 2, 1], raw[0, 3, 1] = 101, 101, 40, 40
+    raw[0, 4 + 0, 1] = 0.8  # overlapping, lower score → suppressed
+    items = decode_openvocab_output(raw, 1.0, 0.0, 0.0, _VOCAB, conf=0.40, iou=0.5)
+    assert len(items) == 1
+    assert abs(items[0].score - 0.9) < 1e-6
+
+
+def test_decode_openvocab_tolerates_vocab_tensor_mismatch() -> None:
+    # Tensor has K=3 classes but vocab.json only lists 2 — the extra class id is
+    # dropped, not crashed (a stale vocab.json must not take the detector down).
+    raw = np.zeros((1, 4 + 3, 2), dtype=np.float32)
+    raw[0, 0, 0], raw[0, 1, 0], raw[0, 2, 0], raw[0, 3, 0] = 50, 50, 20, 20
+    raw[0, 4 + 2, 0] = 0.9  # class 2 — out of range for a 2-entry vocab
+    raw[0, 0, 1], raw[0, 1, 1], raw[0, 2, 1], raw[0, 3, 1] = 150, 150, 20, 20
+    raw[0, 4 + 0, 1] = 0.9  # class 0 — in range
+    items = decode_openvocab_output(raw, 1.0, 0.0, 0.0, ["bottle", "carton"], conf=0.40)
+    assert len(items) == 1
+    assert items[0].label == "bottle"
+
+
+def test_decode_openvocab_empty_and_malformed() -> None:
+    assert decode_openvocab_output(np.zeros((1, 7, 4), np.float32), 1.0, 0.0, 0.0, _VOCAB, conf=0.9) == []
+    assert decode_openvocab_output(np.zeros((1, 3, 4), np.float32), 1.0, 0.0, 0.0, _VOCAB) == []  # <5 rows
+
+
+def test_load_vocab_reads_sibling_json(tmp_path) -> None:  # noqa: ANN001 — pytest fixture
+    d = tmp_path / "yoloe_items_openvino_model"
+    d.mkdir()
+    xml = d / "yoloe_items_openvino_model.xml"
+    xml.write_text("<net/>", encoding="utf-8")
+    (d / "vocab.json").write_text(json.dumps(["bottle", "carton"]), encoding="utf-8")
+    assert load_vocab(xml) == ["bottle", "carton"]
+
+
+def test_load_vocab_missing_or_malformed_returns_none(tmp_path) -> None:  # noqa: ANN001
+    d = tmp_path / "m"
+    d.mkdir()
+    xml = d / "m.xml"
+    xml.write_text("<net/>", encoding="utf-8")
+    assert load_vocab(xml) is None  # no vocab.json
+    (d / "vocab.json").write_text('{"not": "a list"}', encoding="utf-8")
+    assert load_vocab(xml) is None  # malformed
