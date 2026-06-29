@@ -98,8 +98,10 @@ class EdgeRuntime:
         return self.store.records()
 
     def apply_config(self, config: EdgeConfig) -> None:
-        """Hot-apply tunables to every camera (segment_sec/keep_sec need a restart
-        to take effect, so they're left to the next start_camera)."""
+        """Hot-apply tunables to every camera. segment_sec/keep_sec and
+        open_vocab_items (a detector model swap, chosen in the factory at
+        construction) only take effect on the next start_camera — the new cfg is
+        stored so a camera (re)start picks them up."""
         with self._lock:
             self.cfg = config
             self.store.max_clips = config.max_clips

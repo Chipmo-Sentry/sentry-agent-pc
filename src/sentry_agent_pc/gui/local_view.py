@@ -61,6 +61,21 @@ def _find_camera(cam_name: str) -> CameraRecord | None:
     return None
 
 
+def _resolve_open_vocab() -> bool:
+    """Per-store ``open_vocab_items`` flag for the GUI preview's edge detector.
+
+    The detector picks its item model at construction, so we read the flag once
+    here rather than via the hot-apply config-poller (which only pushes
+    thresholds). Best-effort: any backend/parse blip → False (COCO item model)."""
+    try:
+        from sentry_agent_pc.backend_client import BackendClient
+        from sentry_agent_pc.edge.config import EdgeConfig
+
+        return EdgeConfig.from_dict(BackendClient().agent_edge_config()).open_vocab_items
+    except Exception:  # noqa: BLE001 — preview must never fail on a config blip
+        return False
+
+
 # RTSP over TCP is far more reliable than the UDP default on busy LANs. Must be
 # set before the first cv2 VideoCapture is created.
 #
@@ -147,7 +162,7 @@ _ERROR = "error"
 
 _STATUS_STYLE = {
     _CONNECTING: ("Холбож байна…", "#3B3320", "#E0A82E"),
-    _LIVE: ("Шууд", "#13301B", "#3DD56D"),
+    _LIVE: ("Шууд", "#3A1614", "#EF4444"),  # red LIVE dot (reference UX)
     _RECONNECTING: ("Дахин холбож байна…", "#3B3320", "#E0A82E"),
     _ERROR: ("Алдаа", "#3A1C1C", "#E5484D"),
 }
@@ -487,7 +502,10 @@ class _CameraReader(threading.Thread):
             from sentry_agent_pc.edge.ov_lean import LeanOpenVinoDetector
             from sentry_agent_pc.edge.pipeline import EdgePipeline
 
-            detector = LeanOpenVinoDetector()
+            # open_vocab is a construction-time model swap (not a hot-applyable
+            # threshold), so resolve it once here before building the detector.
+            # Best-effort: a config blip just falls back to the COCO item model.
+            detector = LeanOpenVinoDetector(open_vocab=_resolve_open_vocab())
         except Exception as e:  # noqa: BLE001 — no model/openvino → decode shows raw
             self._edge_failed = True
             self._edge_err = str(e)[:160]
@@ -746,48 +764,84 @@ class _Tile(ctk.CTkFrame):
         self._has_image = False
         self._placeholder = ""  # last placeholder text shown (avoid idle relabels)
 
+        host = _redact_host(reader.urls[-1]) if reader.urls else ""
+
         bar = ctk.CTkFrame(self, fg_color="transparent")
-        bar.pack(fill="x", padx=10, pady=(8, 4))
+        bar.pack(fill="x", padx=12, pady=(10, 6))
         ctk.CTkLabel(
             bar,
             text=reader.cam_name,
             font=ctk.CTkFont(size=13, weight="bold"),
             anchor="w",
-            text_color="gray85",
+            text_color="gray90",
         ).pack(side="left")
 
         self._badge = ctk.CTkLabel(
             bar,
             text="",
             font=ctk.CTkFont(size=11, weight="bold"),
-            corner_radius=6,
+            corner_radius=10,
             fg_color="#3B3320",
             text_color="gray90",
-            padx=8,
-            pady=2,
+            padx=10,
+            pady=3,
         )
         self._badge.pack(side="right")
 
         # Fixed-pixel container → the video Label never resizes the tile by text.
         self._holder = ctk.CTkFrame(
             self,
-            fg_color="#0E0E10",
+            fg_color="#0B0B0D",
             corner_radius=8,
             width=self._vid_w,
             height=self._vid_h,
         )
-        self._holder.pack(padx=10, pady=(0, 10))
+        self._holder.pack(padx=12, pady=0)
         self._holder.pack_propagate(False)
+
+        # Indeterminate "connecting" bar pinned to the bottom of the video area —
+        # shown only until the first frame arrives, so the empty state reads as
+        # "working" instead of a dead black void (reference UX). Packed BEFORE the
+        # video Label so it reserves the bottom strip; the Label fills the rest.
+        self._spinner = ctk.CTkProgressBar(
+            self._holder,
+            height=3,
+            corner_radius=0,
+            mode="indeterminate",
+            fg_color="#161619",
+            progress_color="#2563EB",
+        )
+        self._spinner.pack(side="bottom", fill="x")
+        self._spinner.start()
+        self._spinner_on = True
 
         self._video = tk.Label(
             self._holder,
-            bg="#0E0E10",
+            bg="#0B0B0D",
             bd=0,
             highlightthickness=0,
-            fg="gray60",
-            font=("Segoe UI", 12),
+            fg="gray65",
+            font=("Segoe UI", 13),
         )
         self._video.pack(fill="both", expand=True)
+
+        # Foot meta strip — stream transport (left) + camera host (right).
+        foot = ctk.CTkFrame(self, fg_color="transparent")
+        foot.pack(fill="x", padx=12, pady=(6, 10))
+        ctk.CTkLabel(
+            foot,
+            text="●  RTSP",
+            font=ctk.CTkFont(size=11),
+            text_color="#6BCB83",
+            anchor="w",
+        ).pack(side="left")
+        ctk.CTkLabel(
+            foot,
+            text=host or "—",
+            font=ctk.CTkFont(size=11),
+            text_color="gray55",
+            anchor="e",
+        ).pack(side="right")
 
     def bind_double_click(self, handler: Callable[..., object]) -> None:
         """Route a double-click anywhere on the tile to `handler`.
@@ -816,6 +870,10 @@ class _Tile(ctk.CTkFrame):
 
         img, seq = self.reader.latest()
         if img is not None:
+            if self._spinner_on:  # first frame arrived → drop the connecting bar
+                self._spinner.stop()
+                self._spinner.pack_forget()
+                self._spinner_on = False
             if seq == self._painted_seq:
                 return  # no new frame since last paint → skip the PhotoImage rebuild
             self._painted_seq = seq
@@ -825,6 +883,10 @@ class _Tile(ctk.CTkFrame):
             self._has_image = True
             self._placeholder = ""
         else:
+            if not self._spinner_on:  # stream dropped → bring the bar back
+                self._spinner.pack(side="bottom", fill="x")
+                self._spinner.start()
+                self._spinner_on = True
             # No frame yet / stream dropped: show the status text, but only
             # reconfigure when it actually changed (not every tick).
             detail = self.reader.detail

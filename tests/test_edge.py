@@ -30,10 +30,12 @@ def test_kp_point_validity() -> None:
 
 
 def test_risk_bgr_bands() -> None:
-    assert ov.risk_bgr("red") == (0, 0, 255)
-    assert ov.risk_bgr("yellow") == (0, 230, 230)
-    assert ov.risk_bgr("green") == (0, 255, 0)
-    assert ov.risk_bgr("anything-else") == (0, 255, 0)
+    # Brand-unified risk palette (BGR), matches sentry-ui-kit RISK_COLORS:
+    # red #EF4444, royal-blue #2563EB (MEDIUM/"yellow" slot), green #22C55E.
+    assert ov.risk_bgr("red") == (68, 68, 239)
+    assert ov.risk_bgr("yellow") == (235, 99, 37)
+    assert ov.risk_bgr("green") == (94, 197, 34)
+    assert ov.risk_bgr("anything-else") == (94, 197, 34)
 
 
 def test_draw_overlays_draws_and_preserves_original() -> None:
@@ -91,3 +93,24 @@ def test_wrist_item_link_only_when_near() -> None:
     out_near = ov.draw_overlays(frame, [person], near)
     # the near item adds an amber link/box → more non-zero pixels than the far case
     assert int((out_near != 0).any(axis=2).sum()) > int((out_far != 0).any(axis=2).sum())
+
+
+def test_item_label_mn_maps_known_and_falls_back() -> None:
+    assert ov.item_label_mn("snack bag") == "чипсний уут"
+    assert ov.item_label_mn("Bottle") == "лонх"  # case-insensitive
+    assert ov.item_label_mn("widget-9000") == "widget-9000"  # unmapped → raw label
+
+
+def test_held_item_name_drawn_even_without_person_risks() -> None:
+    # The held-item label must render on «Шууд харах» from open-vocab detection
+    # alone — i.e. even when no per-person risk is supplied (offline preview).
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    kp = np.zeros((17, 3), dtype=np.float32)
+    kp[10] = (300.0, 300.0, 0.9)  # right wrist
+    person = PersonDet(box=(250.0, 100.0, 350.0, 400.0), score=0.9, keypoints=kp)
+    held = [ItemDet("snack bag", (305.0, 300.0, 360.0, 330.0), 0.8)]
+    none_held = [ItemDet("snack bag", (600.0, 50.0, 620.0, 70.0), 0.8)]
+    out_held = ov.draw_overlays(frame, [person], held)  # person_risks=None
+    out_none = ov.draw_overlays(frame, [person], none_held)
+    # the Mongolian label pill adds amber pixels above the held box
+    assert int((out_held != 0).any(axis=2).sum()) > int((out_none != 0).any(axis=2).sum())

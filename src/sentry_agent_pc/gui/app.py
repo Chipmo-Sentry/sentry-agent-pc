@@ -1474,7 +1474,10 @@ class AgentApp(ctk.CTk):
         try:
             ico = resources.icon_ico()
             if ico.exists():
-                self.iconbitmap(default=str(ico))
+                # Passing this as ``default=`` does not reliably update the
+                # already-created main window; PyInstaller's embedded icon can
+                # remain visible. Set this window's icon directly.
+                self.iconbitmap(str(ico))
         except Exception as e:  # noqa: BLE001 — icon is cosmetic
             log.debug("window.icon_failed", error=str(e))
 

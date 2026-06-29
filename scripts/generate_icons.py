@@ -32,28 +32,47 @@ ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "src" / "sentry_agent_pc" / "assets"
 SVG = ASSETS / "icons" / "source" / "chipmo-logo.svg"
 SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256]
-FILL = 1.0  # logo fills the whole icon (the SVG is a round mark → corners stay clear)
+FILL = 0.96  # logo fills 96% of each icon (≈2% margin) — full-bleed looks cramped
 
 
-def _render_native(size: int) -> Image.Image:
-    """Rasterize the SVG *natively* at this exact pixel size (not a downscale of a
-    big master) → the rasterizer hints the thin rings at the target resolution, so
-    small layers (16-24 px) stay as crisp as the logo allows."""
+def _render_master() -> Image.Image:
+    """Rasterize the SVG once at high resolution into a transparent RGBA master.
+
+    reportlab's raster backend only emits RGB and always paints an opaque
+    background. Render against black and white, then recover alpha and the
+    original foreground color from those two composites.
+    """
     from reportlab.graphics import renderPM
     from svglib.svglib import svg2rlg
 
-    inner = max(1, round(size * FILL))
     drawing = svg2rlg(str(SVG))
-    scale = inner / drawing.width
+    scale = 1024.0 / drawing.width
     drawing.width *= scale
     drawing.height *= scale
     drawing.scale(scale, scale)
-    tmp = ASSETS / "icons" / f"_n{size}.png"
-    renderPM.drawToFile(drawing, str(tmp), fmt="PNG")
-    logo = Image.open(tmp).convert("RGBA")
-    tmp.unlink(missing_ok=True)
-    if inner == size:
-        return logo
+    black = renderPM.drawToPIL(drawing, bg=0x000000).convert("RGB")
+    white = renderPM.drawToPIL(drawing, bg=0xFFFFFF).convert("RGB")
+
+    pixels: list[tuple[int, int, int, int]] = []
+    for black_px, white_px in zip(black.getdata(), white.getdata(), strict=True):
+        matte = round(sum(w - b for b, w in zip(black_px, white_px, strict=True)) / 3)
+        alpha = max(0, min(255, 255 - matte))
+        if alpha == 0:
+            pixels.append((0, 0, 0, 0))
+            continue
+        rgb = tuple(max(0, min(255, round(channel * 255 / alpha))) for channel in black_px)
+        pixels.append((*rgb, alpha))
+
+    master = Image.new("RGBA", black.size)
+    master.putdata(pixels)
+    bbox = master.split()[3].getbbox()  # trim any stray transparent border
+    return master.crop(bbox) if bbox else master
+
+
+def _fit(master: Image.Image, size: int) -> Image.Image:
+    """Scale the master to `FILL`×size and centre it on a transparent square."""
+    inner = max(1, round(size * FILL))
+    logo = master.resize((inner, inner), Image.LANCZOS)
     canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     off = (size - inner) // 2
     canvas.alpha_composite(logo, (off, off))
@@ -74,7 +93,8 @@ def _build_ico(layers: dict[int, Image.Image], ico_path: Path) -> None:
 
 
 def main() -> None:
-    layers = {s: _render_native(s) for s in SIZES}
+    master = _render_master()
+    layers = {s: _fit(master, s) for s in SIZES}
 
     win = ASSETS / "icons" / "windows"
     win.mkdir(parents=True, exist_ok=True)
