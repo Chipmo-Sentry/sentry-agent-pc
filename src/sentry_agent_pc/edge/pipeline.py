@@ -89,6 +89,14 @@ class EdgePipeline:
             )
         return out
 
+    def max_risk(self) -> float:
+        """Highest per-person risk_pct on the last analysed frame (0 if none) —
+        drives the GUI «Шууд харах» ambient risk border + the risk KPI."""
+        f = self._frame
+        if f is None or not f.person_risks:
+            return 0.0
+        return float(max(f.person_risks))
+
     def process(self, frame_bgr: NDArray[np.uint8], now: float) -> NDArray[np.uint8]:
         """Run (or reuse) detection + behaviour for this frame, return the overlay."""
         if self._n % self.frame_skip == 0:

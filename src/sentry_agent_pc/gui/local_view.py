@@ -93,6 +93,7 @@ os.environ.setdefault(
 import customtkinter as ctk  # noqa: E402
 from PIL import Image, ImageTk  # noqa: E402
 
+from sentry_agent_pc.edge.overlay import risk_hex  # noqa: E402
 from sentry_agent_pc.logging_setup import get_logger  # noqa: E402
 from sentry_agent_pc.state import CameraRecord, load_state  # noqa: E402
 
@@ -130,6 +131,10 @@ def clear_edge_error(camera: str) -> None:
 # PhotoImage churn. We can afford more than the old 8 now that hardware decode
 # (below) takes the per-frame decode cost off the CPU.
 _TARGET_FPS = 12
+# Below this risk_pct the tile stays frameless (calm); above it the card border
+# glows in the risk-band colour (ambient risk cue, matches the cloud /live).
+_RISK_GLOW_MIN = 15.0
+_CALM_BORDER = "#0E0E10"  # = card fg → an invisible border when calm (no jiggle)
 # Hardware-accelerated decode (iGPU/GPU via d3d11va/dxva2/qsv etc). This is the
 # core fix for BOTH symptoms vs the vendor app: it moves decode off the CPU, so
 # several cameras + the ffmpeg push relays no longer saturate the box. When the
@@ -302,6 +307,9 @@ class _CameraReader(threading.Thread):
         self._raw_lock = threading.Lock()
         self.status = _CONNECTING
         self.detail = "Холбож байна…"
+        # Highest per-person risk on the last analysed frame — drives the tile's
+        # ambient risk border + the page risk KPI. 0 when no edge / no person.
+        self.max_risk: float = 0.0
 
     def latest(self) -> tuple[Image.Image | None, int]:
         """Latest frame plus its sequence number (so the UI repaints only on change)."""
@@ -622,6 +630,7 @@ class _CameraReader(threading.Thread):
                 # letterboxes to 640 internally, so this loses no accuracy and
                 # avoids full-res draw/copy churn.
                 annotated = pipe.process(self._fit_to_box(frame), time.time())
+                self.max_risk = pipe.max_risk()
                 self._store(annotated)
                 if not self._edge_ready:
                     clear_edge_error(self.cam_name)  # recovered → drop stale badge
@@ -756,8 +765,18 @@ class _Tile(ctk.CTkFrame):
     """
 
     def __init__(self, master: ctk.CTkBaseClass, reader: _CameraReader) -> None:
-        super().__init__(master, fg_color="#1A1A1C", corner_radius=10)
+        # border_width is kept constant (2px) and the COLOUR is toggled — calm =
+        # card-bg (invisible), risk = band colour — so the glow never shifts the
+        # video by changing the inset.
+        super().__init__(
+            master,
+            fg_color="#0E0E10",
+            corner_radius=14,
+            border_width=2,
+            border_color=_CALM_BORDER,
+        )
         self.reader = reader
+        self._border_hex = _CALM_BORDER  # last border colour applied (dedup churn)
         self._vid_w = 640
         self._vid_h = 360
         self._painted_seq = -1  # last frame seq drawn; skip idle PhotoImage rebuilds
@@ -767,7 +786,7 @@ class _Tile(ctk.CTkFrame):
         host = _redact_host(reader.urls[-1]) if reader.urls else ""
 
         bar = ctk.CTkFrame(self, fg_color="transparent")
-        bar.pack(fill="x", padx=12, pady=(10, 6))
+        bar.pack(fill="x", padx=14, pady=(11, 8))
         ctk.CTkLabel(
             bar,
             text=reader.cam_name,
@@ -792,11 +811,13 @@ class _Tile(ctk.CTkFrame):
         self._holder = ctk.CTkFrame(
             self,
             fg_color="#0B0B0D",
-            corner_radius=8,
+            corner_radius=0,
             width=self._vid_w,
             height=self._vid_h,
         )
-        self._holder.pack(padx=12, pady=0)
+        # Flush to the card's side edges — no grey margin around the video, so the
+        # feed reads as the hero instead of being boxed in.
+        self._holder.pack(padx=0, pady=0, fill="x")
         self._holder.pack_propagate(False)
 
         # Indeterminate "connecting" bar pinned to the bottom of the video area —
@@ -827,7 +848,7 @@ class _Tile(ctk.CTkFrame):
 
         # Foot meta strip — stream transport (left) + camera host (right).
         foot = ctk.CTkFrame(self, fg_color="transparent")
-        foot.pack(fill="x", padx=12, pady=(6, 10))
+        foot.pack(fill="x", padx=14, pady=(8, 11))
         ctk.CTkLabel(
             foot,
             text="●  RTSP",
@@ -896,6 +917,17 @@ class _Tile(ctk.CTkFrame):
                 self._has_image = False
                 self._placeholder = detail
 
+        # Ambient risk border — glow the card in the band colour while a person's
+        # risk is elevated; stay frameless (calm) otherwise / when not live.
+        want = (
+            risk_hex(self.reader.max_risk)
+            if self._has_image and self.reader.max_risk >= _RISK_GLOW_MIN
+            else _CALM_BORDER
+        )
+        if want != self._border_hex:
+            self._border_hex = want
+            self.configure(border_color=want)
+
 
 class LocalLiveView(ctk.CTkFrame):
     """A responsive grid that plays the store's cameras straight off the LAN.
@@ -942,6 +974,33 @@ class LocalLiveView(ctk.CTkFrame):
         if not cams:
             self._empty()
             return
+
+        # KPI strip — at-a-glance health line above the feeds (mirrors the cloud
+        # /live console): cameras, live risk, AI engine, store.
+        self._kpi_risk_state: tuple[str | None, str | None] = (None, None)
+        kpi = ctk.CTkFrame(self, fg_color="transparent")
+        kpi.pack(fill="x", padx=18, pady=(12, 0))
+
+        def _chip(value: str, label: str, value_color: str = "gray95") -> ctk.CTkLabel:
+            box = ctk.CTkFrame(kpi, fg_color="#141417", corner_radius=10)
+            box.pack(side="left", padx=(0, 8))
+            v = ctk.CTkLabel(
+                box,
+                text=value,
+                font=ctk.CTkFont(size=15, weight="bold"),
+                text_color=value_color,
+            )
+            v.pack(anchor="w", padx=12, pady=(7, 0))
+            ctk.CTkLabel(
+                box, text=label, font=ctk.CTkFont(size=10), text_color="gray55"
+            ).pack(anchor="w", padx=12, pady=(0, 7))
+            return v
+
+        _chip(str(len(cams)), "Камер")
+        self._kpi_risk = _chip("—", "Эрсдэл")
+        _chip("OpenVINO", "AI", "#6BCB83")
+        if store:
+            _chip(store, "Дэлгүүр")
 
         # Scrollable so any number of cameras works without clipping.
         self._scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
@@ -1081,7 +1140,24 @@ class LocalLiveView(ctk.CTkFrame):
             for tile in self._tiles:
                 with contextlib.suppress(Exception):
                     tile.paint()
+            self._update_risk_kpi()
         self._tick_after = self.after(int(1000 / _TARGET_FPS), self._tick)
+
+    def _update_risk_kpi(self) -> None:
+        """Refresh the «Эрсдэл» KPI = highest live risk across the cameras, in the
+        band colour. Cheap dedup so we only reconfigure the label on a change."""
+        if self._closed or not hasattr(self, "_kpi_risk"):
+            return
+        risk = 0.0
+        for t in self._tiles:
+            if t.reader.status == _LIVE:
+                risk = max(risk, t.reader.max_risk)
+        txt = f"{risk:.0f}%" if risk >= 1 else "—"
+        color = risk_hex(risk) if risk >= _RISK_GLOW_MIN else "gray95"
+        if (txt, color) != self._kpi_risk_state:
+            self._kpi_risk_state = (txt, color)
+            with contextlib.suppress(Exception):
+                self._kpi_risk.configure(text=txt, text_color=color)
 
     def _tick_edge_config(self) -> None:
         """I7: every 30 s, hot-apply the backend's edge tunables to the running

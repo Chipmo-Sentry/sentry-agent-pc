@@ -112,6 +112,13 @@ def risk_bgr(band: str) -> tuple[int, int, int]:
     return (b, g, r)
 
 
+def risk_hex(risk_pct: float) -> str:
+    """0-100 risk_pct → '#RRGGBB' via the unified band spec (matches ui-kit
+    riskColor). Used by the GUI for the «Шууд харах» ambient risk border."""
+    r, g, b = _band_rgb(_display_band(risk_pct))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
 @lru_cache(maxsize=4)
 def _label_font(size: int) -> Any:
     """A TrueType font with Cyrillic glyphs (cv2's Hershey fonts are ASCII-only,
