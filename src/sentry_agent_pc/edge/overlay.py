@@ -31,25 +31,85 @@ _TORSO_QUAD = (5, 6, 12, 11)  # L-shoulder, R-shoulder, R-hip, L-hip (non-self-i
 _MIN_KP_CONF = 0.30
 _MASK_ALPHA = 0.40
 _ITEM_LINK_BGR = (0, 170, 255)  # amber (BGR)
+_ITEM_LABEL_RGB = (255, 170, 0)  # amber pill behind the held-item name (RGB, PIL)
 TRAIL_MAXLEN = 32  # foot points kept per track for the trajectory trail
+
+# Display names for held items. The open-vocab detector emits English category
+# labels ("snack bag", "bottle"); show them in Mongolian on «Шууд харах» so the
+# operator instantly reads WHAT is in the hand. Unmapped labels fall back to the
+# raw detector label, so a tuned vocabulary still shows something sensible.
+ITEM_LABELS_MN: dict[str, str] = {
+    "bottle": "лонх",
+    "plastic bottle": "хуванцар лонх",
+    "can": "лааз",
+    "canned food": "лааз хүнс",
+    "box": "хайрцаг",
+    "carton": "картон хайрцаг",
+    "milk carton": "сүүний хайрцаг",
+    "jar": "шил сав",
+    "packet": "боодол",
+    "snack bag": "чипсний уут",
+    "bag of chips": "чипсний уут",
+    "chocolate bar": "шоколад",
+    "candy": "чихэр",
+    "instant noodle": "бэлэн гоймон",
+    "cup": "аяга",
+    "container": "сав",
+    "tube": "тюбик",
+    "cosmetic bottle": "косметик",
+    "shampoo bottle": "шампунь",
+    "boxed product": "хайрцагтай бараа",
+    "handheld product": "бараа",
+    "bag": "уут",
+    "backpack": "үүргэвч",
+    "handbag": "гар цүнх",
+    "suitcase": "чемодан",
+    "laptop": "зөөврийн компьютер",
+    "cell phone": "гар утас",
+    "book": "ном",
+}
+
+
+def item_label_mn(label: str) -> str:
+    """Mongolian display name for a detected item, or the raw label if unmapped."""
+    return ITEM_LABELS_MN.get(label.lower(), label)
+
+
+# Brand-aligned risk palette — MUST match sentry-ui-kit `RISK_COLORS`
+# (low=green #22C55E, medium=royal-blue #2563EB, high=red #EF4444) so the SAME
+# score shows the SAME colour on web /live and the agent «Шууд харах». The band
+# key "yellow" is the historical MEDIUM slot; it now renders royal-blue.
+_RISK_RGB: dict[str, tuple[int, int, int]] = {
+    "green": (34, 197, 94),  # #22C55E
+    "yellow": (37, 99, 235),  # #2563EB — royal-blue (MEDIUM)
+    "red": (239, 68, 68),  # #EF4444
+}
+
+# Visual band cutoffs on the 0-100 risk_pct — MUST match ui-kit `riskBand`
+# (MEDIUM ≥ 30, HIGH ≥ 70). These are DISPLAY cutoffs only; the behaviour
+# engine's own band/alert calibration is separate (tuned via the eval harness).
+_RISK_MEDIUM_MIN = 30.0
+_RISK_HIGH_MIN = 70.0
+
+
+def _display_band(risk_pct: float) -> str:
+    """Map a 0-100 risk_pct to its visual band key (matches ui-kit riskBand)."""
+    if risk_pct >= _RISK_HIGH_MIN:
+        return "red"
+    if risk_pct >= _RISK_MEDIUM_MIN:
+        return "yellow"
+    return "green"
+
+
+def _band_rgb(band: str) -> tuple[int, int, int]:
+    """Risk band → RGB."""
+    return _RISK_RGB.get(band, _RISK_RGB["green"])
 
 
 def risk_bgr(band: str) -> tuple[int, int, int]:
     """Risk band → BGR (cv2)."""
-    if band == "red":
-        return (0, 0, 255)
-    if band == "yellow":
-        return (0, 230, 230)
-    return (0, 255, 0)
-
-
-def _band_rgb(band: str) -> tuple[int, int, int]:
-    """Risk band → RGB (for PIL text)."""
-    if band == "red":
-        return (255, 90, 90)
-    if band == "yellow":
-        return (255, 210, 60)
-    return (120, 230, 130)
+    r, g, b = _band_rgb(band)
+    return (b, g, r)
 
 
 @lru_cache(maxsize=4)
@@ -74,22 +134,50 @@ def _label_font(size: int) -> Any:
     return ImageFont.load_default()
 
 
+def _draw_item_pills(draw: Any, font: Any, held_items: list[ItemDet], pad: int) -> None:
+    """Label each held item with its Mongolian name on an amber pill at the box's
+    top-left — so the operator reads WHAT is in the hand, not just that something
+    is. Deduped by box so an item near two wrists/people is labelled once."""
+    seen: set[tuple[int, int, int, int]] = set()
+    for it in held_items:
+        x1, y1, x2, y2 = (int(v) for v in it.box)
+        key = (x1, y1, x2, y2)
+        if key in seen:
+            continue
+        seen.add(key)
+        text = item_label_mn(it.label)
+        tb = draw.textbbox((0, 0), text, font=font)
+        tw, th = tb[2] - tb[0], tb[3] - tb[1]
+        pill_w, pill_h = tw + 2 * pad, th + 2 * pad
+        px = x1
+        py = y1 - pill_h - 2
+        if py < 0:  # box hugs the top → drop the label just inside the box
+            py = y1 + 1
+        radius = max(4, min(9, pill_h // 2))
+        draw.rounded_rectangle([px, py, px + pill_w, py + pill_h], radius=radius, fill=_ITEM_LABEL_RGB)
+        draw.text((px + pad, py + pad), text, font=font, fill=(20, 20, 20))
+
+
 def _draw_person_labels(
     frame_bgr: NDArray[np.uint8],
     persons: list[PersonDet],
     risks: list[float],
     behaviors: list[set[str]],
     bands: list[str],
+    held_items: list[ItemDet] | None = None,
 ) -> NDArray[np.uint8]:
     """Draw a per-person pill at the top of each box: the live risk % (in the band
-    colour) + the active behaviour names (white). PIL so Cyrillic renders. Returns
-    the frame; only persons with risk >= 1 or an active behaviour get a label."""
+    colour) + the active behaviour names (white). Also labels held items with their
+    Mongolian name. PIL so Cyrillic renders. Returns the frame; only persons with
+    risk >= 1 or an active behaviour get a label."""
     from PIL import Image, ImageDraw
 
     img = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(img)
     font = _label_font(14)
     pad = 3
+    if held_items:
+        _draw_item_pills(draw, font, held_items, pad)
     for idx, p in enumerate(persons):
         if idx >= len(risks):
             break
@@ -100,19 +188,28 @@ def _draw_person_labels(
             continue
         risk_txt = f"{risk:.0f}%"
         beh_txt = ("  " + ", ".join(labels)) if labels else ""
+        # Solid band-colour pill + white text (reference UX), instead of the old
+        # black pill + coloured text. Band derives from the live risk via the
+        # unified spec so the colour matches the box and the web /live overlay.
         rgb = _band_rgb(bands[idx] if idx < len(bands) else "green")
         x1, y1, x2, y2 = (int(v) for v in p.box)
         rw = int(draw.textlength(risk_txt, font=font))
         full = risk_txt + beh_txt
         fbox = draw.textbbox((0, 0), full, font=font)
         fw, fh = fbox[2] - fbox[0], fbox[3] - fbox[1]
+        pill_w = fw + 2 * pad
+        pill_h = fh + 2 * pad
         px = x1
-        py = y1 - fh - 2 * pad - 1
+        py = y1 - pill_h - 2
         if py < 0:  # box hugs the top → drop the pill just inside the box
             py = y1 + 1
-        draw.rectangle([px, py, px + fw + 2 * pad, py + fh + 2 * pad], fill=(0, 0, 0))
-        draw.text((px + pad, py + pad), risk_txt, font=font, fill=rgb)
+        radius = max(4, min(9, pill_h // 2))
+        draw.rounded_rectangle(
+            [px, py, px + pill_w, py + pill_h], radius=radius, fill=rgb
+        )
+        draw.text((px + pad, py + pad), risk_txt, font=font, fill=(255, 255, 255))
         if beh_txt:
+            # Slightly dimmed white so the % reads as primary.
             draw.text((px + pad + rw, py + pad), beh_txt, font=font, fill=(235, 235, 235))
     return cast("NDArray[np.uint8]", cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR))
 
@@ -168,11 +265,15 @@ def draw_wrist_item_links(
     kp: NDArray[np.float32] | None,
     items: list[ItemDet],
     person_h: float,
-) -> None:
-    """Link a wrist to any nearby item box — visualises the 'holding' geometry."""
+) -> list[ItemDet]:
+    """Link a wrist to any nearby item box — visualises the 'holding' geometry.
+
+    Returns the items detected as held (wrist within reach of the box) so the
+    caller can label them in the Cyrillic PIL pass."""
     if kp is None or not items:
-        return
+        return []
     reach = person_h * 0.35
+    held: list[ItemDet] = []
     for widx in (_KP_L_WRI, _KP_R_WRI):
         w = kp_point(kp, widx)
         if w is None:
@@ -188,6 +289,8 @@ def draw_wrist_item_links(
                     _ITEM_LINK_BGR, 2, cv2.LINE_AA,
                 )
                 cv2.circle(img, w, 4, _ITEM_LINK_BGR, -1, cv2.LINE_AA)
+                held.append(it)
+    return held
 
 
 def draw_overlays(
@@ -207,6 +310,12 @@ def draw_overlays(
     `person_behaviors` (parallel) drive the live score + behaviour label per box."""
     annotated = frame_bgr.copy()
     use_bands = bands if bands is not None else ["green"] * len(persons)
+    # Recolour by the live risk % via the unified visual spec (matches ui-kit
+    # riskBand + the web /live overlay) so the SAME score shows the SAME colour
+    # everywhere. Display-only: the engine's own `bands` (alert calibration) is
+    # left untouched.
+    if person_risks is not None and len(person_risks) == len(persons):
+        use_bands = [_display_band(r) for r in person_risks]
 
     # Layer 1: translucent pose-polygon body "mask".
     overlay = annotated.copy()
@@ -218,7 +327,9 @@ def draw_overlays(
     if drew_mask:
         cv2.addWeighted(overlay, _MASK_ALPHA, annotated, 1 - _MASK_ALPHA, 0, annotated)
 
-    # Layers 2-4: trail, wrist→item link, risk box.
+    # Layers 2-4: trail, wrist→item link, risk box. Collect held items (boxed by
+    # draw_wrist_item_links) so the PIL pass can label WHAT each one is.
+    held_items: list[ItemDet] = []
     for idx, (p, band) in enumerate(zip(persons, use_bands, strict=False)):
         bgr = risk_bgr(band)
         x1, y1, x2, y2 = (int(v) for v in p.box)
@@ -227,16 +338,19 @@ def draw_overlays(
             cv2.polylines(annotated, [trails[idx]], False, bgr, 2, cv2.LINE_AA)
             tail = trails[idx][-1]
             cv2.circle(annotated, (int(tail[0]), int(tail[1])), 4, bgr, -1, cv2.LINE_AA)
-        draw_wrist_item_links(annotated, p.keypoints, items, ph)
+        held_items.extend(draw_wrist_item_links(annotated, p.keypoints, items, ph))
         cv2.rectangle(annotated, (x1, y1), (x2, y2), bgr, 2)
 
-    # Per-person live score + behaviour labels (PIL pass, Cyrillic). Only when
-    # there's something to show, to skip the BGR↔PIL round-trip on empty frames.
-    if person_risks is not None and persons:
+    # Per-person live score + behaviour labels + held-item names (PIL pass,
+    # Cyrillic). Fire when there's a score to show OR an item to name, to skip the
+    # BGR↔PIL round-trip on empty frames.
+    if persons and (person_risks is not None or held_items):
         annotated = _draw_person_labels(
-            annotated, persons, person_risks,
+            annotated, persons,
+            person_risks if person_risks is not None else [],
             person_behaviors if person_behaviors is not None else [],
             use_bands,
+            held_items=held_items,
         )
 
     if fps is not None:
