@@ -18,6 +18,9 @@ from sentry_agent_pc.edge.config import EdgeConfig
 from sentry_agent_pc.edge.detector import ConfTunable, Detector, DetectResult
 from sentry_agent_pc.edge.overlay import draw_overlays
 from sentry_agent_pc.edge.recorder import EdgeClipRecorder
+from sentry_agent_pc.logging_setup import get_logger
+
+log = get_logger("sentry_agent_pc.edge.pipeline")
 
 
 class EdgePipeline:
@@ -44,7 +47,48 @@ class EdgePipeline:
         self._n = 0
         self._last = DetectResult()
         self._frame: BehaviorFrame | None = None
+        # Stage-1.5 learned anomaly (shadow): per-person-id anomaly score (0-100)
+        # from the last analysed frame. Empty until the scorer's window fills.
+        self._anomalies: dict[int, float] = {}
+        self._anomaly_scorer = self._build_anomaly_scorer()
         self._push_detector_conf()  # honour cfg confidences from the first frame
+
+    def _build_anomaly_scorer(self) -> object | None:
+        """Lazily build the skeleton-anomaly scorer when enabled + bundled. Any
+        failure (flag off, model absent, no openvino) → None, so the pipeline runs
+        unchanged — the learned scorer is purely additive."""
+        if not self.cfg.skeleton_anomaly_enabled:
+            return None
+        try:
+            from sentry_agent_pc.edge.skeleton_anomaly import SkeletonAnomalyScorer
+
+            return SkeletonAnomalyScorer()
+        except Exception as e:  # noqa: BLE001 — never let the optional scorer break edge
+            log.warning("edge.skeleton_anomaly_off", error=str(e))
+            return None
+
+    def _update_anomalies(self) -> None:
+        """Score each tracked person's recent pose window (shadow). Persons align
+        1:1 with the behaviour frame's person_ids (same build order). A scorer
+        error never breaks the frame — anomalies are purely additive."""
+        scorer = self._anomaly_scorer
+        if scorer is None or self._frame is None:
+            return
+        ids = self._frame.person_ids
+        persons = self._last.persons
+        anomalies: dict[int, float] = {}
+        try:
+            for i, pid in enumerate(ids):
+                if i >= len(persons):
+                    break
+                a = scorer.score(pid, persons[i].keypoints, persons[i].box)  # type: ignore[attr-defined]
+                if a is not None:
+                    anomalies[pid] = a
+            scorer.cleanup(set(ids))  # type: ignore[attr-defined]
+        except Exception as e:  # noqa: BLE001 — additive signal must not kill the loop
+            log.warning("edge.skeleton_anomaly_score_failed", error=str(e))
+            return
+        self._anomalies = anomalies
 
     def _push_detector_conf(self) -> None:
         """Thread the EdgeConfig detection thresholds into the detector (if it
@@ -58,10 +102,17 @@ class EdgePipeline:
 
     def apply_config(self, config: EdgeConfig) -> None:
         """Hot-apply tunables (behaviour gate + frame-skip + detector conf)."""
+        was_enabled = self.cfg.skeleton_anomaly_enabled
         self.cfg = config
         self.behavior.apply_config(config)
         self.frame_skip = max(1, config.frame_skip)
         self._push_detector_conf()
+        # Rebuild the anomaly scorer if the flag flipped (model is chosen at
+        # construction, like the detector — can't hot-swap the compiled graph).
+        if config.skeleton_anomaly_enabled != was_enabled:
+            self._anomaly_scorer = self._build_anomaly_scorer()
+            if self._anomaly_scorer is None:
+                self._anomalies = {}
 
     def latest_tracks(self) -> list[dict[str, object]]:
         """Per-person tracks from the last analysed frame, shaped for the cloud live
@@ -85,6 +136,8 @@ class EdgePipeline:
                     "behaviors": sorted(f.person_behaviors[i])
                     if i < len(f.person_behaviors)
                     else [],
+                    # Stage-1.5 learned anomaly (shadow); None until the window fills.
+                    "anomaly": self._anomalies.get(f.person_ids[i]),
                 }
             )
         return out
@@ -111,6 +164,7 @@ class EdgePipeline:
                 self.recorder.set_protect_floor(self.behavior.oldest_open_episode_start())
                 for ep in self._frame.episodes:
                     self.recorder.submit(ep)
+            self._update_anomalies()
         self._n += 1
         bands = self._frame.bands if self._frame is not None else None
         trails = self._frame.trails if self._frame is not None else None
