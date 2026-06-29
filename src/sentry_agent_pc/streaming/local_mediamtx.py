@@ -62,10 +62,10 @@ def _yaml_dquote(s: str) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _signature(paths: dict[str, str], rtsp_port: int, api_port: int) -> str:
+def _signature(paths: dict[str, str], rtsp_port: int, api_port: int, hls_port: int) -> str:
     """Stable fingerprint of the applied config — restart only when it changes."""
     body = ";".join(f"{p}={src}" for p, src in sorted(paths.items()))
-    return f"{rtsp_port}|{api_port}|{body}"
+    return f"{rtsp_port}|{api_port}|{hls_port}|{body}"
 
 
 class LocalMediaMTX:
@@ -82,12 +82,16 @@ class LocalMediaMTX:
         config_dir: Path,
         rtsp_port: int = 18554,
         api_port: int = 19997,
+        hls_port: int = 18888,
     ) -> None:
         self._exe = exe_path
         self._config_path = config_dir / "mediamtx.local.gen.yml"
         self._log_path = config_dir / "mediamtx.local.log"
         self._rtsp_port = rtsp_port
         self._api_port = api_port
+        # HLS is served on loopback so a cloudflared tunnel can expose it to the
+        # cloud frontend WITHOUT routing video through the (ephemeral) GPU node.
+        self._hls_port = hls_port
         self._proc: subprocess.Popen[bytes] | None = None
         self._logfile: IO[bytes] | None = None
         self._sig: str | None = None
@@ -122,6 +126,14 @@ class LocalMediaMTX:
                 return f"rtsp://{_HOST}:{self._rtsp_port}/{path}"
             return None
 
+    def hls_local_base(self) -> str | None:
+        """The loopback HLS base a cloudflared tunnel should point at, or None when
+        the hub isn't up. The cloud frontend reaches `{tunnel}/{path}/index.m3u8`."""
+        with self._lock:
+            if not self._healthy:
+                return None
+            return f"http://{_HOST}:{self._hls_port}"
+
     def status(self) -> dict[str, object]:
         with self._lock:
             running = self._proc is not None and self._proc.poll() is None
@@ -130,6 +142,7 @@ class LocalMediaMTX:
                 "healthy": self._healthy,
                 "paths": sorted(self._paths),
                 "rtsp_port": self._rtsp_port,
+                "hls_port": self._hls_port,
             }
 
     def stop(self) -> None:
@@ -156,7 +169,7 @@ class LocalMediaMTX:
             self._paths = {}
             return False
 
-        sig = _signature(wanted, self._rtsp_port, self._api_port)
+        sig = _signature(wanted, self._rtsp_port, self._api_port, self._hls_port)
         running = self._proc is not None and self._proc.poll() is None
         if running and self._healthy and sig == self._sig:
             return True  # already serving exactly this set
@@ -185,7 +198,18 @@ class LocalMediaMTX:
             "rtsp: yes",
             f"rtspAddress: {_HOST}:{self._rtsp_port}",
             "rtspTransports: [tcp]",
-            "hls: no",
+            # HLS on loopback for the cloudflared tunnel → cloud frontend. mpegts
+            # variant (not lowLatency) is the proven-stable one for these cameras
+            # (lowLatency's ?session keying caused playback breaks); ~1s segments
+            # keep latency low. allowOrigin '*' so the browser player (served from
+            # the app domain, fetching via the backend proxy) isn't CORS-blocked.
+            "hls: yes",
+            f"hlsAddress: {_HOST}:{self._hls_port}",
+            "hlsVariant: mpegts",
+            "hlsSegmentCount: 7",
+            "hlsSegmentDuration: 1s",
+            "hlsAllowOrigin: '*'",
+            "hlsAlwaysRemux: no",
             "webrtc: no",
             "rtmp: no",
             "srt: no",

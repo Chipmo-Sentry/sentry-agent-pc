@@ -1596,13 +1596,19 @@ class AgentApp(ctk.CTk):
                 # is down (ffmpeg last_error) without RDP-ing into this store PC.
                 # Only when push is enabled — pull/on-LAN stores have nothing to push.
                 push_status: list[dict[str, Any]] | None = None
+                hls_tunnel_base: str | None = None
                 try:
                     ctrl = get_stream_controller()
                     if ctrl.push_enabled:
                         push_status = ctrl.status()
+                    # The public HLS tunnel base (if cloudflared is up) so the
+                    # backend can point /live straight at this agent.
+                    hls_tunnel_base = ctrl.tunnel_url()
                 except Exception:  # noqa: BLE001 — never let telemetry block liveness
                     push_status = None
-                BackendClient().heartbeat(push_status=push_status)
+                BackendClient().heartbeat(
+                    push_status=push_status, hls_tunnel_base=hls_tunnel_base
+                )
                 return {"ok": True}
             except BackendError as e:
                 return {"ok": False, "error": str(e)}

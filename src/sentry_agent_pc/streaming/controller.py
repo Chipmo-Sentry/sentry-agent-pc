@@ -12,11 +12,12 @@ import threading
 
 from sentry_agent_pc.backend_client import BackendClient
 from sentry_agent_pc.logging_setup import get_logger
-from sentry_agent_pc.resources import resolve_mediamtx_exe
+from sentry_agent_pc.resources import resolve_cloudflared_exe, resolve_mediamtx_exe
 from sentry_agent_pc.settings import DEFAULT_CONFIG_DIR, get_settings
 from sentry_agent_pc.state import load_state
 from sentry_agent_pc.streaming.local_mediamtx import LocalMediaMTX
 from sentry_agent_pc.streaming.pusher import PushTarget, StreamPusher
+from sentry_agent_pc.streaming.tunnel import CloudflaredTunnel
 
 log = get_logger("sentry_agent_pc.streaming.controller")
 
@@ -37,13 +38,22 @@ class StreamController:
         self._lock = threading.Lock()
         s = get_settings()
         self._local: LocalMediaMTX | None = None
+        self._tunnel: CloudflaredTunnel | None = None
         if s.local_fanout_enabled:
             self._local = LocalMediaMTX(
                 exe_path=resolve_mediamtx_exe(s.mediamtx_path),
                 config_dir=DEFAULT_CONFIG_DIR,
                 rtsp_port=s.local_mediamtx_rtsp_port,
                 api_port=s.local_mediamtx_api_port,
+                hls_port=s.local_mediamtx_hls_port,
             )
+            # The tunnel exposes that loopback HLS to the cloud frontend. Target a
+            # fixed port so the public URL stays stable until cloudflared restarts.
+            if s.agent_hls_tunnel_enabled:
+                self._tunnel = CloudflaredTunnel(
+                    exe_path=resolve_cloudflared_exe(s.cloudflared_path),
+                    target_url=f"http://127.0.0.1:{s.local_mediamtx_hls_port}",
+                )
 
     @property
     def push_enabled(self) -> bool:
@@ -125,6 +135,11 @@ class StreamController:
         ]
         if self._local is not None:
             self._local.sync(cams)
+            # With the loopback HLS up, bring up the tunnel so the cloud frontend
+            # can pull video straight from this agent. Idempotent — start() no-ops
+            # if already running; the public URL is reported via the heartbeat.
+            if self._tunnel is not None and cams:
+                self._tunnel.start()
 
         targets = []
         for c in state.cameras:
@@ -144,6 +159,12 @@ class StreamController:
         with self._lock:
             return self._pusher.status() if self._pusher else []
 
+    def tunnel_url(self) -> str | None:
+        """Public ``*.trycloudflare.com`` HLS base for this agent, or None when no
+        tunnel is up. Reported via the heartbeat so ``/live`` proxies straight from
+        the agent. Lock-free: `_tunnel` is set once in __init__ + has its own lock."""
+        return self._tunnel.url if self._tunnel else None
+
     def stop(self) -> None:
         with self._lock:
             self._stopped = True
@@ -153,6 +174,8 @@ class StreamController:
         if self._pusher is not None:
             self._pusher.stop_all()
             self._pusher = None
+        if self._tunnel is not None:
+            self._tunnel.stop()
         if self._local is not None:
             self._local.stop()
 

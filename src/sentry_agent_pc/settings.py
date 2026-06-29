@@ -86,6 +86,13 @@ class Settings(BaseSettings):
     # ingest/cloud MediaMTX (8554/9997) during testing on the same box.
     local_mediamtx_rtsp_port: int = 18554
     local_mediamtx_api_port: int = 19997
+    local_mediamtx_hls_port: int = 18888
+    # Run a cloudflared quick tunnel exposing the loopback HLS so the cloud
+    # frontend plays video straight from this agent (no GPU-node relay). Set
+    # CLOUDFLARED_PATH to override the binary; flip this off to fall back to the
+    # node relay instantly if the tunnel ever misbehaves.
+    agent_hls_tunnel_enabled: bool = True
+    cloudflared_path: str = "cloudflared"
 
 
 def get_settings() -> Settings:
