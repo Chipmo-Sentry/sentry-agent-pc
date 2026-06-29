@@ -97,10 +97,33 @@ class StreamController:
             self._teardown()
             return
 
+        # The local fan-out hub + cloud HLS tunnel run whenever there are cameras —
+        # they feed the edge engine, the offline view, AND agent-direct cloud video.
+        # This is INDEPENDENT of pushing to the GPU node (the node is optional, may
+        # be offline): video must reach the frontend straight from this agent. So
+        # bring them up BEFORE — and regardless of — the push config.
+        cams = [
+            (c.mediamtx_path, c.rtsp_url) for c in state.cameras if c.mediamtx_path and c.rtsp_url
+        ]
+        if self._local is not None:
+            self._local.sync(cams)
+            if self._tunnel is not None:
+                # Idempotent: start() no-ops if already running; the public URL is
+                # reported via the heartbeat. Stop when there's nothing to serve.
+                if cams:
+                    self._tunnel.start()
+                else:
+                    self._tunnel.stop()
+
+        # Push to the GPU node — a SEPARATE concern, gated on the backend config.
         cfg = BackendClient().agent_stream_config()
         self._push_enabled = bool(cfg.get("push_enabled"))
         if not self._push_enabled or not cfg.get("push_rtsp_base"):
-            self._teardown()
+            # No node push (disabled, or node offline with no base) — stop ONLY the
+            # pusher; the local hub + tunnel keep serving agent-direct video.
+            if self._pusher is not None:
+                self._pusher.stop_all()
+                self._pusher = None
             return
 
         if self._pusher is None:
@@ -125,21 +148,6 @@ class StreamController:
                     publish_user=cfg.get("publish_user"),
                     publish_pass=cfg.get("publish_pass"),
                 )
-
-        # Bring up the local fan-out hub for every camera, then point each relay
-        # at the loopback path instead of the camera. If the hub is unavailable,
-        # local_url() returns None and the relay reads the camera directly — the
-        # pre-fan-out behaviour, so this can only improve, never regress.
-        cams = [
-            (c.mediamtx_path, c.rtsp_url) for c in state.cameras if c.mediamtx_path and c.rtsp_url
-        ]
-        if self._local is not None:
-            self._local.sync(cams)
-            # With the loopback HLS up, bring up the tunnel so the cloud frontend
-            # can pull video straight from this agent. Idempotent — start() no-ops
-            # if already running; the public URL is reported via the heartbeat.
-            if self._tunnel is not None and cams:
-                self._tunnel.start()
 
         targets = []
         for c in state.cameras:
