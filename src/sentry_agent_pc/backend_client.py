@@ -172,11 +172,23 @@ class BackendClient:
             retriable=True,
         )
 
-    def heartbeat(self, push_status: list[dict[str, Any]] | None = None) -> None:
+    def heartbeat(
+        self,
+        push_status: list[dict[str, Any]] | None = None,
+        hls_tunnel_base: str | None = None,
+    ) -> None:
         # Heartbeat is idempotent (just liveness) → retry transport blips.
         # `push_status` (per-camera ffmpeg relay state + last_error) lets the cloud
         # show WHY a push is down without anyone RDP-ing into the store PC.
-        body = {"push": push_status} if push_status is not None else None
+        # `hls_tunnel_base` = this agent's public cloudflared HLS base; the backend
+        # points /live straight here so video doesn't depend on the GPU node.
+        body: dict[str, Any] | None = None
+        if push_status is not None or hls_tunnel_base is not None:
+            body = {}
+            if push_status is not None:
+                body["push"] = push_status
+            if hls_tunnel_base is not None:
+                body["hls_tunnel_base"] = hls_tunnel_base
         self._request(
             "POST",
             "/api/v1/agent/heartbeat",

@@ -81,6 +81,29 @@ if (-not (Test-Path $ffExe)) {
     Write-Host "==> ffmpeg already present at $ffExe" -ForegroundColor Cyan
 }
 
+# --- Bundle cloudflared (OPTIONAL) ------------------------------------------
+# Runs the quick tunnel that exposes the agent's loopback HLS to the cloud
+# frontend (streaming/tunnel.py), so video reaches the browser WITHOUT routing
+# through the ephemeral GPU node. Non-fatal: if the download fails we WARN and
+# ship without it — at runtime resolve_cloudflared_exe() returns None and the
+# agent falls back to whatever node relay exists (no direct-from-agent video).
+# cloudflared ships a single standalone .exe (no archive). latest/download is a
+# stable GitHub redirect; pin a versioned tag here if a build must be reproducible.
+$cfExe = Join-Path $mtxBinDir "cloudflared.exe"
+if (-not (Test-Path $cfExe)) {
+    try {
+        New-Item -ItemType Directory -Force -Path $mtxBinDir | Out-Null
+        $cfUrl = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+        Write-Host "==> Downloading cloudflared ..." -ForegroundColor Cyan
+        Invoke-WebRequest -Uri $cfUrl -OutFile $cfExe -UseBasicParsing
+        Write-Host "==> cloudflared bundled at $cfExe" -ForegroundColor Green
+    } catch {
+        Write-Warning "cloudflared download failed — building WITHOUT the agent HLS tunnel: $_"
+    }
+} else {
+    Write-Host "==> cloudflared already present at $cfExe" -ForegroundColor Cyan
+}
+
 # --- Bundle the edge-AI YOLO models (OpenVINO IR) ---------------------------
 # The shipped edge Stage-1 detector (edge/ov_lean.py) loads these with the
 # bundled OpenVINO runtime — so the SINGLE installer is self-contained: a clean

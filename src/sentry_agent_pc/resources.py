@@ -70,6 +70,21 @@ def resolve_mediamtx_exe(configured: str | None = None) -> str | None:
     return shutil.which(configured or "mediamtx")
 
 
+def resolve_cloudflared_exe(configured: str | None = None) -> str | None:
+    """Best path to a cloudflared binary, or None if unavailable.
+
+    Priority: an explicit ``configured`` path → the bundled ``bin/cloudflared.exe``
+    → ``cloudflared`` on PATH. None → no tunnel (the cloud frontend then can't
+    reach this agent's HLS directly and falls back to whatever node relay exists).
+    """
+    if configured and configured not in ("", "cloudflared") and Path(configured).exists():
+        return configured
+    bundled = bundled_binary("cloudflared.exe")
+    if bundled is not None:
+        return str(bundled)
+    return shutil.which(configured or "cloudflared")
+
+
 def resolve_ffmpeg_exe(configured: str | None = None) -> str:
     """Best path to an ffmpeg binary. ALWAYS returns a string (never None) so the
     caller spawns it and surfaces a clear "not found" if it's truly absent.

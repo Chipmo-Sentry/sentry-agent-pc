@@ -32,10 +32,11 @@ def test_yaml_dquote_escapes_and_quotes() -> None:
 
 
 def test_signature_changes_with_paths_and_ports() -> None:
-    a = _signature({"c1": "rtsp://x/1"}, 18554, 19997)
-    assert a == _signature({"c1": "rtsp://x/1"}, 18554, 19997)  # order-stable
-    assert a != _signature({"c1": "rtsp://x/2"}, 18554, 19997)  # source changed
-    assert a != _signature({"c1": "rtsp://x/1"}, 9999, 19997)   # port changed
+    a = _signature({"c1": "rtsp://x/1"}, 18554, 19997, 18888)
+    assert a == _signature({"c1": "rtsp://x/1"}, 18554, 19997, 18888)  # order-stable
+    assert a != _signature({"c1": "rtsp://x/2"}, 18554, 19997, 18888)  # source changed
+    assert a != _signature({"c1": "rtsp://x/1"}, 9999, 19997, 18888)   # rtsp port changed
+    assert a != _signature({"c1": "rtsp://x/1"}, 18554, 19997, 28888)  # hls port changed
 
 
 def test_local_url_gated_by_health_and_membership(tmp_path: Path) -> None:
