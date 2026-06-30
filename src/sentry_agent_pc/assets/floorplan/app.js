@@ -209,8 +209,28 @@ function render() {
   renderElements();
   renderTotals();
   updateCoverageStat(renderCoverage());
+  renderReadiness();
   // Nodes are recreated non-draggable; restore one-gesture move in select mode.
   setShapesDraggable(tool === "select");
+}
+
+// Setup-readiness summary: are all cameras calibrated, and is the floor covered?
+// Surfaces a store that's silently under-protected (uncalibrated → no zones;
+// blind spots → unwatched). Hidden until at least one camera is placed.
+function renderReadiness() {
+  const el = document.getElementById("readiness");
+  if (!el) return;
+  const cams = PLAN.cameras;
+  if (!cams.length) { el.classList.add("cs-hidden"); el.innerHTML = ""; return; }
+  el.classList.remove("cs-hidden");
+  const calib = cams.filter((c) => c.homography).length;
+  const pct = coverageInfo().pct;
+  const issues = [];
+  if (calib < cams.length) issues.push(`⚠ ${cams.length - calib}/${cams.length} камер калибровкгүй (зон үүсэхгүй)`);
+  if (pct != null && pct < 90) issues.push(`⚠ хамрагдалт ${pct}% — 🔴 сохор бүс бий`);
+  el.innerHTML = issues.length === 0
+    ? `<b style="color:#3DD56D">✅ Бэлэн</b> — ${calib}/${cams.length} калибровктой, хамрагдалт ${pct}%`
+    : `<b style="color:#E0A82E">⚠ Бэлэн биш</b><br><span class="ss-muted">${issues.join("<br>")}</span>`;
 }
 
 // Sidebar coverage readout — % of the store floor at least one camera sees.
@@ -322,6 +342,16 @@ function cameraBadge(cam) {
   if (cam.reproj_err != null && cam.reproj_err > REPROJ_WARN) return { color: "#E0A82E", mark: "!" };
   if (st.online === true) return { color: "#3DD56D", mark: "" };
   return null;
+}
+
+// Calibration quality from the reprojection error → a clear verdict + guidance,
+// so a shaky calibration (→ wrong zones → missed theft) is obvious and fixable.
+function calibVerdict(err) {
+  if (err == null) return { word: "—", color: "#a1a1aa", hint: "" };
+  if (err < 0.02) return { word: "Маш сайн", color: "#3DD56D", hint: "" };
+  if (err < REPROJ_WARN) return { word: "Сайн", color: "#3DD56D", hint: "" };
+  if (err < 0.1) return { word: "Дунд", color: "#E0A82E", hint: "цэг нэмж нарийсга" };
+  return { word: "Сул", color: "#E5484D", hint: "цэгүүдээ дахин нарийн дар" };
 }
 
 // A status badge node (named "badge") for a camera, or null. Counter-rotated so
@@ -455,13 +485,31 @@ function pointInPoly(x, y, poly) {
   return inside;
 }
 
+// Compute footprints + grid coverage WITHOUT drawing (used by the readiness
+// summary too). Returns {foots, blind:[[x,y]], step, pct}.
+function coverageInfo() {
+  const foots = PLAN.cameras.map(cameraFootprint).filter(Boolean);
+  const [pw, ph] = PLAN.size;
+  const step = Math.max(pw, ph) / 70; // ~70 cells across the long side
+  const blind = [];
+  let covered = 0, total = 0;
+  for (let y = step / 2; y < ph; y += step) {
+    for (let x = step / 2; x < pw; x += step) {
+      total++;
+      if (foots.some((f) => pointInPoly(x, y, f.pts))) covered++;
+      else blind.push([x, y]);
+    }
+  }
+  return { foots, blind, step, pct: total ? Math.round((covered / total) * 100) : null };
+}
+
 // Draw the coverage footprints + shade store cells no camera sees; return the
 // covered-area percentage (or null when off / no cameras).
 function renderCoverage() {
   covLayer.destroyChildren();
   if (!coverageOn) { covLayer.batchDraw(); return null; }
-  const foots = PLAN.cameras.map(cameraFootprint).filter(Boolean);
-  foots.forEach((f) => {
+  const info = coverageInfo();
+  info.foots.forEach((f) => {
     covLayer.add(new Konva.Line({
       points: f.pts.flat(), closed: true,
       fill: f.exact ? "#22c55e22" : "#eab30822", // green = exact, amber = rough estimate
@@ -469,22 +517,12 @@ function renderCoverage() {
       dash: f.exact ? undefined : [4, 3], listening: false,
     }));
   });
-  // Blind spots: sample the store rect on a grid; a cell in NO footprint = blind.
-  const [pw, ph] = PLAN.size;
-  const step = Math.max(pw, ph) / 70; // ~70 cells across the long side
-  let covered = 0, total = 0;
-  for (let y = step / 2; y < ph; y += step) {
-    for (let x = step / 2; x < pw; x += step) {
-      total++;
-      if (foots.some((f) => pointInPoly(x, y, f.pts))) { covered++; continue; }
-      covLayer.add(new Konva.Rect({
-        x: x - step / 2, y: y - step / 2, width: step, height: step,
-        fill: "#ef444433", listening: false,
-      }));
-    }
-  }
+  const h = info.step;
+  info.blind.forEach(([x, y]) => covLayer.add(new Konva.Rect({
+    x: x - h / 2, y: y - h / 2, width: h, height: h, fill: "#ef444433", listening: false,
+  })));
   covLayer.batchDraw();
-  return total ? Math.round((covered / total) * 100) : null;
+  return info.pct;
 }
 
 // ── selection / transform / vertex editing ──────────────────────────────
@@ -983,9 +1021,10 @@ function showCameraSettings(idx) {
   const onlineTxt = st.online === true ? "🟢 Холбогдсон"
     : st.online === false ? "🔴 Холбогдоогүй" : "⚪ Шалгаагүй";
   const calibrated = !!(cam.homography || cam._calibrated);
+  const v = calibVerdict(cam.reproj_err);
   const calibTxt = calibrated
-    ? `✅ Хийсэн${cam.reproj_err != null ? ` (алдаа ${(cam.reproj_err * 100).toFixed(1)}%)` : ""}`
-    : "❌ Хийгээгүй";
+    ? `✅ Хийсэн${cam.reproj_err != null ? ` · <b style="color:${v.color}">${v.word}</b> (${(cam.reproj_err * 100).toFixed(1)}%)` : ""}`
+    : `<span style="color:#E0A82E">❌ Хийгээгүй — зон үүсэхгүй</span>`;
   el.innerHTML = `
     <h2>📷 ${cam.name || cam.camera_id}</h2>
     <div class="cs-row">Төлөв: <span id="cs-online">${onlineTxt}</span></div>
@@ -1160,8 +1199,9 @@ async function saveCalibration() {
   try {
     const r = await window.pywebview.api.save_calibration(calib.cam.camera_id, calib.pairs, PLAN);
     const errPct = (r.reproj_err * 100).toFixed(1);
-    setCalibStatus(`✅ Хадгалагдлаа — ${r.zone_count} зон, алдаа ${errPct}%`);
-    setStatus(`Калибровк хадгалагдлаа: ${r.zone_count} зон`);
+    const v = calibVerdict(r.reproj_err);
+    setCalibStatus(`✅ ${r.zone_count} зон · алдаа ${errPct}% — ${v.word}${v.hint ? ` (${v.hint})` : ""}`);
+    setStatus(`Калибровк: ${r.zone_count} зон, чанар ${v.word}`);
     // Mark calibrated so the camera badge + settings panel update.
     calib.cam._calibrated = true;
     calib.cam.reproj_err = r.reproj_err;
@@ -1337,7 +1377,12 @@ async function save() {
   setStatus("Хадгалж байна…");
   try {
     await window.pywebview.api.save_plan(PLAN);
-    setStatus("✅ Хадгалагдлаа");
+    // Save always succeeds (WIP is fine), but flag a not-yet-protected setup.
+    const cams = PLAN.cameras;
+    const uncal = cams.filter((c) => !c.homography).length;
+    setStatus(uncal
+      ? `✅ Хадгалагдлаа — ⚠ ${uncal} камер калибровкгүй (зон үүсэхгүй)`
+      : "✅ Хадгалагдлаа");
   } catch (err) {
     setStatus("❌ " + err);
   }
