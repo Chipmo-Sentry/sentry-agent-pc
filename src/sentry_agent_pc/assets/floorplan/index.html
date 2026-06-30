@@ -134,6 +134,8 @@
       #plan-size input { width: 58px; background: var(--panel2); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 6px; font-size: 12px; }
       #plan-apply { padding: 5px 9px; font-size: 12px; }
       #totals { margin: 8px 0; padding: 8px 10px; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; font-size: 12px; color: var(--muted); line-height: 1.7; }
+      #coverage-stat { margin: 8px 0; padding: 8px 10px; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; font-size: 13px; color: var(--fg); line-height: 1.6; }
+      #coverage-stat.cs-hidden { display: none; }
       #shape-settings { margin: 10px 0; padding: 10px; background: var(--panel2); border: 1px solid var(--primary); border-radius: 8px; }
       #shape-settings.cs-hidden { display: none; }
       #shape-settings h2 { font-size: 13px; margin: 0 0 8px; }
@@ -167,6 +169,7 @@
         <button id="btn-snap" class="active">⊾ Өнцөг</button>
         <button id="btn-psnap" title="Цэг-snap (P)">⊙ Цэг</button>
         <button id="btn-ortho" title="Босоо/хэвтээ түгжээ (O)">90° Босоо</button>
+        <button id="btn-coverage" title="Камерын хамрах талбай + сохор бүс (V)">👁 Хамрах талбай</button>
         <button id="btn-del">🗑 Устгах</button>
         <button id="btn-undo">↶</button>
         <button id="btn-redo">↷</button>
@@ -194,6 +197,7 @@
             <button id="plan-apply">Тавих</button>
           </div>
           <div id="totals"></div>
+          <div id="coverage-stat" class="cs-hidden"></div>
           <div id="shape-settings" class="cs-hidden"></div>
           <h2>Байрлуулах камер</h2>
           <select id="cam-pick"></select>
@@ -212,11 +216,14 @@
             дэлгүүрийн хүрээ. <b>«90° Босоо»</b> (O) — хана зөвхөн босоо/хэвтээ.
             Хана зурж байхад <b>гар дээр тоо дармагц</b> урт-талбар нээгдэнэ; эхэнд
             нь буцаж очвол гогцоо автоматаар хаагдана. Space+чирэх = гүйлгэх.
+            <b>«👁 Хамрах талбай»</b> (V) — камер бүрийн харах талбайг (калибровктой
+            бол яг, үгүй бол баримжаа конус) болон <b>хяналтгүй 🔴 сохор бүс</b>-ийг
+            харуулж, дэлгүүрийн <b>хамрагдалт %</b>-ийг тооцно.
           </p>
           <div class="keys">⌨ 1 Сонгох · 2 Хана · 3 Хана-дөрвөлжин · 4 Тавиур · 5 Орц · 6 Касс · 7 Камер
 Хана: дарж зур, тоо бичээд урт, эхэндээ очвол хаах · Тавиур: чирэх эсвэл Ө×Ө(м)
 Enter дуусгах · Esc болих · Del устгах · Space+чирэх гүйлгэх
-G өнцөг · P цэг-snap · O босоо · F багтаах · Ctrl+Z/Y · Ctrl+S</div>
+G өнцөг · P цэг-snap · O босоо · V хамрах талбай · F багтаах · Ctrl+Z/Y · Ctrl+S</div>
           <h2 style="margin-top:14px">Элементүүд</h2>
           <div id="elements"></div>
         </aside>

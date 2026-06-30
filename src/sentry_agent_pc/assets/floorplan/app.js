@@ -25,6 +25,11 @@ const GRID_MINOR_M = 5; // faint grid line every 5 m
 const GRID_MAJOR_M = 25; // brighter, labelled grid line every 25 m
 const COORD_DP = 2; // store coords to 2 dp → 1 cm precision
 const SHOW_AREA = true; // show m² on fixtures + a store-area total
+// Camera coverage overlay: a CALIBRATED camera's footprint is exact (image 0-1
+// corners projected through the inverse homography); an UNcalibrated one falls
+// back to a rough wedge from its facing + these defaults.
+const CAM_FOV_DEG = 90; // assumed horizontal field of view for the rough wedge
+const CAM_RANGE_M = 12; // assumed useful range (m) for the rough wedge
 
 const round2 = (v) => Math.round(v * 100) / 100;
 const fmtM = (u) => round2(u).toFixed(COORD_DP); // "12.50"
@@ -51,6 +56,7 @@ let tool = "select";
 let snapOn = true;
 let pointSnapOn = false; // snap new points onto existing shape corners (toggle «⊙ Цэг»)
 let orthoOn = false; // lock wall segments to 0/90° (toggle «90°»)
+let coverageOn = false; // show camera coverage + blind-spot overlay (toggle «👁»)
 let snapMarker = null; // highlight ring shown over the active snap target
 let draft = null; // { type, pts: [[x,y],...] } while drawing
 let rectDraft = null; // { type, start:[x,y] } while Shift-dragging a rectangle
@@ -72,9 +78,10 @@ const stage = new Konva.Stage({
 });
 const gridLayer = new Konva.Layer({ listening: false });
 const shapeLayer = new Konva.Layer();
+const covLayer = new Konva.Layer({ listening: false }); // camera coverage + blind spots
 const camLayer = new Konva.Layer();
 const uiLayer = new Konva.Layer();
-stage.add(gridLayer, shapeLayer, camLayer, uiLayer);
+stage.add(gridLayer, shapeLayer, covLayer, camLayer, uiLayer);
 
 const tr = new Konva.Transformer({
   rotationSnaps: ROT_SNAPS,
@@ -201,8 +208,22 @@ function render() {
   drawGrid();
   renderElements();
   renderTotals();
+  updateCoverageStat(renderCoverage());
   // Nodes are recreated non-draggable; restore one-gesture move in select mode.
   setShapesDraggable(tool === "select");
+}
+
+// Sidebar coverage readout — % of the store floor at least one camera sees.
+function updateCoverageStat(pct) {
+  const el = document.getElementById("coverage-stat");
+  if (!el) return;
+  if (!coverageOn || pct == null) { el.classList.add("cs-hidden"); el.innerHTML = ""; return; }
+  const exact = PLAN.cameras.filter((c) => c.homography).length;
+  const color = pct >= 90 ? "#3DD56D" : pct >= 70 ? "#E0A82E" : "#E5484D";
+  el.classList.remove("cs-hidden");
+  el.innerHTML =
+    `Хамрагдалт: <b style="color:${color}">${pct}%</b><br>` +
+    `<span class="ss-muted">🟢 нарийн ${exact}/${PLAN.cameras.length} (калибровктой) · 🟡 баримжаа · 🔴 сохор бүс</span>`;
 }
 
 // Sidebar readout: store dimensions/area + element counts (metres, m²).
@@ -336,12 +357,14 @@ function makeCamera(cam, idx) {
   g.on("dragend", () => {
     PLAN.cameras[idx].pos = [g.x(), g.y()];
     pushUndo();
+    if (coverageOn) updateCoverageStat(renderCoverage()); // footprint follows the camera
   });
   g.on("transformend", () => {
     PLAN.cameras[idx].dir_deg = Math.round(g.rotation()) % 360;
     label.rotation(-g.rotation());
     setStatus(`Чиглэл ${PLAN.cameras[idx].dir_deg}°`);
     pushUndo();
+    if (coverageOn) updateCoverageStat(renderCoverage());
   });
   return g;
 }
@@ -379,6 +402,89 @@ function updateScaleBar() {
   for (const n of nice) { if (n * sx <= 130) m = n; }
   bar.style.width = Math.round(m * sx) + "px";
   bar.textContent = m >= 1 ? `${m} м` : `${m * 100} см`;
+}
+
+// ── camera coverage + blind spots ───────────────────────────────────────────
+// The stored homography maps PLAN → image(0-1) (see floor_plan_web._compute_
+// calibration). Its inverse maps image(0-1) → plan, so the four image corners
+// project to the exact floor quad the camera sees.
+function invert3x3(m) {
+  const [a, b, c] = m[0], [d, e, f] = m[1], [g, h, i] = m[2];
+  const A = e * i - f * h, B = c * h - b * i, C = b * f - c * e;
+  const det = a * A + d * B + g * C;
+  if (!det || !isFinite(det)) return null;
+  const id = 1 / det;
+  return [
+    [A * id, B * id, C * id],
+    [(f * g - d * i) * id, (a * i - c * g) * id, (c * d - a * f) * id],
+    [(d * h - e * g) * id, (b * g - a * h) * id, (a * e - b * d) * id],
+  ];
+}
+function applyH(m, p) {
+  const x = p[0], y = p[1];
+  const w = m[2][0] * x + m[2][1] * y + m[2][2];
+  if (Math.abs(w) < 1e-9) return null;
+  return [(m[0][0] * x + m[0][1] * y + m[0][2]) / w, (m[1][0] * x + m[1][1] * y + m[1][2]) / w];
+}
+// The plan polygon a camera covers: the exact homography quad if calibrated,
+// else a rough wedge from its facing. Returns {pts, exact} or null.
+function cameraFootprint(cam) {
+  if (cam.homography) {
+    const inv = invert3x3(cam.homography);
+    if (inv) {
+      const quad = [[0, 0], [1, 0], [1, 1], [0, 1]].map((c) => applyH(inv, c));
+      if (quad.every(Boolean)) return { pts: quad, exact: true };
+    }
+  }
+  const [cx, cy] = cam.pos;
+  const base = (cam.dir_deg || 0) * Math.PI / 180;
+  const half = (CAM_FOV_DEG / 2) * Math.PI / 180;
+  const pts = [[cx, cy]];
+  for (let k = 0; k <= 12; k++) {
+    const a = base - half + (2 * half) * (k / 12);
+    pts.push([cx + Math.cos(a) * CAM_RANGE_M, cy + Math.sin(a) * CAM_RANGE_M]);
+  }
+  return { pts, exact: false };
+}
+function pointInPoly(x, y, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+// Draw the coverage footprints + shade store cells no camera sees; return the
+// covered-area percentage (or null when off / no cameras).
+function renderCoverage() {
+  covLayer.destroyChildren();
+  if (!coverageOn) { covLayer.batchDraw(); return null; }
+  const foots = PLAN.cameras.map(cameraFootprint).filter(Boolean);
+  foots.forEach((f) => {
+    covLayer.add(new Konva.Line({
+      points: f.pts.flat(), closed: true,
+      fill: f.exact ? "#22c55e22" : "#eab30822", // green = exact, amber = rough estimate
+      stroke: f.exact ? "#22c55e" : "#eab308", strokeWidth: 1 / (stage.scaleX() || 1),
+      dash: f.exact ? undefined : [4, 3], listening: false,
+    }));
+  });
+  // Blind spots: sample the store rect on a grid; a cell in NO footprint = blind.
+  const [pw, ph] = PLAN.size;
+  const step = Math.max(pw, ph) / 70; // ~70 cells across the long side
+  let covered = 0, total = 0;
+  for (let y = step / 2; y < ph; y += step) {
+    for (let x = step / 2; x < pw; x += step) {
+      total++;
+      if (foots.some((f) => pointInPoly(x, y, f.pts))) { covered++; continue; }
+      covLayer.add(new Konva.Rect({
+        x: x - step / 2, y: y - step / 2, width: step, height: step,
+        fill: "#ef444433", listening: false,
+      }));
+    }
+  }
+  covLayer.batchDraw();
+  return total ? Math.round((covered / total) * 100) : null;
 }
 
 // ── selection / transform / vertex editing ──────────────────────────────
@@ -1143,11 +1249,23 @@ function toggleOrtho() {
   if (b) b.classList.toggle("active", orthoOn);
   setStatus("Босоо/хэвтээ түгжээ " + (orthoOn ? "ON" : "OFF"));
 }
+function toggleCoverage() {
+  coverageOn = !coverageOn;
+  const b = document.getElementById("btn-coverage");
+  if (b) b.classList.toggle("active", coverageOn);
+  const pct = renderCoverage();
+  updateCoverageStat(pct);
+  setStatus(coverageOn
+    ? (PLAN.cameras.length ? `Камерын хамрах талбай: ${pct}% (🔴 = сохор бүс)` : "Эхлээд камер байрлуулна уу")
+    : "Хамрах талбай OFF");
+}
 {
   const bp = document.getElementById("btn-psnap");
   if (bp) bp.onclick = togglePointSnap;
   const bo = document.getElementById("btn-ortho");
   if (bo) bo.onclick = toggleOrtho;
+  const bc = document.getElementById("btn-coverage");
+  if (bc) bc.onclick = toggleCoverage;
 }
 document.getElementById("calib-save").onclick = saveCalibration;
 document.getElementById("calib-cancel").onclick = closeCalibration;
@@ -1195,6 +1313,7 @@ window.addEventListener("keydown", (e) => {
   else if (e.key.toLowerCase() === "g") document.getElementById("btn-snap").click();
   else if (e.key.toLowerCase() === "p") togglePointSnap();
   else if (e.key.toLowerCase() === "o") toggleOrtho();
+  else if (e.key.toLowerCase() === "v") toggleCoverage();
   else if (e.key.toLowerCase() === "f") fit();
   else if (e.key === " " && !panning) { e.preventDefault(); panning = true; stage.draggable(true); stage.container().style.cursor = "grab"; }
 });
