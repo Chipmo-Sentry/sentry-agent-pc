@@ -978,6 +978,7 @@ class LocalLiveView(ctk.CTkFrame):
         # KPI strip — at-a-glance health line above the feeds (mirrors the cloud
         # /live console): cameras, live risk, AI engine, store.
         self._kpi_risk_state: tuple[str | None, str | None] = (None, None)
+        self._kpi_ai_state: tuple[str | None, str | None] = (None, None)
         kpi = ctk.CTkFrame(self, fg_color="transparent")
         kpi.pack(fill="x", padx=18, pady=(12, 0))
 
@@ -998,7 +999,7 @@ class LocalLiveView(ctk.CTkFrame):
 
         _chip(str(len(cams)), "Камер")
         self._kpi_risk = _chip("—", "Эрсдэл")
-        _chip("OpenVINO", "AI", "#6BCB83")
+        self._kpi_ai = _chip("Ачаалж байна", "AI", "gray70")
         if store:
             _chip(store, "Дэлгүүр")
 
@@ -1158,6 +1159,24 @@ class LocalLiveView(ctk.CTkFrame):
             self._kpi_risk_state = (txt, color)
             with contextlib.suppress(Exception):
                 self._kpi_risk.configure(text=txt, text_color=color)
+
+        # AI engine status — OpenVINO ready (any tile producing edge frames),
+        # loading, or off (all gave up).
+        if hasattr(self, "_kpi_ai"):
+            ready = any(getattr(t.reader, "_edge_ready", False) for t in self._tiles)
+            failed = bool(self._tiles) and all(
+                getattr(t.reader, "_edge_failed", False) for t in self._tiles
+            )
+            if ready:
+                ai = ("OpenVINO", "#6BCB83")
+            elif failed:
+                ai = ("Идэвхгүй", "#E5484D")
+            else:
+                ai = ("Ачаалж байна", "gray70")
+            if ai != self._kpi_ai_state:
+                self._kpi_ai_state = ai
+                with contextlib.suppress(Exception):
+                    self._kpi_ai.configure(text=ai[0], text_color=ai[1])
 
     def _tick_edge_config(self) -> None:
         """I7: every 30 s, hot-apply the backend's edge tunables to the running
