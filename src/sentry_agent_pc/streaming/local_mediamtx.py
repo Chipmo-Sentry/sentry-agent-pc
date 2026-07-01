@@ -198,16 +198,19 @@ class LocalMediaMTX:
             "rtsp: yes",
             f"rtspAddress: {_HOST}:{self._rtsp_port}",
             "rtspTransports: [tcp]",
-            # HLS on loopback for the cloudflared tunnel → cloud frontend. mpegts
-            # variant (not lowLatency) is the proven-stable one for these cameras
-            # (lowLatency's ?session keying caused playback breaks); ~1s segments
-            # keep latency low. allowOrigin '*' so the browser player (served from
-            # the app domain, fetching via the backend proxy) isn't CORS-blocked.
+            # HLS on loopback for the cloudflared tunnel → cloud frontend.
+            # lowLatency variant with ~200ms PARTS cuts glass-to-glass latency to
+            # ~1s (vs ~4-7s for mpegts). Its `?session` keying used to break through
+            # the backend HLS proxy (each of our multiple workers = a different IP,
+            # and the session is IP-bound); that's gone now — /live 307-REDIRECTS
+            # the player straight to this tunnel, so hls.js is ONE client and the
+            # session stays valid. allowOrigin '*' for the cross-origin fetch.
             "hls: yes",
             f"hlsAddress: {_HOST}:{self._hls_port}",
-            "hlsVariant: mpegts",
+            "hlsVariant: lowLatency",
             "hlsSegmentCount: 7",
             "hlsSegmentDuration: 1s",
+            "hlsPartDuration: 200ms",
             "hlsAllowOrigin: '*'",
             "hlsAlwaysRemux: no",
             "webrtc: no",
