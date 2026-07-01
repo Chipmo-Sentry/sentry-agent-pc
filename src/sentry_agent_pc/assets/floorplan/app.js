@@ -20,7 +20,7 @@ const ROT_SNAPS = [0, 45, 90, 135, 180, 225, 270, 315];
 // ── real-world scale ────────────────────────────────────────────────────────
 // 1 plan-unit == 1 METRE. PLAN.size therefore IS the store's real width × height
 // in metres (default 200×200 m), so lengths are entered/shown directly in metres.
-const DEFAULT_SIZE_M = [40, 30]; // realistic store; adjustable via «Талбайн хэмжээ»
+const DEFAULT_SIZE_M = [200, 200]; // default working canvas (m); adjustable via «Талбайн хэмжээ»
 const GRID_MINOR_M = 5; // faint grid line every 5 m
 const GRID_MAJOR_M = 25; // brighter, labelled grid line every 25 m
 const COORD_DP = 2; // store coords to 2 dp → 1 cm precision
@@ -996,6 +996,7 @@ function renderElements() {
 // ── new / clear ────────────────────────────────────────────────────────────
 function clearPlan() {
   if (!window.confirm("Бүх зураг (хана, бүс, камер) устгаж шинээр эхлэх үү?")) return;
+  PLAN.size = DEFAULT_SIZE_M.slice(); // «Шинээр эхлэх» → анхдагч талбай (200×200 м)
   PLAN.walls = [];
   PLAN.fixtures = [];
   PLAN.cameras = [];
@@ -1004,7 +1005,7 @@ function clearPlan() {
   pushUndo();
   render();
   fit();
-  setStatus("Шинэ хоосон зураг — зурж эхлээрэй");
+  setStatus("Шинэ хоосон зураг (200 × 200 м) — зурж эхлээрэй");
 }
 
 // ── camera settings panel (click a camera → its settings + live status) ─────
@@ -1238,9 +1239,11 @@ const TEMPLATE = {
   ],
 };
 function loadTemplate() {
-  const K = 0.03; // template authored in 1000×800 units → a realistic 30×24 m store
-  const sc = (pts) => pts.map(([x, y]) => [round2(x * K), round2(y * K)]);
-  PLAN.size = [30, 24];
+  // A ~44×34 m store CENTRED inside the 200×200 default canvas (contained, not
+  // filling it). Template is authored in 1000×800 units spanning ~60..940 / 60..740.
+  const K = 0.05, OX = 75, OY = 80;
+  const sc = (pts) => pts.map(([x, y]) => [round2(x * K + OX), round2(y * K + OY)]);
+  PLAN.size = DEFAULT_SIZE_M.slice(); // keep the 200×200 default — the store sits inside it
   PLAN.walls = TEMPLATE.walls.map((w) => ({ points: sc(w.points) }));
   PLAN.fixtures = TEMPLATE.fixtures.map((f) => ({ type: f.type, points: sc(f.points) }));
   // keep PLAN.cameras — the user's placed cameras are theirs
@@ -1248,7 +1251,7 @@ function loadTemplate() {
   pushUndo();
   render();
   fit();
-  setStatus("Жишээ загвар (30 × 24 м) ачаалагдлаа — өөрийн дэлгүүрт тааруулж засаарай");
+  setStatus("Жишээ загвар — 200×200 м талбайд багтсан дэлгүүр. Өөрийн дэлгүүрт тааруулж засаарай.");
 }
 
 // ── fit ─────────────────────────────────────────────────────────────────────
