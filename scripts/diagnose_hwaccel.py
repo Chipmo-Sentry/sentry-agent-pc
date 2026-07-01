@@ -101,8 +101,7 @@ def _report(name: str, url: str) -> None:
         return
     w, h = sw.get("size") or (0, 0)
     print(
-        f"   SW (software): {sw['fps']:.1f} fps  ·  {w}x{h}  ·  "
-        f"эхний frame {sw.get('ttf', 0):.1f}s"
+        f"   SW (software): {sw['fps']:.1f} fps  ·  {w}x{h}  ·  эхний frame {sw.get('ttf', 0):.1f}s"
     )
 
     hw = _measure(url, hwaccel=True)
@@ -112,9 +111,7 @@ def _report(name: str, url: str) -> None:
         return
     hw_on = float(hw.get("hw_val", 0) or 0) > 0
     flag = "✅ идэвхжсэн" if hw_on else "⚠️ үл дэмжсэн (CAP_PROP_HW_ACCELERATION=0)"
-    print(
-        f"   HW (hardware): {hw['fps']:.1f} fps  ·  hwaccel {flag}"
-    )
+    print(f"   HW (hardware): {hw['fps']:.1f} fps  ·  hwaccel {flag}")
 
     # Verdict for this camera.
     if hw_on and hw["fps"] >= sw["fps"] * 0.9:
@@ -141,7 +138,7 @@ def _load_saved_urls() -> list[tuple[str, str]]:
 def main() -> int:
     print("\nLive-view декод оношилгоо — software vs hardware\n")
     if len(sys.argv) > 1:
-        cams = [(f"arg-{i+1}", u) for i, u in enumerate(sys.argv[1:])]
+        cams = [(f"arg-{i + 1}", u) for i, u in enumerate(sys.argv[1:])]
     else:
         cams = _load_saved_urls()
     if not cams:

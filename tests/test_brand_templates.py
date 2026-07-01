@@ -50,7 +50,11 @@ def test_build_rtsp_url_custom_path_overrides() -> None:
     t = manual.get_brand("hikvision")
     assert t is not None
     url = manual.build_rtsp_url(
-        t, "1.2.3.4", "a", "b", custom_path="/my/custom/path",
+        t,
+        "1.2.3.4",
+        "a",
+        "b",
+        custom_path="/my/custom/path",
     )
     assert url.endswith("/my/custom/path")
 

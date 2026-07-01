@@ -991,9 +991,9 @@ class LocalLiveView(ctk.CTkFrame):
                 text_color=value_color,
             )
             v.pack(anchor="w", padx=12, pady=(7, 0))
-            ctk.CTkLabel(
-                box, text=label, font=ctk.CTkFont(size=10), text_color="gray55"
-            ).pack(anchor="w", padx=12, pady=(0, 7))
+            ctk.CTkLabel(box, text=label, font=ctk.CTkFont(size=10), text_color="gray55").pack(
+                anchor="w", padx=12, pady=(0, 7)
+            )
             return v
 
         _chip(str(len(cams)), "Камер")

@@ -76,9 +76,7 @@ def _dedup_consecutive(
 class ZoneEditorDialog(ctk.CTkToplevel):
     """Draw + edit a camera's detection zones on a captured still frame."""
 
-    def __init__(
-        self, master: ctk.CTk, camera: CameraRecord, on_done: Callable[[], None]
-    ) -> None:
+    def __init__(self, master: ctk.CTk, camera: CameraRecord, on_done: Callable[[], None]) -> None:
         super().__init__(master)
         self.cam = camera
         self.on_done = on_done
@@ -110,16 +108,26 @@ class ZoneEditorDialog(ctk.CTkToplevel):
         bar = ctk.CTkFrame(self, fg_color="transparent")
         bar.pack(side="bottom", fill="x", padx=20, pady=14)
         ctk.CTkButton(
-            bar, text="Болих", fg_color="transparent", border_width=1,
+            bar,
+            text="Болих",
+            fg_color="transparent",
+            border_width=1,
             command=self._on_close,
         ).pack(side="right", padx=(8, 0))
         self.save_btn = ctk.CTkButton(
-            bar, text="Хадгалах", fg_color=BRAND_PRIMARY,
-            hover_color=BRAND_PRIMARY_HOVER, command=self._submit,
+            bar,
+            text="Хадгалах",
+            fg_color=BRAND_PRIMARY,
+            hover_color=BRAND_PRIMARY_HOVER,
+            command=self._submit,
         )
         self.save_btn.pack(side="right")
         self.status_lbl = ctk.CTkLabel(
-            bar, text="", font=ctk.CTkFont(size=12), text_color="gray60", anchor="w",
+            bar,
+            text="",
+            font=ctk.CTkFont(size=12),
+            text_color="gray60",
+            anchor="w",
         )
         self.status_lbl.pack(side="left", padx=4)
         self.spinner = widgets.Spinner(bar)
@@ -150,17 +158,24 @@ class ZoneEditorDialog(ctk.CTkToplevel):
         side.pack_propagate(False)
 
         ctk.CTkLabel(
-            side, text="Зоны төрөл", font=ctk.CTkFont(size=13, weight="bold"),
+            side,
+            text="Зоны төрөл",
+            font=ctk.CTkFont(size=13, weight="bold"),
             anchor="w",
         ).pack(fill="x", pady=(2, 4))
         self._type_picker = ctk.CTkSegmentedButton(
-            side, values=[z.label for z in ZONE_TYPES], command=self._on_type_change,
+            side,
+            values=[z.label for z in ZONE_TYPES],
+            command=self._on_type_change,
         )
         self._type_picker.set(ZONE_TYPES[0].label)
         self._type_picker.pack(fill="x")
         self._swatch = ctk.CTkLabel(
-            side, text="●  идэвхтэй өнгө", anchor="w",
-            text_color=zone_color(self._cur_type), font=ctk.CTkFont(size=12),
+            side,
+            text="●  идэвхтэй өнгө",
+            anchor="w",
+            text_color=zone_color(self._cur_type),
+            font=ctk.CTkFont(size=12),
         )
         self._swatch.pack(fill="x", pady=(4, 10))
 
@@ -168,30 +183,50 @@ class ZoneEditorDialog(ctk.CTkToplevel):
             side,
             text="Зураг дээр дарж булангуудыг тэмдэглэ. 3+ цэг тэмдэглээд "
             "давхар дарж эсвэл доорх товчоор зоныг хаа.",
-            font=ctk.CTkFont(size=11), text_color="gray60",
-            justify="left", wraplength=260, anchor="w",
+            font=ctk.CTkFont(size=11),
+            text_color="gray60",
+            justify="left",
+            wraplength=260,
+            anchor="w",
         ).pack(fill="x", pady=(0, 8))
 
         row = ctk.CTkFrame(side, fg_color="transparent")
         row.pack(fill="x", pady=(0, 4))
         ctk.CTkButton(
-            row, text="✓ Зон дуусгах", height=30, command=self._finish_current,
+            row,
+            text="✓ Зон дуусгах",
+            height=30,
+            command=self._finish_current,
         ).pack(side="left", fill="x", expand=True, padx=(0, 4))
         ctk.CTkButton(
-            row, text="↶ Цэг", width=64, height=30, fg_color="transparent",
-            border_width=1, command=self._undo_point,
+            row,
+            text="↶ Цэг",
+            width=64,
+            height=30,
+            fg_color="transparent",
+            border_width=1,
+            command=self._undo_point,
         ).pack(side="left")
 
         ctk.CTkLabel(
-            side, text="Зонууд", font=ctk.CTkFont(size=13, weight="bold"), anchor="w",
+            side,
+            text="Зонууд",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            anchor="w",
         ).pack(fill="x", pady=(12, 2))
         self._zone_list = ctk.CTkScrollableFrame(side, fg_color="#161618", height=240)
         self._zone_list.pack(fill="both", expand=True)
 
         ctk.CTkButton(
-            side, text="Бүгдийг арилгах", height=28, fg_color="transparent",
-            border_width=1, text_color="#FF6B6B", border_color="#FF6B6B",
-            hover_color="gray25", command=self._clear_all,
+            side,
+            text="Бүгдийг арилгах",
+            height=28,
+            fg_color="transparent",
+            border_width=1,
+            text_color="#FF6B6B",
+            border_color="#FF6B6B",
+            hover_color="gray25",
+            command=self._clear_all,
         ).pack(fill="x", pady=(8, 2))
 
     # ── still-frame grab ─────────────────────────────────────────────────
@@ -250,34 +285,45 @@ class ZoneEditorDialog(ctk.CTkToplevel):
         c.delete("all")
         if self._img is None or self._rect.disp_w <= 0:
             return
-        disp = self._img.resize(
-            (max(1, int(self._rect.disp_w)), max(1, int(self._rect.disp_h)))
-        )
+        disp = self._img.resize((max(1, int(self._rect.disp_w)), max(1, int(self._rect.disp_h))))
         photo = ImageTk.PhotoImage(disp)
         self._photo = photo  # keep ref
         c.create_image(self._rect.off_x, self._rect.off_y, anchor="nw", image=photo)
 
         for z in self._zones:
-            self._draw_polygon(z["points"], zone_color(z["type"]), closed=True,
-                               label=zone_label(z["type"]))
+            self._draw_polygon(
+                z["points"], zone_color(z["type"]), closed=True, label=zone_label(z["type"])
+            )
         if self._current:
             self._draw_polygon(self._current, zone_color(self._cur_type), closed=False)
 
     def _draw_polygon(
-        self, pts_norm: list[tuple[float, float]], color: str, *,
-        closed: bool, label: str | None = None,
+        self,
+        pts_norm: list[tuple[float, float]],
+        color: str,
+        *,
+        closed: bool,
+        label: str | None = None,
     ) -> None:
         c = self.canvas
         px = [to_px(nx, ny, self._rect) for nx, ny in pts_norm]
         if closed and len(px) >= _MIN_POLYGON_POINTS:
             flat = [coord for p in px for coord in p]
             c.create_polygon(
-                *flat, outline=color, width=2, fill=color, stipple="gray12",
+                *flat,
+                outline=color,
+                width=2,
+                fill=color,
+                stipple="gray12",
             )
             if label:
                 lx, ly = px[0]
                 c.create_text(
-                    lx + 4, ly - 8, text=label, fill=color, anchor="w",
+                    lx + 4,
+                    ly - 8,
+                    text=label,
+                    fill=color,
+                    anchor="w",
                     font=("Segoe UI", 10, "bold"),
                 )
         else:
@@ -285,8 +331,13 @@ class ZoneEditorDialog(ctk.CTkToplevel):
                 c.create_line(*px[i], *px[i + 1], fill=color, width=2)
         for x, y in px:
             c.create_oval(
-                x - _VERTEX_R, y - _VERTEX_R, x + _VERTEX_R, y + _VERTEX_R,
-                fill=color, outline="white", width=1,
+                x - _VERTEX_R,
+                y - _VERTEX_R,
+                x + _VERTEX_R,
+                y + _VERTEX_R,
+                fill=color,
+                outline="white",
+                width=1,
             )
 
     # ── canvas events ────────────────────────────────────────────────────
@@ -349,7 +400,9 @@ class ZoneEditorDialog(ctk.CTkToplevel):
             child.destroy()
         if not self._zones:
             ctk.CTkLabel(
-                self._zone_list, text="Зон алга", text_color="gray50",
+                self._zone_list,
+                text="Зон алга",
+                text_color="gray50",
                 font=ctk.CTkFont(size=12),
             ).pack(pady=10)
             return
@@ -357,14 +410,23 @@ class ZoneEditorDialog(ctk.CTkToplevel):
             r = ctk.CTkFrame(self._zone_list, fg_color="transparent")
             r.pack(fill="x", pady=2, padx=2)
             ctk.CTkLabel(
-                r, text=f"●  {zone_label(z['type'])}  ·  {len(z['points'])} цэг",
-                text_color=zone_color(z["type"]), anchor="w",
+                r,
+                text=f"●  {zone_label(z['type'])}  ·  {len(z['points'])} цэг",
+                text_color=zone_color(z["type"]),
+                anchor="w",
                 font=ctk.CTkFont(size=12),
             ).pack(side="left")
             ctk.CTkButton(
-                r, text="✕", width=28, height=24, fg_color="transparent",
-                border_width=1, text_color="#FF6B6B", border_color="#FF6B6B",
-                hover_color="gray25", command=lambda i=idx: self._delete_zone(i),
+                r,
+                text="✕",
+                width=28,
+                height=24,
+                fg_color="transparent",
+                border_width=1,
+                text_color="#FF6B6B",
+                border_color="#FF6B6B",
+                hover_color="gray25",
+                command=lambda i=idx: self._delete_zone(i),
             ).pack(side="right")
 
     def _delete_zone(self, idx: int) -> None:

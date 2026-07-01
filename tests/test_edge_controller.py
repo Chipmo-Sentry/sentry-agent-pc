@@ -35,7 +35,9 @@ def _cam(tier: str, path: str | None = "cam_a", rtsp: str | None = "rtsp://x/1")
 def patched(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(ctrl_mod, "_CamWorker", _FakeWorker)
     monkeypatch.setattr(
-        ctrl_mod, "get_settings", lambda: SimpleNamespace(edge_ai_enabled=True, edge_clips_enabled=True)
+        ctrl_mod,
+        "get_settings",
+        lambda: SimpleNamespace(edge_ai_enabled=True, edge_clips_enabled=True),
     )
     monkeypatch.setattr(
         ctrl_mod, "get_stream_controller", lambda: SimpleNamespace(local_url=lambda _p: None)

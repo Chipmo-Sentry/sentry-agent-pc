@@ -69,9 +69,7 @@ def build_rtsp(*, user: str, password: str, host: str, port: int, path: str) -> 
 
 
 class EditCameraDialog(ctk.CTkToplevel):
-    def __init__(
-        self, master: ctk.CTk, camera: CameraRecord, on_done: Callable[[], None]
-    ) -> None:
+    def __init__(self, master: ctk.CTk, camera: CameraRecord, on_done: Callable[[], None]) -> None:
         super().__init__(master)
         self.cam = camera
         self.on_done = on_done
@@ -85,12 +83,18 @@ class EditCameraDialog(ctk.CTkToplevel):
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
         btn_row.pack(side="bottom", fill="x", padx=20, pady=14)
         ctk.CTkButton(
-            btn_row, text="Болих", fg_color="transparent", border_width=1,
+            btn_row,
+            text="Болих",
+            fg_color="transparent",
+            border_width=1,
             command=self.destroy,
         ).pack(side="right", padx=(8, 0))
         self.save_btn = ctk.CTkButton(
-            btn_row, text="Хадгалах", fg_color=BRAND_PRIMARY,
-            hover_color=BRAND_PRIMARY_HOVER, command=self._submit,
+            btn_row,
+            text="Хадгалах",
+            fg_color=BRAND_PRIMARY,
+            hover_color=BRAND_PRIMARY_HOVER,
+            command=self._submit,
         )
         self.save_btn.pack(side="right")
 
@@ -99,15 +103,19 @@ class EditCameraDialog(ctk.CTkToplevel):
         self._body = body
 
         ctk.CTkLabel(
-            body, text="Камерын холболтыг засах",
+            body,
+            text="Камерын холболтыг засах",
             font=ctk.CTkFont(size=16, weight="bold"),
         ).pack(pady=(8, 2), padx=20, anchor="w")
         ctk.CTkLabel(
             body,
             text="IP эсвэл нэвтрэх мэдээлэл өөрчлөгдсөн бол энд засаад хадгалахад "
             "дахин шалгаж, шууд харах урсгалыг шинэ хаяг руу холбоно.",
-            font=ctk.CTkFont(size=11), text_color="gray70",
-            anchor="w", wraplength=480, justify="left",
+            font=ctk.CTkFont(size=11),
+            text_color="gray70",
+            anchor="w",
+            wraplength=480,
+            justify="left",
         ).pack(fill="x", padx=20, pady=(0, 8))
 
         self.name_entry = self._field("Нэр:", camera.name)
@@ -124,7 +132,10 @@ class EditCameraDialog(ctk.CTkToplevel):
         self.spinner = widgets.Spinner(body)
         self.spinner.pack(pady=(8, 0))
         self.status_lbl = ctk.CTkLabel(
-            body, text="", font=ctk.CTkFont(size=12), text_color="gray60",
+            body,
+            text="",
+            font=ctk.CTkFont(size=12),
+            text_color="gray60",
             wraplength=480,
         )
         self.status_lbl.pack(pady=4, padx=20)
@@ -182,15 +193,16 @@ class EditCameraDialog(ctk.CTkToplevel):
                 # An explicit path → build + probe directly; else fall back to the
                 # full resolver (ONVIF + RTSP path brute-force).
                 if path:
-                    candidate = build_rtsp(
-                        user=user, password=pwd, host=ip, port=port, path=path
-                    )
+                    candidate = build_rtsp(user=user, password=pwd, host=ip, port=port, path=path)
                     pr = rtsp_probe.probe(candidate, timeout_sec=5)
                     if pr.ok and (pr.codec or "").lower() in ("h264", "hevc", "h265"):
                         rtsp_url = candidate
                         resolved = svc.ResolvedStream(
-                            ok=True, rtsp_url=candidate, codec=pr.codec,
-                            width=pr.width, height=pr.height,
+                            ok=True,
+                            rtsp_url=candidate,
+                            codec=pr.codec,
+                            width=pr.width,
+                            height=pr.height,
                         )
                 if rtsp_url is None:
                     rs = svc.resolve_stream(ip, user, pwd)

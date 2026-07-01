@@ -67,7 +67,9 @@ def frame_features(
     return out.reshape(-1).astype(np.float32)
 
 
-def anomaly_score(window: NDArray[np.float32], recon: NDArray[np.float32], threshold: float) -> float:
+def anomaly_score(
+    window: NDArray[np.float32], recon: NDArray[np.float32], threshold: float
+) -> float:
     """Window reconstruction error → 0-100 anomaly. The training threshold (95th
     percentile of normal-window error) maps to 50; monotonic, so it preserves the
     model's ranking (the ROC-AUC) while reading on the same scale as rule risk."""
@@ -103,7 +105,10 @@ class SkeletonAnomalyScorer:
         self._buffers: dict[int, deque[NDArray[np.float32]]] = {}
 
     def score(
-        self, tracker_id: int, kp: NDArray[np.float32] | None, box: tuple[float, float, float, float]
+        self,
+        tracker_id: int,
+        kp: NDArray[np.float32] | None,
+        box: tuple[float, float, float, float],
     ) -> float | None:
         """Append this frame's pose to the track's window; return a 0-100 anomaly
         once the window is full, else None (still warming up / no keypoints)."""

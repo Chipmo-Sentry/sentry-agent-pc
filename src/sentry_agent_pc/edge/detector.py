@@ -63,9 +63,7 @@ class ConfTunable(Protocol):
     construction + every config-poller apply; those that don't keep their own
     defaults (the pipeline checks ``isinstance(det, ConfTunable)``)."""
 
-    def apply_conf(
-        self, *, person_conf: float, item_conf: float, min_kp_conf: float
-    ) -> None: ...
+    def apply_conf(self, *, person_conf: float, item_conf: float, min_kp_conf: float) -> None: ...
 
 
 class Detector(Protocol):
@@ -107,9 +105,7 @@ class DummyDetector:
     """Deterministic synthetic detector — one standing person + one item near the
     right wrist. No model/GPU; used by tests and the loop-overhead benchmark."""
 
-    def apply_conf(
-        self, *, person_conf: float, item_conf: float, min_kp_conf: float
-    ) -> None:
+    def apply_conf(self, *, person_conf: float, item_conf: float, min_kp_conf: float) -> None:
         """No-op: synthetic output is fixed. Implemented so the contract holds
         and the pipeline's conf push is a uniform code path."""
 
@@ -164,7 +160,11 @@ class OpenVinoYoloDetector:
         self._item_classes = list(COCO_ITEM_CLASSES.keys())
 
     def apply_conf(
-        self, *, person_conf: float, item_conf: float, min_kp_conf: float  # noqa: ARG002
+        self,
+        *,
+        person_conf: float,
+        item_conf: float,
+        min_kp_conf: float,  # noqa: ARG002
     ) -> None:
         """Hot-apply detection thresholds. min_kp_conf is unused here (ultralytics
         returns its own keypoint confidences); accepted to honour the contract."""

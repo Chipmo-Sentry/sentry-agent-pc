@@ -22,8 +22,11 @@ from sentry_agent_pc.edge.detector import ItemDet, PersonDet
 
 def _bare_track(tid: int = 1) -> _Track:
     return _Track(
-        track_id=tid, box=(0.0, 0.0, 1.0, 1.0), keypoints=None,
-        last_seen=0.0, trail=deque(),
+        track_id=tid,
+        box=(0.0, 0.0, 1.0, 1.0),
+        keypoints=None,
+        last_seen=0.0,
+        trail=deque(),
     )
 
 
@@ -31,11 +34,16 @@ def _bare_track(tid: int = 1) -> _Track:
 # episode in a few frames; the product defaults now gate banking (frame-rate
 # independence) which is covered by its own tests further down.
 _GATEFREE = EdgeConfig(
-    interval_holding=0.0, mindur_holding=0.0,
-    interval_wrist_torso=0.0, mindur_wrist_torso=0.0,
-    interval_conceal=0.0, mindur_conceal=0.0,
-    interval_repeated_shelf=0.0, mindur_repeated_shelf=0.0,
-    interval_exit_after_conceal=0.0, mindur_exit_after_conceal=0.0,
+    interval_holding=0.0,
+    mindur_holding=0.0,
+    interval_wrist_torso=0.0,
+    mindur_wrist_torso=0.0,
+    interval_conceal=0.0,
+    mindur_conceal=0.0,
+    interval_repeated_shelf=0.0,
+    mindur_repeated_shelf=0.0,
+    interval_exit_after_conceal=0.0,
+    mindur_exit_after_conceal=0.0,
 )
 
 
@@ -68,9 +76,7 @@ def test_timing_gate_disabled_banks_every_frame() -> None:
     eng = EdgeBehavior("cam", EdgeConfig(interval_conceal=0.0, mindur_conceal=0.0))
     tr = _bare_track()
     fired = [
-        t
-        for t in (0.0, 0.1, 0.2)
-        if "conceal" in eng._apply_timing_gate(tr, {"conceal": 14.0}, t)
+        t for t in (0.0, 0.1, 0.2) if "conceal" in eng._apply_timing_gate(tr, {"conceal": 14.0}, t)
     ]
     assert fired == [0.0, 0.1, 0.2]
 
@@ -82,6 +88,7 @@ def test_timing_gate_resets_on_inactivity() -> None:
     assert "conceal" in eng._apply_timing_gate(tr, {"conceal": 14.0}, 0.0)  # bank
     eng._apply_timing_gate(tr, {}, 0.3)  # inactive → resets
     assert "conceal" in eng._apply_timing_gate(tr, {"conceal": 14.0}, 0.5)  # banks again
+
 
 _BOX = (300.0, 100.0, 500.0, 400.0)  # person_h = 300
 
@@ -151,9 +158,7 @@ def test_conceal_fires_on_gesture_without_held_item() -> None:
     kp[10] = (400.0, 300.0, 0.9)  # right wrist
     kp[12] = (400.0, 300.0, 0.9)  # right hip at the wrist → concealment posture
     # NO items + the gesture latch armed (the wrist just moved into the pocket).
-    _s, behaviors, scores, raw_holding, _p = _frame_signal(
-        kp, [], person_h, gesture_recently=True
-    )
+    _s, behaviors, scores, raw_holding, _p = _frame_signal(kp, [], person_h, gesture_recently=True)
     assert raw_holding is False  # YOLO saw nothing held...
     assert "conceal" in behaviors and scores.get("conceal", 0.0) > 0  # ...gesture fires it
 
@@ -179,9 +184,7 @@ def test_require_holding_ignores_gesture() -> None:
     kp[10] = (400.0, 300.0, 0.9)
     kp[12] = (400.0, 300.0, 0.9)
     cfg = EdgeConfig(require_holding=True)
-    _s, behaviors, _sc, _rh, _p = _frame_signal(
-        kp, [], person_h, cfg, gesture_recently=True
-    )
+    _s, behaviors, _sc, _rh, _p = _frame_signal(kp, [], person_h, cfg, gesture_recently=True)
     assert "wrist_to_torso" in behaviors and "conceal" not in behaviors
 
 

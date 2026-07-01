@@ -161,7 +161,9 @@ def _draw_item_pills(draw: Any, font: Any, held_items: list[ItemDet], pad: int) 
         if py < 0:  # box hugs the top → drop the label just inside the box
             py = y1 + 1
         radius = max(4, min(9, pill_h // 2))
-        draw.rounded_rectangle([px, py, px + pill_w, py + pill_h], radius=radius, fill=_ITEM_LABEL_RGB)
+        draw.rounded_rectangle(
+            [px, py, px + pill_w, py + pill_h], radius=radius, fill=_ITEM_LABEL_RGB
+        )
         draw.text((px + pad, py + pad), text, font=font, fill=(20, 20, 20))
 
 
@@ -211,9 +213,7 @@ def _draw_person_labels(
         if py < 0:  # box hugs the top → drop the pill just inside the box
             py = y1 + 1
         radius = max(4, min(9, pill_h // 2))
-        draw.rounded_rectangle(
-            [px, py, px + pill_w, py + pill_h], radius=radius, fill=rgb
-        )
+        draw.rounded_rectangle([px, py, px + pill_w, py + pill_h], radius=radius, fill=rgb)
         draw.text((px + pad, py + pad), risk_txt, font=font, fill=(255, 255, 255))
         if beh_txt:
             # Slightly dimmed white so the % reads as primary.
@@ -292,8 +292,12 @@ def draw_wrist_item_links(
             if ((w[0] - nx) ** 2 + (w[1] - ny) ** 2) ** 0.5 <= reach:
                 cv2.rectangle(img, (int(ix1), int(iy1)), (int(ix2), int(iy2)), _ITEM_LINK_BGR, 2)
                 cv2.line(
-                    img, w, (int((ix1 + ix2) / 2), int((iy1 + iy2) / 2)),
-                    _ITEM_LINK_BGR, 2, cv2.LINE_AA,
+                    img,
+                    w,
+                    (int((ix1 + ix2) / 2), int((iy1 + iy2) / 2)),
+                    _ITEM_LINK_BGR,
+                    2,
+                    cv2.LINE_AA,
                 )
                 cv2.circle(img, w, 4, _ITEM_LINK_BGR, -1, cv2.LINE_AA)
                 held.append(it)
@@ -353,7 +357,8 @@ def draw_overlays(
     # BGR↔PIL round-trip on empty frames.
     if persons and (person_risks is not None or held_items):
         annotated = _draw_person_labels(
-            annotated, persons,
+            annotated,
+            persons,
             person_risks if person_risks is not None else [],
             person_behaviors if person_behaviors is not None else [],
             use_bands,
@@ -363,7 +368,13 @@ def draw_overlays(
     if fps is not None:
         cv2.rectangle(annotated, (0, 0), (annotated.shape[1], 26), (0, 0, 0), -1)
         cv2.putText(
-            annotated, f"{fps:.1f} fps  persons={len(persons)}", (8, 18),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA,
+            annotated,
+            f"{fps:.1f} fps  persons={len(persons)}",
+            (8, 18),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 0),
+            1,
+            cv2.LINE_AA,
         )
     return annotated

@@ -185,14 +185,16 @@ def build_clip(
     cid = clip_id or f"{episode.camera_id}_{int(t0)}"
     out_path = clips_dir / f"{cid}.mp4"
     list_file = clips_dir / f"{cid}.txt"
-    list_file.write_text(
-        "".join(f"file '{s.path.as_posix()}'\n" for s in segs), encoding="utf-8"
-    )
+    list_file.write_text("".join(f"file '{s.path.as_posix()}'\n" for s in segs), encoding="utf-8")
     cmd = build_concat_cmd(ffmpeg or resolve_ffmpeg_exe(), list_file, out_path)
     try:
         subprocess.run(  # noqa: S603
-            cmd, stdin=subprocess.DEVNULL, capture_output=True,
-            timeout=30, check=False, creationflags=_CREATE_NO_WINDOW,
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=30,
+            check=False,
+            creationflags=_CREATE_NO_WINDOW,
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         log.warning("clip.ffmpeg_error", camera_id=episode.camera_id, error=str(e))
@@ -203,9 +205,14 @@ def build_clip(
         log.warning("clip.build_failed", camera_id=episode.camera_id)
         return None
     return ClipRecord(
-        clip_id=cid, camera_id=episode.camera_id, path=str(out_path),
-        started_at=t0, ended_at=t1, risk_pct=episode.risk_pct,
-        behaviors=list(episode.behaviors), created_at=time.time(),
+        clip_id=cid,
+        camera_id=episode.camera_id,
+        path=str(out_path),
+        started_at=t0,
+        ended_at=t1,
+        risk_pct=episode.risk_pct,
+        behaviors=list(episode.behaviors),
+        created_at=time.time(),
         behavior_detail=list(episode.behavior_detail),
         events=list(episode.events),
     )
@@ -289,9 +296,7 @@ class SegmentRecorder:
             return  # already running — don't spawn a second ffmpeg ring
         self.seg_dir.mkdir(parents=True, exist_ok=True)
         self._stop.clear()
-        self._thread = threading.Thread(
-            target=self._run, name=f"seg-{self.camera_id}", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name=f"seg-{self.camera_id}", daemon=True)
         self._thread.start()
 
     def _run(self) -> None:
@@ -300,8 +305,11 @@ class SegmentRecorder:
         )
         try:
             self._proc = subprocess.Popen(  # noqa: S603
-                cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, creationflags=_CREATE_NO_WINDOW,
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=_CREATE_NO_WINDOW,
             )
         except OSError as e:
             log.error("recorder.spawn_failed", camera_id=self.camera_id, error=str(e))
@@ -441,14 +449,21 @@ class EdgeClipRecorder:
     def on_episode(self, episode: SuspiciousEpisode) -> ClipRecord | None:
         """Cut + store the [start−pre, end+post] clip for a suspicious episode."""
         rec = build_clip(
-            self.seg_dir, episode, self.clips_dir,
-            pre=self.pre, post=self.post, segment_sec=self.segment_sec,
+            self.seg_dir,
+            episode,
+            self.clips_dir,
+            pre=self.pre,
+            post=self.post,
+            segment_sec=self.segment_sec,
         )
         if rec is not None:
             self.store.add(rec)
             log.info(
-                "clip.saved", camera_id=self.camera_id, clip_id=rec.clip_id,
-                risk=round(rec.risk_pct), dur=round(rec.duration, 1),
+                "clip.saved",
+                camera_id=self.camera_id,
+                clip_id=rec.clip_id,
+                risk=round(rec.risk_pct),
+                dur=round(rec.duration, 1),
             )
             if self.on_clip is not None:
                 try:
