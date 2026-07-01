@@ -8,6 +8,7 @@ thread via `self.after(...)` to avoid freezing the window.
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import platform
 import threading
@@ -17,7 +18,7 @@ from collections.abc import Callable
 from typing import Any
 
 import customtkinter as ctk
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from sentry_agent_pc import __version__, resources, updater
 from sentry_agent_pc.backend_client import BackendClient, BackendError
@@ -267,6 +268,71 @@ def creds_from_rtsp(rtsp_url: str) -> tuple[str | None, str]:
         return None, ""
 
 
+# Fixture fill colours mirror the editor (assets/floorplan/app.js FIX map).
+_FIX_RGB = {
+    "shelf": (61, 213, 109),
+    "exit": (229, 72, 77),
+    "entrance": (229, 72, 77),
+    "checkout": (224, 168, 46),
+}
+_WALL_RGB = (156, 163, 175)
+_CAM_RGB = (37, 99, 235)
+
+
+def render_plan_image(plan: dict[str, Any], size: tuple[int, int] = (900, 560)) -> Image.Image | None:
+    """Render a saved floor plan (walls / fixtures / cameras) to a read-only
+    schematic image for the in-app preview. Returns None if the plan is empty
+    (nothing drawn), so the caller can show an empty-state hint instead.
+
+    Pure (no I/O) so it's unit-testable; mirrors the editor's colours."""
+    walls = plan.get("walls") or []
+    fixtures = plan.get("fixtures") or []
+    cameras = plan.get("cameras") or []
+    if not (walls or fixtures or cameras):
+        return None
+
+    # Fit the DRAWN content (not the whole canvas) so a small store inside a big
+    # 200×200 canvas still previews large and centred.
+    allpts = [p for wall in walls for p in (wall.get("points") or [])]
+    allpts += [p for f in fixtures for p in (f.get("points") or [])]
+    allpts += [c.get("pos") or [0, 0] for c in cameras]
+    xs = [float(p[0]) for p in allpts]
+    ys = [float(p[1]) for p in allpts]
+    minx, maxx = min(xs), max(xs)
+    miny, maxy = min(ys), max(ys)
+    cw = max(maxx - minx, 1.0)
+    ch = max(maxy - miny, 1.0)
+    w, h = size
+    pad = 28
+    scale = min((w - 2 * pad) / cw, (h - 2 * pad) / ch)
+    ox = (w - cw * scale) / 2 - minx * scale
+    oy = (h - ch * scale) / 2 - miny * scale
+
+    def tx(p: Any) -> tuple[float, float]:
+        return (ox + float(p[0]) * scale, oy + float(p[1]) * scale)
+
+    img = Image.new("RGB", (w, h), (14, 14, 14))
+    d = ImageDraw.Draw(img, "RGBA")
+    # fixtures (filled, faint) — drawn first so walls/cameras sit on top
+    for f in fixtures:
+        pts = [tx(p) for p in (f.get("points") or [])]
+        if len(pts) >= 3:
+            col = _FIX_RGB.get(f.get("type"), (150, 150, 150))
+            d.polygon(pts, fill=(*col, 48), outline=col)
+    # walls (grey polylines)
+    for wall in walls:
+        pts = [tx(p) for p in (wall.get("points") or [])]
+        if len(pts) >= 2:
+            d.line(pts, fill=_WALL_RGB, width=2, joint="curve")
+    # cameras (blue dot + facing tick)
+    for c in cameras:
+        cx, cy = tx(c.get("pos") or [0, 0])
+        d.ellipse([cx - 5, cy - 5, cx + 5, cy + 5], fill=_CAM_RGB)
+        a = math.radians(float(c.get("dir_deg") or 0))
+        d.line([(cx, cy), (cx + math.cos(a) * 20, cy + math.sin(a) * 20)], fill=_CAM_RGB, width=2)
+    return img
+
+
 class AgentApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
@@ -304,6 +370,7 @@ class AgentApp(ctk.CTk):
         self._build_toolbar(self._page_cameras)
         self._build_camera_list(self._page_cameras)
         self._pages["cameras"] = self._page_cameras
+        self._pages["plan"] = self._build_plan_page(self._content)
         self._pages["alerts"] = self._build_alerts_page(self._content)
         self._pages["behaviors"] = self._build_behaviors_page(self._content)
         self._pages["settings"] = self._build_settings_page(self._content)
@@ -474,7 +541,7 @@ class AgentApp(ctk.CTk):
 
     _NAV: tuple[tuple[str, str, str], ...] = (
         ("cameras", "📷  Камерууд", "page"),
-        ("plan", "🗺  Plan зураг", "action"),
+        ("plan", "🗺  Plan зураг", "page"),
         ("live", "📺  Шууд харах", "page"),
         ("alerts", "⚠  Сэжигтэй", "page"),
         ("behaviors", "🎯  Зан үйл", "page"),
@@ -539,6 +606,8 @@ class AgentApp(ctk.CTk):
             self._refresh_alerts()
         elif name == "behaviors":
             self._refresh_behaviors()
+        elif name == "plan":
+            self._refresh_plan_preview()
 
     def _ensure_live(self) -> None:
         """Build the live grid inside the «Шууд харах» page (or an empty-state
@@ -1455,6 +1524,73 @@ class AgentApp(ctk.CTk):
     def open_update(self) -> None:
         """Manual update check from the header button (dialog runs the check)."""
         UpdateDialog(self, info=None)
+
+    # === «Plan зураг» — in-app read-only preview + «Засах» opens the editor ===
+
+    def _build_plan_page(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
+        """The «Plan зураг» page: a read-only schematic of the saved store plan,
+        with «✏ Засах» opening the full editor window (unchanged behaviour)."""
+        page = ctk.CTkFrame(parent, fg_color="transparent")
+        header = ctk.CTkFrame(page, fg_color="transparent")
+        header.pack(fill="x", padx=16, pady=(14, 8))
+        ctk.CTkLabel(
+            header, text="🗺  Дэлгүүрийн план",
+            font=ctk.CTkFont(size=18, weight="bold"), text_color=UI_FG,
+        ).pack(side="left")
+        ctk.CTkButton(
+            header, text="✏  Засах", width=110, height=36, corner_radius=8,
+            fg_color=BRAND_PRIMARY, hover_color=BRAND_PRIMARY_HOVER,
+            command=self.open_floor_plan,
+        ).pack(side="right")
+        ctk.CTkButton(
+            header, text="🔄  Сэргээх", width=110, height=36, corner_radius=8,
+            fg_color="transparent", border_width=1, border_color=UI_BORDER,
+            text_color=UI_FG, hover_color=UI_MUTED_HOVER,
+            command=self._refresh_plan_preview,
+        ).pack(side="right", padx=(0, 8))
+        holder = ctk.CTkFrame(page, fg_color=UI_SURFACE, corner_radius=12)
+        holder.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+        self._plan_preview = ctk.CTkLabel(
+            holder, text="Ачаалж байна…", text_color=UI_MUTED_FG, font=ctk.CTkFont(size=14),
+        )
+        self._plan_preview.pack(fill="both", expand=True, padx=12, pady=12)
+        self._plan_img: Any = None
+        return page
+
+    def _refresh_plan_preview(self) -> None:
+        """Fetch the plan off-thread and re-render the preview (called on page show
+        and by «🔄 Сэргээх» after editing)."""
+        if getattr(self, "_plan_preview", None) is None:
+            return
+        self._plan_preview.configure(text="Ачаалж байна…", image="")
+        threading.Thread(target=self._fetch_plan, daemon=True).start()
+
+    def _fetch_plan(self) -> None:
+        plan: dict[str, Any] | None = None
+        err: str | None = None
+        try:
+            plan = BackendClient().agent_get_floor_plan()
+        except Exception as e:  # noqa: BLE001 — the preview must never crash the app
+            err = str(e)
+        self.after(0, lambda: self._apply_plan_preview(plan, err))
+
+    def _apply_plan_preview(self, plan: dict[str, Any] | None, err: str | None) -> None:
+        if getattr(self, "_plan_preview", None) is None:
+            return
+        if err is not None or plan is None:
+            self._plan_preview.configure(text=f"Планыг ачаалж чадсангүй.\n{err or ''}", image="")
+            self._plan_img = None
+            return
+        img = render_plan_image(plan)
+        if img is None:
+            self._plan_preview.configure(
+                text="Одоогоор зурсан план алга.\n«✏ Засах» дарж дэлгүүрээ зураарай.",
+                image="",
+            )
+            self._plan_img = None
+            return
+        self._plan_img = ctk.CTkImage(light_image=img, dark_image=img, size=img.size)
+        self._plan_preview.configure(text="", image=self._plan_img)
 
     def open_floor_plan(self) -> None:
         """Open the «Plan зураг» floor-plan editor (docs/30) in a webview window.

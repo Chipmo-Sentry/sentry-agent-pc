@@ -964,11 +964,20 @@ function undo() {
   if (undoStack.length < 2) return;
   redoStack.push(undoStack.pop());
   PLAN = JSON.parse(undoStack[undoStack.length - 1]);
-  deselect(); render();
+  relinkCalibCam(); deselect(); render();
 }
 function redo() {
   if (!redoStack.length) return;
-  const s = redoStack.pop(); undoStack.push(s); PLAN = JSON.parse(s); deselect(); render();
+  const s = redoStack.pop(); undoStack.push(s); PLAN = JSON.parse(s); relinkCalibCam(); deselect(); render();
+}
+// undo/redo replace PLAN wholesale (fresh camera objects). If a calibration is
+// open, re-point calib.cam at the NEW object with the same id, so a later save
+// mutates the live camera — not an orphan copy that render() never reflects.
+function relinkCalibCam() {
+  if (typeof calib !== "undefined" && calib && calib.cam) {
+    const c = PLAN.cameras.find((x) => x.camera_id === calib.cam.camera_id);
+    if (c) calib.cam = c;
+  }
 }
 
 // ── element list (DOM) ─────────────────────────────────────────────────────
@@ -1047,21 +1056,26 @@ function showCameraSettings(idx) {
 async function checkCameraStatus(idx) {
   const cam = PLAN.cameras[idx];
   if (!cam) return;
+  const camId = cam.camera_id;
   const onlineEl = document.getElementById("cs-online");
   if (onlineEl) onlineEl.textContent = "⏳ Шалгаж байна…";
   let r = null;
-  try { r = await window.pywebview.api.camera_status(cam.camera_id); } catch (e) { r = null; }
-  camStatus[cam.camera_id] = { online: r && r.ok ? !!r.online : undefined };
-  // Refresh just this camera's badge in place (keeps the selection/transformer).
-  const camG = camLayer.getChildren()[idx];
+  try { r = await window.pywebview.api.camera_status(camId); } catch (e) { r = null; }
+  camStatus[camId] = { online: r && r.ok ? !!r.online : undefined };
+  // The camera list may have changed during the await — re-resolve by id so the
+  // badge lands on the RIGHT camera (or is skipped if it was deleted), never a
+  // shifted index.
+  const curIdx = PLAN.cameras.findIndex((c) => c.camera_id === camId);
+  if (curIdx < 0) return;
+  const camG = camLayer.getChildren()[curIdx];
   if (camG) {
     const old = camG.findOne(".badge");
     if (old) old.destroy();
-    const b = makeBadge(cam);
+    const b = makeBadge(PLAN.cameras[curIdx]);
     if (b) camG.add(b);
     camLayer.draw();
   }
-  if (selectedNode && selectedNode.kind === "cameras" && selectedNode.idx === idx) showCameraSettings(idx);
+  if (selectedNode && selectedNode.kind === "cameras" && selectedNode.idx === curIdx) showCameraSettings(curIdx);
 }
 
 // ── Phase B: per-camera homography calibration ──────────────────────────────
