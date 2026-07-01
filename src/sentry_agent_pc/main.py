@@ -160,10 +160,7 @@ def discover(
 
         # Pick first H.264 profile with a URI
         chosen = next(
-            (
-                p for p in dev.profiles
-                if p.rtsp_uri and (p.encoding or "").lower() == "h264"
-            ),
+            (p for p in dev.profiles if p.rtsp_uri and (p.encoding or "").lower() == "h264"),
             None,
         )
         if chosen is None:
@@ -266,8 +263,12 @@ def add_manual() -> None:
     if custom_path:
         urls = [
             manual_mod.build_rtsp_url(
-                template, host, username, password,
-                port=port, custom_path=custom_path,
+                template,
+                host,
+                username,
+                password,
+                port=port,
+                custom_path=custom_path,
             ),
         ]
     else:
@@ -330,7 +331,9 @@ def list_cameras() -> None:
     """Show locally-known cameras."""
     state = load_state()
     if not state.cameras:
-        console.print("[dim]Бүртгэгдсэн камер байхгүй. `discover` эсвэл `add-manual` ажиллуул.[/dim]")
+        console.print(
+            "[dim]Бүртгэгдсэн камер байхгүй. `discover` эсвэл `add-manual` ажиллуул.[/dim]"
+        )
         return
     table = Table(title=f"Камерууд ({len(state.cameras)})")
     table.add_column("#")

@@ -125,7 +125,9 @@ def _install_ir(src_xml: Path) -> Path:
     return dst_dir
 
 
-def _smoke_test(dst_dir: Path, vocab: list[str], image: str, draw: str | None, item_conf: float) -> None:
+def _smoke_test(
+    dst_dir: Path, vocab: list[str], image: str, draw: str | None, item_conf: float
+) -> None:
     """Load the freshly-exported IR with raw OpenVINO (the shipped path) and run
     it on one frame — proves CPU-only open-vocab detection works end-to-end."""
     import cv2
@@ -152,38 +154,68 @@ def _smoke_test(dst_dir: Path, vocab: list[str], image: str, draw: str | None, i
             x1, y1, x2, y2 = (int(v) for v in it.box)
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 200, 255), 2)
             cv2.putText(
-                frame, f"{it.label} {it.score:.2f}", (x1, max(0, y1 - 6)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1, cv2.LINE_AA,
+                frame,
+                f"{it.label} {it.score:.2f}",
+                (x1, max(0, y1 - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 200, 255),
+                1,
+                cv2.LINE_AA,
             )
         cv2.imwrite(draw, frame)
         print(f"[smoke] annotated frame written -> {draw}")
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--arch", choices=["world", "yoloe"], default="world",
-                    help="open-vocab backbone (default: world — most reliable OpenVINO detect export)")
-    ap.add_argument("--weights", default="yolov8s-worldv2.pt",
-                    help="model weights (auto-downloaded by ultralytics if absent)")
-    ap.add_argument("--vocab", default=None, help="JSON list of class names (default: built-in retail vocab)")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--arch",
+        choices=["world", "yoloe"],
+        default="world",
+        help="open-vocab backbone (default: world — most reliable OpenVINO detect export)",
+    )
+    ap.add_argument(
+        "--weights",
+        default="yolov8s-worldv2.pt",
+        help="model weights (auto-downloaded by ultralytics if absent)",
+    )
+    ap.add_argument(
+        "--vocab", default=None, help="JSON list of class names (default: built-in retail vocab)"
+    )
     ap.add_argument("--imgsz", type=int, default=640)
-    ap.add_argument("--image", default=None, help="still frame to smoke-test the exported IR on (CPU)")
+    ap.add_argument(
+        "--image", default=None, help="still frame to smoke-test the exported IR on (CPU)"
+    )
     ap.add_argument("--draw", default=None, help="write the annotated smoke-test frame here")
-    ap.add_argument("--item-conf", type=float, default=0.25,
-                    help="confidence for the smoke test (lower than prod default to see weak hits)")
-    ap.add_argument("--skip-export", action="store_true",
-                    help="only smoke-test an already-installed IR (no ultralytics needed)")
+    ap.add_argument(
+        "--item-conf",
+        type=float,
+        default=0.25,
+        help="confidence for the smoke test (lower than prod default to see weak hits)",
+    )
+    ap.add_argument(
+        "--skip-export",
+        action="store_true",
+        help="only smoke-test an already-installed IR (no ultralytics needed)",
+    )
     args = ap.parse_args(argv)
 
     vocab = _load_vocab(args.vocab)
     dst_dir = _bin_dir() / OUT_NAME
 
     if not args.skip_export:
-        print(f"[export] {args.arch}:{args.weights}  vocab={len(vocab)} classes  imgsz={args.imgsz}")
+        print(
+            f"[export] {args.arch}:{args.weights}  vocab={len(vocab)} classes  imgsz={args.imgsz}"
+        )
         model = _build_model(args.arch, args.weights, vocab)
         xml = _export(model, args.imgsz)
         dst_dir = _install_ir(xml)
-        (dst_dir / "vocab.json").write_text(json.dumps(vocab, ensure_ascii=False, indent=2), encoding="utf-8")
+        (dst_dir / "vocab.json").write_text(
+            json.dumps(vocab, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         print(f"[export] IR + vocab.json installed -> {dst_dir}")
 
     if args.image:

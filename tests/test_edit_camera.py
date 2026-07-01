@@ -33,13 +33,20 @@ def test_parse_rtsp_keeps_query() -> None:
 
 def test_build_rtsp_round_trips_through_parse() -> None:
     url = build_rtsp(
-        user="admin", password="p@ss", host="192.168.1.64", port=554,
+        user="admin",
+        password="p@ss",
+        host="192.168.1.64",
+        port=554,
         path="/Streaming/Channels/101",
     )
     assert url == "rtsp://admin:p%40ss@192.168.1.64:554/Streaming/Channels/101"
     p = parse_rtsp(url)
     assert (p["user"], p["password"], p["host"], p["port"], p["path"]) == (
-        "admin", "p@ss", "192.168.1.64", "554", "Streaming/Channels/101",
+        "admin",
+        "p@ss",
+        "192.168.1.64",
+        "554",
+        "Streaming/Channels/101",
     )
 
 
@@ -81,9 +88,13 @@ def _patch_state(monkeypatch, cameras: list[CameraRecord]):  # type: ignore[no-u
 
 def test_update_connection_patches_backend_and_local(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     cam = CameraRecord(
-        uuid="cam-1", name="Old", ip="192.168.1.64",
-        rtsp_url="rtsp://admin:pw@192.168.1.64:554/s1", mediamtx_path="cam1",
-        codec="h264", resolution=(1920, 1080),
+        uuid="cam-1",
+        name="Old",
+        ip="192.168.1.64",
+        rtsp_url="rtsp://admin:pw@192.168.1.64:554/s1",
+        mediamtx_path="cam1",
+        codec="h264",
+        resolution=(1920, 1080),
     )
     state, saved = _patch_state(monkeypatch, [cam])
     fake = _FakeBackend()
@@ -99,8 +110,12 @@ def test_update_connection_patches_backend_and_local(monkeypatch) -> None:  # ty
 
     assert res.ok
     assert fake.calls == [
-        {"uuid": "cam-1", "name": "New Name", "rtsp_url": "rtsp://admin:pw@192.168.1.70:554/s1",
-         "risk_threshold": None}
+        {
+            "uuid": "cam-1",
+            "name": "New Name",
+            "rtsp_url": "rtsp://admin:pw@192.168.1.70:554/s1",
+            "risk_threshold": None,
+        }
     ]
     # Local record updated (path is NOT touched — stream identity stays).
     assert cam.name == "New Name"
@@ -138,7 +153,9 @@ def test_update_connection_backend_failure_keeps_local(monkeypatch) -> None:  # 
             raise BackendError("500 server error")
 
     res = svc.update_camera_connection(
-        camera_uuid="c", name="Changed", backend=_Boom(),  # type: ignore[arg-type]
+        camera_uuid="c",
+        name="Changed",
+        backend=_Boom(),  # type: ignore[arg-type]
     )
     assert not res.ok
     assert cam.name == "Keep"  # local untouched when backend fails

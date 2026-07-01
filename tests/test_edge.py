@@ -60,7 +60,9 @@ def test_draw_overlays_renders_score_and_behaviour_label() -> None:
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
     res = DummyDetector().detect(frame)
     out = ov.draw_overlays(
-        frame, res.persons, res.items,
+        frame,
+        res.persons,
+        res.items,
         bands=["yellow"],
         person_risks=[45.0],
         person_behaviors=[{"conceal", "item_pickup"}],
@@ -74,8 +76,12 @@ def test_draw_overlays_skips_label_when_no_score_or_behaviour() -> None:
     frame = np.zeros((240, 320, 3), dtype=np.uint8)
     res = DummyDetector().detect(frame)
     out = ov.draw_overlays(
-        frame, res.persons, res.items,
-        bands=["green"], person_risks=[0.0], person_behaviors=[set()],
+        frame,
+        res.persons,
+        res.items,
+        bands=["green"],
+        person_risks=[0.0],
+        person_behaviors=[set()],
     )
     # boxes/mask still draw, but assert no text region: hard to test text directly,
     # so just confirm it runs + returns a valid frame (label path is exercised).

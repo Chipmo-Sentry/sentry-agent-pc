@@ -57,9 +57,7 @@ class _ConfDetector:
     def __init__(self) -> None:
         self.pushed: list[tuple[float, float, float]] = []
 
-    def apply_conf(
-        self, *, person_conf: float, item_conf: float, min_kp_conf: float
-    ) -> None:
+    def apply_conf(self, *, person_conf: float, item_conf: float, min_kp_conf: float) -> None:
         self.pushed.append((person_conf, item_conf, min_kp_conf))
 
     def detect(self, frame_bgr: np.ndarray) -> DetectResult:
@@ -92,7 +90,10 @@ def test_pipeline_hands_closed_episode_to_recorder() -> None:
     # Gate-free conceal so the short 8-frame burst opens an episode (this checks the
     # pipeline→recorder handoff, not the score tuning).
     pipe = EdgePipeline(
-        "cam03", _SeqDetector(conceal_for=8), spy, frame_skip=1,
+        "cam03",
+        _SeqDetector(conceal_for=8),
+        spy,
+        frame_skip=1,
         config=EdgeConfig(interval_conceal=0.0, mindur_conceal=0.0),
     )
     frame = np.zeros((480, 640, 3), dtype=np.uint8)

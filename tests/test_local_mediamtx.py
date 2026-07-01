@@ -21,9 +21,7 @@ def _hub(tmp_path: Path, *, with_exe: bool = True) -> LocalMediaMTX:
         exe_file = tmp_path / "mediamtx.exe"
         exe_file.write_bytes(b"stub")  # must merely exist
         exe = str(exe_file)
-    return LocalMediaMTX(
-        exe_path=exe, config_dir=tmp_path, rtsp_port=18554, api_port=19997
-    )
+    return LocalMediaMTX(exe_path=exe, config_dir=tmp_path, rtsp_port=18554, api_port=19997)
 
 
 def test_yaml_dquote_escapes_and_quotes() -> None:
@@ -35,7 +33,7 @@ def test_signature_changes_with_paths_and_ports() -> None:
     a = _signature({"c1": "rtsp://x/1"}, 18554, 19997, 18888)
     assert a == _signature({"c1": "rtsp://x/1"}, 18554, 19997, 18888)  # order-stable
     assert a != _signature({"c1": "rtsp://x/2"}, 18554, 19997, 18888)  # source changed
-    assert a != _signature({"c1": "rtsp://x/1"}, 9999, 19997, 18888)   # rtsp port changed
+    assert a != _signature({"c1": "rtsp://x/1"}, 9999, 19997, 18888)  # rtsp port changed
     assert a != _signature({"c1": "rtsp://x/1"}, 18554, 19997, 28888)  # hls port changed
 
 
@@ -62,9 +60,7 @@ def test_sync_with_no_cameras_returns_false(tmp_path: Path) -> None:
     assert hub.sync([("", "")]) is False  # blanks filtered out
 
 
-def test_sync_happy_path_serves_and_dedupes_restarts(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_sync_happy_path_serves_and_dedupes_restarts(tmp_path: Path, monkeypatch) -> None:
     hub = _hub(tmp_path)
     restarts: list[int] = []
 
@@ -106,7 +102,8 @@ def test_sync_unhealthy_falls_back(tmp_path: Path, monkeypatch) -> None:
             return None
 
     monkeypatch.setattr(
-        LocalMediaMTX, "_restart_proc",
+        LocalMediaMTX,
+        "_restart_proc",
         lambda self: setattr(self, "_proc", _FakeProc()),
     )
     monkeypatch.setattr(LocalMediaMTX, "_wait_healthy", lambda self: False)

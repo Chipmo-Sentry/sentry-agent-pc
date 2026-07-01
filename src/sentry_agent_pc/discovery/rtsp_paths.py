@@ -19,13 +19,13 @@ from __future__ import annotations
 # if its `/stream1` weren't up front, every dead Hik/Dahua path ahead of it
 # would burn a full timeout first. One path per brand keeps the batch small.
 RTSP_PATHS_PRIORITY: list[str] = [
-    "/Streaming/Channels/101",              # Hikvision main
+    "/Streaming/Channels/101",  # Hikvision main
     "/cam/realmonitor?channel=1&subtype=0",  # Dahua / Amcrest main
-    "/media/video1",                        # UNV (Uniview) main
-    "/stream1",                             # Skyworth / XiongMai / Tuya main
-    "/live/0/main",                         # common generic main
-    "/onvif1",                              # ONVIF-style generic
-    "/h264/ch1/main/av_stream",             # Hikvision alt main
+    "/media/video1",  # UNV (Uniview) main
+    "/stream1",  # Skyworth / XiongMai / Tuya main
+    "/live/0/main",  # common generic main
+    "/onvif1",  # ONVIF-style generic
+    "/h264/ch1/main/av_stream",  # Hikvision alt main
 ]
 
 # Ordered: most-common / main-stream first. Deduped at use time.

@@ -58,9 +58,14 @@ class EdgeRuntime:
             if camera_id in self._pipes:
                 return
             rec = EdgeClipRecorder(
-                camera_id, src_url, self.base_dir, self.store,
-                pre=self.cfg.pre_sec, post=self.cfg.post_sec,
-                segment_sec=self.cfg.segment_sec, keep_sec=self.cfg.keep_sec,
+                camera_id,
+                src_url,
+                self.base_dir,
+                self.store,
+                pre=self.cfg.pre_sec,
+                post=self.cfg.post_sec,
+                segment_sec=self.cfg.segment_sec,
+                keep_sec=self.cfg.keep_sec,
                 on_clip=self._on_clip,
             )
             pipe = EdgePipeline(camera_id, self._factory(self.cfg), rec, config=self.cfg)

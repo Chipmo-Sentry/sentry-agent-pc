@@ -75,9 +75,7 @@ def apply_brand_icon(win: ctk.CTkToplevel) -> None:
         win.after(300, _apply)
 
 
-def password_field(
-    parent: ctk.CTkBaseClass, label: str, default: str = ""
-) -> ctk.CTkEntry:
+def password_field(parent: ctk.CTkBaseClass, label: str, default: str = "") -> ctk.CTkEntry:
     """A labelled password entry with a 👁 show/hide toggle.
 
     So the user can confirm a fiddly RTSP password (special chars like '*')
@@ -96,8 +94,13 @@ def password_field(
         btn.configure(text="🙈" if hidden else "👁")
 
     btn = ctk.CTkButton(
-        row, text="👁", width=40, fg_color="transparent", border_width=1,
-        text_color="gray70", command=_toggle,
+        row,
+        text="👁",
+        width=40,
+        fg_color="transparent",
+        border_width=1,
+        text_color="gray70",
+        command=_toggle,
     )
     btn.pack(side="left", padx=(6, 0))
     return entry
@@ -110,7 +113,10 @@ class Spinner(ctk.CTkLabel):
 
     def __init__(self, master: ctk.CTkBaseClass) -> None:
         super().__init__(
-            master, text="", font=ctk.CTkFont(size=22), text_color=BRAND_PRIMARY,
+            master,
+            text="",
+            font=ctk.CTkFont(size=22),
+            text_color=BRAND_PRIMARY,
         )
         self._i = 0
         self._running = False

@@ -86,8 +86,10 @@ class CloudflaredTunnel:
                 break
             # A tunnel that ran a good while then dropped → reset backoff; a fast
             # crash-loop (bad binary/port) → back off so we don't spin.
-            backoff = _RESTART_MIN_SEC if (time.monotonic() - started) > 30 else min(
-                backoff * 2, _RESTART_MAX_SEC
+            backoff = (
+                _RESTART_MIN_SEC
+                if (time.monotonic() - started) > 30
+                else min(backoff * 2, _RESTART_MAX_SEC)
             )
             log.info("tunnel.restarting", delay=round(backoff, 1))
             self._stop.wait(backoff)

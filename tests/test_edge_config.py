@@ -86,8 +86,13 @@ def test_behavior_table_rows_columnar() -> None:
     # label · +score · interval · min-duration; a zero interval/duration → «—».
     from sentry_agent_pc.gui.app import AgentApp
 
-    cfg = {"w_conceal": 14.0, "interval_conceal": 0.5, "mindur_conceal": 0.6,
-           "w_exit_after_conceal": 40.0, "interval_exit_after_conceal": 0.0}
+    cfg = {
+        "w_conceal": 14.0,
+        "interval_conceal": 0.5,
+        "mindur_conceal": 0.6,
+        "w_exit_after_conceal": 40.0,
+        "interval_exit_after_conceal": 0.0,
+    }
     rows = {r[0]: r for r in AgentApp._behavior_table_rows(cfg)}
     assert rows["Эд зүйл нуух"][1:] == ("+14", "0.5", "0.6")
     # one-shot zone behaviour: interval 0 → «—»

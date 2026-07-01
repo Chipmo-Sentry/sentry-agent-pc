@@ -121,9 +121,7 @@ _EDGE_BEHAVIORS: tuple[dict[str, str], ...] = (
 # EdgeConfig keys that belong to a behaviour row (weight + timing) — excluded from
 # the «Бусад тохиргоо» table so they aren't shown twice.
 _BEHAVIOR_FIELD_KEYS: frozenset[str] = frozenset(
-    k
-    for b in _EDGE_BEHAVIORS
-    for k in (b["weight_key"], b["interval_key"], b["mindur_key"])
+    k for b in _EDGE_BEHAVIORS for k in (b["weight_key"], b["interval_key"], b["mindur_key"])
 )
 # Movement key → Mongolian label (the «Сэжигтэй» gallery + clip detail use this).
 _EDGE_BEHAVIOR_LABELS = {b["key"]: b["label"] for b in _EDGE_BEHAVIORS}
@@ -986,12 +984,14 @@ class AgentApp(ctk.CTk):
         rows: list[tuple[str, str, str, str]] = []
         for b in _EDGE_BEHAVIORS:
             w = cfg.get(b["weight_key"])
-            rows.append((
-                b["label"],
-                f"+{num(w)}" if w is not None else "—",
-                num(cfg.get(b["interval_key"]), dash_zero=True),
-                num(cfg.get(b["mindur_key"]), dash_zero=True),
-            ))
+            rows.append(
+                (
+                    b["label"],
+                    f"+{num(w)}" if w is not None else "—",
+                    num(cfg.get(b["interval_key"]), dash_zero=True),
+                    num(cfg.get(b["mindur_key"]), dash_zero=True),
+                )
+            )
         return rows
 
     @staticmethod
@@ -1606,9 +1606,7 @@ class AgentApp(ctk.CTk):
                     hls_tunnel_base = ctrl.tunnel_url()
                 except Exception:  # noqa: BLE001 — never let telemetry block liveness
                     push_status = None
-                BackendClient().heartbeat(
-                    push_status=push_status, hls_tunnel_base=hls_tunnel_base
-                )
+                BackendClient().heartbeat(push_status=push_status, hls_tunnel_base=hls_tunnel_base)
                 return {"ok": True}
             except BackendError as e:
                 return {"ok": False, "error": str(e)}

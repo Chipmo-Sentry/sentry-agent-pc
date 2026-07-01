@@ -44,7 +44,7 @@ def test_reader_urls_prefers_local_fanout() -> None:
     local = "rtsp://127.0.0.1:18554/cam1"
     urls = _reader_urls(main, local)
     assert urls[0] == local  # share the single pull
-    assert main in urls       # direct main still a fallback
+    assert main in urls  # direct main still a fallback
     assert "rtsp://u:p@cam/Streaming/Channels/102" in urls  # sub fallback too
 
 
@@ -55,12 +55,12 @@ def test_reader_urls_without_local_is_direct_only() -> None:
 
 
 def test_grid_dims_layout() -> None:
-    assert grid_dims(0) == (1, 1)   # empty → harmless 1x1
+    assert grid_dims(0) == (1, 1)  # empty → harmless 1x1
     assert grid_dims(1) == (1, 1)
     assert grid_dims(2) == (2, 1)
     assert grid_dims(3) == (2, 2)
     assert grid_dims(4) == (2, 2)
-    assert grid_dims(5) == (2, 3)   # 5 cams → 2 cols, 3 rows
+    assert grid_dims(5) == (2, 3)  # 5 cams → 2 cols, 3 rows
 
 
 def test_grid_dims_custom_cols() -> None:
@@ -89,10 +89,13 @@ def test_tile_double_click_binds_video_and_holder() -> None:
         seqs: list[list[str]] = [[] for _ in targets]
 
         def make_spy(orig: object, sink: list[str]) -> object:
-            def spy(sequence: object = None, command: object = None, *a: object, **k: object) -> object:
+            def spy(
+                sequence: object = None, command: object = None, *a: object, **k: object
+            ) -> object:
                 if sequence is not None and command is not None:
                     sink.append(str(sequence))
                 return orig(sequence, command, *a, **k)  # type: ignore[operator]
+
             return spy
 
         for w, sink in zip(targets, seqs, strict=True):

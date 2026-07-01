@@ -70,7 +70,9 @@ class DataTable(ttk.Frame):
             relief="flat",
             padding=(8, 6),
         )
-        style.map("Sentry.Treeview", background=[("selected", _SEL)], foreground=[("selected", "white")])
+        style.map(
+            "Sentry.Treeview", background=[("selected", _SEL)], foreground=[("selected", "white")]
+        )
         style.map("Sentry.Treeview.Heading", background=[("active", "#383838")])
 
         self.tree = ttk.Treeview(
@@ -107,7 +109,12 @@ def _sort_key(value: str) -> tuple[int, float | str]:
     """Numeric-aware sort: strip +, %, с/мс/units and sort numbers before text."""
     s = value.strip()
     cleaned = (
-        s.replace("+", "").replace("%", "").replace("мс", "").replace("с", "").replace("~", "").strip()
+        s.replace("+", "")
+        .replace("%", "")
+        .replace("мс", "")
+        .replace("с", "")
+        .replace("~", "")
+        .strip()
     )
     try:
         return (0, float(cleaned))

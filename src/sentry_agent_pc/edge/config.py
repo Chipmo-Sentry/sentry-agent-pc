@@ -36,6 +36,13 @@ class EdgeConfig:
     # ship the IR, flip the flag per-store from superadmin, compare, then default on.
     # Falls back to the COCO model if the open-vocab IR isn't bundled.
     open_vocab_items: bool = False
+    # Stage-1.5 learned skeleton-action anomaly scorer (ADR-0030). A compact pose
+    # autoencoder (PoseLift-trained, frame-AUC ~0.715) flags unusual motion the
+    # rule engine misses, on the agent CPU via OpenVINO. Default OFF (shadow): the
+    # score is computed + surfaced next to the rule risk but does NOT change
+    # alerting yet, so it can be compared per-store before it's trusted. Needs the
+    # bundled bin/skeleton_anomaly/skeleton_anomaly.onnx (falls back to OFF if absent).
+    skeleton_anomaly_enabled: bool = False
     # Behaviour signal weights + geometry
     w_holding: float = 5.0
     w_conceal: float = 14.0

@@ -43,11 +43,15 @@ class AddCameraDialog(ctk.CTkToplevel):
         # last-packed widget when space is tight).
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
         btn_row.pack(side="bottom", fill="x", padx=20, pady=14)
-        ctk.CTkButton(btn_row, text="Болих", fg_color="transparent", border_width=1,
-                      command=self.destroy).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(
+            btn_row, text="Болих", fg_color="transparent", border_width=1, command=self.destroy
+        ).pack(side="right", padx=(8, 0))
         self.add_btn = ctk.CTkButton(
-            btn_row, text="Шалгах ба нэмэх", fg_color=BRAND_PRIMARY,
-            hover_color=BRAND_PRIMARY_HOVER, command=self._submit,
+            btn_row,
+            text="Шалгах ба нэмэх",
+            fg_color=BRAND_PRIMARY,
+            hover_color=BRAND_PRIMARY_HOVER,
+            command=self._submit,
         )
         self.add_btn.pack(side="right")
 
@@ -57,7 +61,8 @@ class AddCameraDialog(ctk.CTkToplevel):
         self._body = body
 
         ctk.CTkLabel(
-            body, text="Камер гараар нэмэх",
+            body,
+            text="Камер гараар нэмэх",
             font=ctk.CTkFont(size=16, weight="bold"),
         ).pack(pady=(8, 8), padx=20, anchor="w")
 
@@ -65,14 +70,21 @@ class AddCameraDialog(ctk.CTkToplevel):
         ctk.CTkLabel(body, text="Камерын брэнд:", anchor="w").pack(fill="x", padx=20)
         self.brand_var = ctk.StringVar(value=self.brands[0].label)
         self.brand_menu = ctk.CTkOptionMenu(
-            body, values=list(self.brand_by_label.keys()),
-            variable=self.brand_var, command=self._on_brand_change,
+            body,
+            values=list(self.brand_by_label.keys()),
+            variable=self.brand_var,
+            command=self._on_brand_change,
         )
         self.brand_menu.pack(fill="x", padx=20, pady=(2, 4))
 
         self.notes_lbl = ctk.CTkLabel(
-            body, text="", font=ctk.CTkFont(size=11), text_color="#FBBF24",
-            anchor="w", wraplength=500, justify="left",
+            body,
+            text="",
+            font=ctk.CTkFont(size=11),
+            text_color="#FBBF24",
+            anchor="w",
+            wraplength=500,
+            justify="left",
         )
         self.notes_lbl.pack(fill="x", padx=20)
 
@@ -82,14 +94,18 @@ class AddCameraDialog(ctk.CTkToplevel):
         self.user_entry = self._field("Нэвтрэх нэр:", get_settings().onvif_default_user)
         self.pass_entry = widgets.password_field(self._body, "Нууц үг:")
         self.path_entry = self._field(
-            "RTSP path (заавал биш — хоосон бол брэндийн default):", "",
+            "RTSP path (заавал биш — хоосон бол брэндийн default):",
+            "",
         )
 
         # Status + spinner
         self.spinner = widgets.Spinner(body)
         self.spinner.pack(pady=(8, 0))
         self.status_lbl = ctk.CTkLabel(
-            body, text="", font=ctk.CTkFont(size=12), text_color="gray60",
+            body,
+            text="",
+            font=ctk.CTkFont(size=12),
+            text_color="gray60",
             wraplength=500,
         )
         self.status_lbl.pack(pady=4, padx=20)
@@ -140,8 +156,12 @@ class AddCameraDialog(ctk.CTkToplevel):
             # 1) Try the brand template / custom path first (fast, user-directed),
             #    accepting H.264 OR H.265.
             _main, candidates = svc.build_manual_url(
-                brand.key, host=host, username=user, password=pwd,
-                port=port, custom_path=custom_path,
+                brand.key,
+                host=host,
+                username=user,
+                password=pwd,
+                port=port,
+                custom_path=custom_path,
             )
             rtsp_url: str | None = None
             for url in candidates:

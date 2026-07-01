@@ -14,7 +14,10 @@ _TRI = [[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]]
 
 def test_camera_record_round_trips_zones() -> None:
     cam = CameraRecord(
-        uuid="A", name="Cam", ip="1.1.1.1", rtsp_url="rtsp://a",
+        uuid="A",
+        name="Cam",
+        ip="1.1.1.1",
+        rtsp_url="rtsp://a",
         zones=[{"id": "z1", "type": "exit", "points": _TRI}],
     )
     reloaded = CameraRecord.model_validate(cam.model_dump())
@@ -115,7 +118,10 @@ def test_save_zones_patches_backend_and_persists(monkeypatch) -> None:  # type: 
 
 def test_save_zones_empty_clears_local(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     cam = CameraRecord(
-        uuid="cam-1", name="C", ip="1.1.1.1", rtsp_url="rtsp://a",
+        uuid="cam-1",
+        name="C",
+        ip="1.1.1.1",
+        rtsp_url="rtsp://a",
         zones=[{"type": "exit", "points": _TRI}],
     )
     state = _patch_state(monkeypatch, [cam])
@@ -143,7 +149,9 @@ def test_save_zones_backend_failure_keeps_local(monkeypatch) -> None:  # type: i
             raise BackendError("422 too many points")
 
     res = svc.save_camera_zones(
-        camera_uuid="c", zones=[{"type": "exit", "points": _TRI}], backend=_Boom(),  # type: ignore[arg-type]
+        camera_uuid="c",
+        zones=[{"type": "exit", "points": _TRI}],
+        backend=_Boom(),  # type: ignore[arg-type]
     )
     assert not res.ok
     assert state.cameras[0].zones is None  # local untouched when backend rejects
@@ -166,8 +174,12 @@ def test_reconcile_syncs_zones(monkeypatch) -> None:  # type: ignore[no-untyped-
     class FakeBackend:
         def agent_list_cameras(self):  # type: ignore[no-untyped-def]
             return [
-                {"id": "A", "name": "A", "mediamtx_path": "a",
-                 "zones": [{"type": "shelf", "points": _TRI}]}
+                {
+                    "id": "A",
+                    "name": "A",
+                    "mediamtx_path": "a",
+                    "zones": [{"type": "shelf", "points": _TRI}],
+                }
             ]
 
     cams, changed = svc.reconcile_with_backend(backend=FakeBackend())  # type: ignore[arg-type]
@@ -214,8 +226,11 @@ def test_frame_grab_candidates_prefers_local(monkeypatch) -> None:  # type: igno
     from sentry_agent_pc.discovery import frame_grab
 
     cam = CameraRecord(
-        uuid="A", name="A", ip="1.1.1.1",
-        rtsp_url="rtsp://admin:pw@1.1.1.1:554/s1", mediamtx_path="cam1",
+        uuid="A",
+        name="A",
+        ip="1.1.1.1",
+        rtsp_url="rtsp://admin:pw@1.1.1.1:554/s1",
+        mediamtx_path="cam1",
     )
 
     class _Ctrl:

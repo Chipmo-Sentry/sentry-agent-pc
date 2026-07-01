@@ -49,7 +49,9 @@ def bundled_model_xml(name: str) -> Path | None:
     return xml if xml.exists() else None
 
 
-def letterbox(frame_bgr: NDArray[np.uint8], size: int = _IMGSZ) -> tuple[NDArray[np.float32], float, float, float]:
+def letterbox(
+    frame_bgr: NDArray[np.uint8], size: int = _IMGSZ
+) -> tuple[NDArray[np.float32], float, float, float]:
     """Resize keeping aspect ratio + pad to size×size. Returns the NCHW RGB blob
     (0-1) plus (scale, pad_x, pad_y) to map model coords back to the frame."""
     import cv2
@@ -103,8 +105,14 @@ def _xywh_to_xyxy_scaled(
 
 
 def decode_pose_output(
-    raw: NDArray[np.float32], scale: float, pad_x: float, pad_y: float,
-    *, conf: float = 0.35, iou: float = 0.5, min_kp_conf: float = 0.30,
+    raw: NDArray[np.float32],
+    scale: float,
+    pad_x: float,
+    pad_y: float,
+    *,
+    conf: float = 0.35,
+    iou: float = 0.5,
+    min_kp_conf: float = 0.30,
 ) -> list[PersonDet]:
     """[1,56,N] (or [56,N]) → persons with COCO-17 keypoints, frame coords.
 
@@ -134,8 +142,13 @@ def decode_pose_output(
 
 
 def decode_det_output(
-    raw: NDArray[np.float32], scale: float, pad_x: float, pad_y: float,
-    *, conf: float = 0.40, iou: float = 0.5,
+    raw: NDArray[np.float32],
+    scale: float,
+    pad_x: float,
+    pad_y: float,
+    *,
+    conf: float = 0.40,
+    iou: float = 0.5,
 ) -> list[ItemDet]:
     """[1,84,N] (or [84,N]) → retail-relevant item boxes, frame coords."""
     arr = np.squeeze(raw)
@@ -183,8 +196,14 @@ def load_vocab(xml: Path) -> list[str] | None:
 
 
 def decode_openvocab_output(
-    raw: NDArray[np.float32], scale: float, pad_x: float, pad_y: float,
-    vocab: list[str], *, conf: float = 0.40, iou: float = 0.5,
+    raw: NDArray[np.float32],
+    scale: float,
+    pad_x: float,
+    pad_y: float,
+    vocab: list[str],
+    *,
+    conf: float = 0.40,
+    iou: float = 0.5,
 ) -> list[ItemDet]:
     """[1, 4+K, N] (or [4+K, N]) → item boxes for an open-vocab detector.
 
@@ -257,7 +276,9 @@ class LeanOpenVinoDetector:
         else:
             item = bundled_model_xml("yolo11n_openvino_model")
         if pose is None or item is None:
-            raise FileNotFoundError("bundled OpenVINO model IR not found (build_exe must drop it in bin/)")
+            raise FileNotFoundError(
+                "bundled OpenVINO model IR not found (build_exe must drop it in bin/)"
+            )
         core = ov.Core()
         dev = device if device in core.available_devices else "CPU"
         self._pose = self._compile(core, pose, dev)
@@ -289,9 +310,7 @@ class LeanOpenVinoDetector:
             log.info("ov_lean.loaded", device="CPU", model=str(xml))
             return cm
 
-    def apply_conf(
-        self, *, person_conf: float, item_conf: float, min_kp_conf: float
-    ) -> None:
+    def apply_conf(self, *, person_conf: float, item_conf: float, min_kp_conf: float) -> None:
         """Hot-apply detection thresholds (config-poller → pipeline.apply_config)."""
         self._person_conf = person_conf
         self._item_conf = item_conf

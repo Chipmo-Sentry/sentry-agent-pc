@@ -20,9 +20,7 @@ from sentry_agent_pc.edge.ov_lean import (
 
 
 def test_nms_suppresses_overlap_keeps_separate() -> None:
-    boxes = np.array(
-        [[0, 0, 10, 10], [1, 1, 11, 11], [50, 50, 60, 60]], dtype=np.float32
-    )
+    boxes = np.array([[0, 0, 10, 10], [1, 1, 11, 11], [50, 50, 60, 60]], dtype=np.float32)
     scores = np.array([0.9, 0.8, 0.7], dtype=np.float32)
     keep = _nms(boxes, scores, iou_thresh=0.5)
     assert keep[0] == 0  # highest score first
@@ -149,8 +147,13 @@ def test_decode_openvocab_tolerates_vocab_tensor_mismatch() -> None:
 
 
 def test_decode_openvocab_empty_and_malformed() -> None:
-    assert decode_openvocab_output(np.zeros((1, 7, 4), np.float32), 1.0, 0.0, 0.0, _VOCAB, conf=0.9) == []
-    assert decode_openvocab_output(np.zeros((1, 3, 4), np.float32), 1.0, 0.0, 0.0, _VOCAB) == []  # <5 rows
+    assert (
+        decode_openvocab_output(np.zeros((1, 7, 4), np.float32), 1.0, 0.0, 0.0, _VOCAB, conf=0.9)
+        == []
+    )
+    assert (
+        decode_openvocab_output(np.zeros((1, 3, 4), np.float32), 1.0, 0.0, 0.0, _VOCAB) == []
+    )  # <5 rows
 
 
 def test_load_vocab_reads_sibling_json(tmp_path) -> None:  # noqa: ANN001 — pytest fixture
