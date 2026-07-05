@@ -31,6 +31,7 @@ from sentry_agent_pc.edge.detector import Detector
 from sentry_agent_pc.edge.recorder import ClipRecord
 from sentry_agent_pc.edge.runtime import EdgeRuntime
 from sentry_agent_pc.logging_setup import get_logger
+from sentry_agent_pc.redact import scrub_credentials
 from sentry_agent_pc.settings import DEFAULT_CONFIG_DIR, get_settings
 from sentry_agent_pc.state import load_state
 from sentry_agent_pc.streaming.controller import get_stream_controller
@@ -197,7 +198,11 @@ class EdgeController:
                 worker = _CamWorker(self._runtime, cid, src)
                 self._workers[cid] = worker
                 worker.start()
-                log.info("edge_controller.worker_started", camera_id=cid, src=src)
+                log.info(
+                    "edge_controller.worker_started",
+                    camera_id=cid,
+                    src=scrub_credentials(src),  # direct RTSP src carries user:pass
+                )
 
     def _on_clip(self, rec: ClipRecord) -> None:
         """Upload one suspicious clip to the cloud VLM — for the registered edge_pc
