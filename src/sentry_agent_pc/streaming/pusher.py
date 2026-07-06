@@ -124,6 +124,13 @@ def build_relay_cmd(ffmpeg: str, target: PushTarget, dest: str) -> list[str]:
     return [
         ffmpeg,
         "-nostdin",
+        # docs/33 Sprint C — the relay's stderr is PIPE'd and buffered by
+        # communicate() for the life of the process (days): without -nostats the
+        # per-second progress line grew RAM unboundedly per camera. warning level
+        # keeps the last real error lines (all we ever log) without the spam.
+        "-nostats",
+        "-loglevel",
+        "warning",
         "-rtsp_transport",
         "tcp",
         "-i",
