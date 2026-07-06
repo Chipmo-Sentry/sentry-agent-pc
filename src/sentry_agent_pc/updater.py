@@ -46,13 +46,12 @@ log = get_logger("sentry_agent_pc.updater")
 # key — closing the "a compromised GitHub release = fleet-wide RCE" gap that the
 # SHA-256 alone (fetched from the same release) can't.
 #
-# EMPTY = signing not activated yet → the updater keeps verifying the SHA-256
-# only (transit integrity), exactly as before. To ACTIVATE, see
-# docs/RELEASE_SIGNING.md: (1) run scripts/gen_signing_key.py, (2) add the
-# private key as the RELEASE_SIGNING_KEY secret, (3) ship one signed release,
-# (4) THEN paste the public key here. Order matters — pinning the key before a
-# signed release exists would refuse every update.
-_RELEASE_PUBLIC_KEY_B64 = ""
+# ACTIVATED 2026-07-06 (docs/33 P1): the first signed release is v0.7.84 —
+# its .sig was verified against this key end-to-end before pinning (see
+# docs/RELEASE_SIGNING.md for the activation order that was followed: keygen →
+# RELEASE_SIGNING_KEY secret → signed release → pin). From the build carrying
+# this pin onward, every update must verify or it is refused.
+_RELEASE_PUBLIC_KEY_B64 = "Klb66LmVKw7pUtcLUd9VuPooiEcfsaiW4xLiZQyHCOc="
 
 GITHUB_REPO = "Chipmo-Sentry/sentry-agent-pc"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"

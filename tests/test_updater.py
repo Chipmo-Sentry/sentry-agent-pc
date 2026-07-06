@@ -115,9 +115,12 @@ def test_find_asset_named() -> None:
 
 
 def test_verify_signature_skips_when_no_pinned_key(tmp_path, monkeypatch) -> None:
-    # Default (empty pin): signing not activated → no-op even with no .sig, and
-    # the download is kept (behavior is unchanged from the SHA-256-only era).
-    monkeypatch.setattr(updater, "_release_public_key", lambda: None)
+    # EMPTY pin = signing not activated → no-op even with no .sig, and the
+    # download is kept (the SHA-256-only era behaviour). Since 2026-07-06 the
+    # REAL pin is set, so simulate the pre-activation state by blanking the
+    # constant (mocking _release_public_key→None now means "pin set but
+    # unparseable", which correctly fails CLOSED — covered elsewhere).
+    monkeypatch.setattr(updater, "_RELEASE_PUBLIC_KEY_B64", "")
     f = tmp_path / "a.zip"
     f.write_bytes(b"data")
     updater._verify_signature(_info(), "deadbeef", f)  # no raise
