@@ -52,8 +52,18 @@ class EdgeRuntime:
         self._recorders: dict[str, EdgeClipRecorder] = {}
         self._lock = threading.Lock()
 
-    def start_camera(self, camera_id: str, src_url: str) -> None:
-        """Begin recording + analysing one camera (idempotent)."""
+    def start_camera(
+        self,
+        camera_id: str,
+        src_url: str,
+        zones: list[dict[str, object]] | None = None,
+    ) -> None:
+        """Begin recording + analysing one camera (idempotent).
+
+        ``zones`` are the camera's detection polygons (docs/29). docs/33 P0-6:
+        the headless path used to omit them, so exit_after_concealment /
+        repeated_shelf_visit never fired 24/7 — they only worked in the GUI tile
+        pipeline (which passes zones)."""
         with self._lock:
             if camera_id in self._pipes:
                 return
@@ -68,7 +78,9 @@ class EdgeRuntime:
                 keep_sec=self.cfg.keep_sec,
                 on_clip=self._on_clip,
             )
-            pipe = EdgePipeline(camera_id, self._factory(self.cfg), rec, config=self.cfg)
+            pipe = EdgePipeline(
+                camera_id, self._factory(self.cfg), rec, config=self.cfg, zones=zones
+            )
             self._recorders[camera_id] = rec
             self._pipes[camera_id] = pipe
         rec.start()

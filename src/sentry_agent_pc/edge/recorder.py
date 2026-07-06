@@ -299,24 +299,57 @@ class SegmentRecorder:
         self._thread = threading.Thread(target=self._run, name=f"seg-{self.camera_id}", daemon=True)
         self._thread.start()
 
+    # Restart backoff for a dead segment ffmpeg (docs/33 P0-7).
+    _RESTART_MIN_SEC = 2.0
+    _RESTART_MAX_SEC = 30.0
+
     def _run(self) -> None:
-        cmd = build_segment_cmd(
-            resolve_ffmpeg_exe(), self.src_url, self.seg_dir, segment_sec=self.segment_sec
-        )
-        try:
-            self._proc = subprocess.Popen(  # noqa: S603
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=_CREATE_NO_WINDOW,
-            )
-        except OSError as e:
-            log.error("recorder.spawn_failed", camera_id=self.camera_id, error=str(e))
-            return
+        """Spawn + SUPERVISE the segment-ring ffmpeg (docs/33 P0-7). Pre-fix the
+        process was spawned once and never monitored: any stream drop (camera
+        reboot, fan-out hub restart — guaranteed on every camera edit, since the
+        local MediaMTX restarts) killed the DVR silently forever. Suspicious
+        episodes then hit clip.no_segments and produced NO evidence while decode
+        + overlay looked perfectly healthy. Now a dead ffmpeg is respawned with
+        backoff, mirroring the push relay's supervision."""
+        backoff = self._RESTART_MIN_SEC
         while not self._stop.is_set():
-            self.prune()
-            self._stop.wait(self.segment_sec)
+            cmd = build_segment_cmd(
+                resolve_ffmpeg_exe(), self.src_url, self.seg_dir, segment_sec=self.segment_sec
+            )
+            try:
+                self._proc = subprocess.Popen(  # noqa: S603
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=_CREATE_NO_WINDOW,
+                )
+            except OSError as e:
+                log.error("recorder.spawn_failed", camera_id=self.camera_id, error=str(e))
+                if self._stop.wait(backoff):
+                    break
+                backoff = min(backoff * 2, self._RESTART_MAX_SEC)
+                continue
+            spawned_at = time.time()
+            while not self._stop.is_set():
+                self.prune()
+                if self._proc.poll() is not None:
+                    log.warning(
+                        "recorder.segment_ffmpeg_died",
+                        camera_id=self.camera_id,
+                        returncode=self._proc.returncode,
+                    )
+                    break
+                self._stop.wait(self.segment_sec)
+            if self._stop.is_set():
+                break
+            # A ring that ran healthily for a while earns a fresh backoff; rapid
+            # death loops (camera truly down) keep backing off to _RESTART_MAX_SEC.
+            if time.time() - spawned_at > 60.0:
+                backoff = self._RESTART_MIN_SEC
+            if self._stop.wait(backoff):
+                break
+            backoff = min(backoff * 2, self._RESTART_MAX_SEC)
         self._reap()
 
     def prune(self, now: float | None = None) -> int:

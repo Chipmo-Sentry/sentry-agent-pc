@@ -57,10 +57,20 @@ class _CamWorker:
     this loop only has to keep frames flowing. Reconnects with backoff when the
     loopback drops (e.g. the fan-out restarts)."""
 
-    def __init__(self, runtime: EdgeRuntime, camera_id: str, src_url: str) -> None:
+    def __init__(
+        self,
+        runtime: EdgeRuntime,
+        camera_id: str,
+        src_url: str,
+        zones: list[dict[str, object]] | None = None,
+    ) -> None:
         self._runtime = runtime
         self.camera_id = camera_id
         self.src_url = src_url
+        # docs/33 P0-6 — the camera's detection polygons, threaded into the
+        # pipeline so the zone criteria work in the 24/7 path too. Also the
+        # restart-on-change snapshot (see _refresh_locked).
+        self.zones = zones
         self._stop = threading.Event()
         self._last_wh: tuple[int, int] | None = None  # (w, h) of the last decoded frame
         self._frame_seq = 0
@@ -70,7 +80,7 @@ class _CamWorker:
         )
 
     def start(self) -> None:
-        self._runtime.start_camera(self.camera_id, self.src_url)
+        self._runtime.start_camera(self.camera_id, self.src_url, zones=self.zones)
         self._thread.start()
         self._poster.start()
 
@@ -144,6 +154,8 @@ class _CamWorker:
 class EdgeController:
     """Owns the headless EdgeRuntime + one decode worker per ``edge_pc`` camera."""
 
+    _CONFIG_POLL_SEC = 30.0
+
     def __init__(self) -> None:
         self._runtime = EdgeRuntime(
             DEFAULT_CONFIG_DIR / "edge", _detector_factory, on_clip=self._on_clip
@@ -151,6 +163,34 @@ class EdgeController:
         self._workers: dict[str, _CamWorker] = {}
         self._lock = threading.Lock()
         self._stopped = False
+        # docs/33 P0-6 — backend edge-config poll. Pre-fix the headless runtime
+        # ran on hardcoded EdgeConfig defaults FOREVER: poll_and_apply was wired
+        # only to the GUI live-view pipelines, so superadmin «Edge тохиргоо»
+        # silently had zero effect on the always-on engine. First poll fires
+        # immediately (startup config), then every _CONFIG_POLL_SEC.
+        self._cfg_version = -1
+        self._poll_stop = threading.Event()
+        self._poll_thread = threading.Thread(
+            target=self._config_poll_loop, name="edge-config-poll", daemon=True
+        )
+        self._poll_thread.start()
+
+    def _config_poll_loop(self) -> None:
+        from sentry_agent_pc.backend_client import BackendClient
+        from sentry_agent_pc.edge.config_poller import poll_and_apply
+
+        while not self._poll_stop.is_set():
+            try:
+                # EdgeRuntime.apply_config fans the new tunables out to every
+                # running pipeline AND stores the cfg for future start_camera
+                # (recorder knobs like segment/keep apply on the next start).
+                self._cfg_version = poll_and_apply(
+                    BackendClient(), [self._runtime], self._cfg_version
+                )
+            except Exception:  # noqa: BLE001 — a poll blip must not kill the loop
+                log.debug("edge_controller.config_poll_failed", exc_info=True)
+            if self._poll_stop.wait(self._CONFIG_POLL_SEC):
+                return
 
     def refresh(self) -> None:
         """Reconcile decode workers with the current ``edge_pc`` camera set. Safe to
@@ -174,7 +214,10 @@ class EdgeController:
             return
 
         ctrl = get_stream_controller()
-        want: dict[str, str] = {}  # camera_id (mediamtx_path) → decode src url
+        # camera_id (mediamtx_path) → (decode src url, zones). Zones ride along so
+        # the headless pipeline gets the same polygons the GUI tile pipeline uses
+        # (docs/33 P0-6) — and a zone edit restarts the worker like a src change.
+        want: dict[str, tuple[str, list[dict[str, object]] | None]] = {}
         for c in state.cameras:
             if c.compute_tier != "edge_pc" or not c.mediamtx_path:
                 continue
@@ -188,20 +231,22 @@ class EdgeController:
             src = loopback or c.rtsp_url
             if not src:
                 continue
-            want[c.mediamtx_path] = src
+            want[c.mediamtx_path] = (src, c.zones)
 
         for cid in list(self._workers):
-            if cid not in want or self._workers[cid].src_url != want[cid]:
+            w = self._workers[cid]
+            if cid not in want or (w.src_url, w.zones) != want[cid]:
                 self._workers.pop(cid).stop()
-        for cid, src in want.items():
+        for cid, (src, zones) in want.items():
             if cid not in self._workers:
-                worker = _CamWorker(self._runtime, cid, src)
+                worker = _CamWorker(self._runtime, cid, src, zones=zones)
                 self._workers[cid] = worker
                 worker.start()
                 log.info(
                     "edge_controller.worker_started",
                     camera_id=cid,
                     src=scrub_credentials(src),  # direct RTSP src carries user:pass
+                    zones=len(zones) if zones else 0,
                 )
 
     def _on_clip(self, rec: ClipRecord) -> None:
@@ -221,6 +266,7 @@ class EdgeController:
             log.exception("edge_controller.upload_failed", camera_id=rec.camera_id)
 
     def stop(self) -> None:
+        self._poll_stop.set()
         with self._lock:
             self._stopped = True
             self._teardown_locked()
