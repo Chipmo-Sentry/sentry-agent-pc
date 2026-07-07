@@ -32,7 +32,13 @@ const CAM_FOV_DEG = 90; // assumed horizontal field of view for the rough wedge
 const CAM_RANGE_M = 12; // assumed useful range (m) for the rough wedge
 
 const round2 = (v) => Math.round(v * 100) / 100;
-const fmtM = (u) => round2(u).toFixed(COORD_DP); // "12.50"
+const fmtM = (u) => round2(u).toFixed(COORD_DP); // "12.50" — inputs / status
+// Clean display for on-canvas dimension labels: drop trailing ".00" (whole
+// numbers show bare, else 1 dp) so "760.00" reads as "760" and "0.50" as "0.5".
+const fmtDim = (u) => {
+  const r = Math.round(u * 10) / 10;
+  return Number.isInteger(r) ? String(r) : r.toFixed(1);
+};
 // polygon area via the shoelace formula → m² (points are metres)
 function polyArea(pts) {
   let a = 0;
@@ -165,7 +171,7 @@ stage.on("wheel", (e) => {
   const ns = Math.max(0.05, Math.min(20, old * (e.evt.deltaY > 0 ? 1 / 1.1 : 1.1)));
   stage.scale({ x: ns, y: ns });
   stage.position({ x: pointer.x - to.x * ns, y: pointer.y - to.y * ns });
-  drawGrid();
+  redrawShapes(); // keep labels/strokes ~constant on-screen while zooming
 });
 
 function setTool(t) {
@@ -182,9 +188,10 @@ function setTool(t) {
   // the click handler would need a 2nd drag). Off in draw modes so it can't
   // interfere with drawing.
   setShapesDraggable(t === "select");
-  // Show the fixture width×height inputs only in a fixture tool.
+  // Show the width×height inputs for the box tools — fixtures AND the
+  // room/outer-wall rectangle (so the store outline can be typed exactly).
   const rw = document.getElementById("rect-wrap");
-  if (rw) rw.classList.toggle("len-hidden", !FIX[t]);
+  if (rw) rw.classList.toggle("len-hidden", !FIX[t] && t !== "room");
   stage.container().style.cursor = t === "select" ? "default" : "crosshair";
 }
 
@@ -195,7 +202,12 @@ function setShapesDraggable(on) {
 }
 
 // ── render plan → Konva ─────────────────────────────────────────────────
-function render() {
+// Redraw ONLY the Konva canvas (shapes + labels + grid + cameras). Labels and
+// strokes are counter-scaled (X / stage.scaleX()) so they read ~constant on
+// screen — but that only holds if they're rebuilt AFTER a scale change, so this
+// is called on every zoom/fit (not just on plan edits). Cheap: a handful of
+// vector shapes, no HTML.
+function redrawShapes() {
   shapeLayer.destroyChildren();
   camLayer.destroyChildren();
   PLAN.walls.forEach((w, i) => shapeLayer.add(makeLine(w.points, WALL_COLOR, false, "wall", i)));
@@ -206,12 +218,18 @@ function render() {
   shapeLayer.draw();
   camLayer.draw();
   drawGrid();
+  // Keep the camera-coverage overlay tracking the scale while it's toggled on.
+  if (typeof coverageOn !== "undefined" && coverageOn) renderCoverage();
+  // Nodes are recreated non-draggable; restore one-gesture move in select mode.
+  setShapesDraggable(tool === "select");
+}
+
+function render() {
+  redrawShapes();
   renderElements();
   renderTotals();
   updateCoverageStat(renderCoverage());
   renderReadiness();
-  // Nodes are recreated non-draggable; restore one-gesture move in select mode.
-  setShapesDraggable(tool === "select");
 }
 
 // Setup-readiness summary: are all cameras calibrated, and is the floor covered?
@@ -276,12 +294,15 @@ function makeLine(pts, color, closed, kind, idx, label) {
   const line = new Konva.Line({
     points: flat,
     stroke: color,
-    strokeWidth: 2,
+    // Counter-scaled so the outline stays a crisp ~1.6 px on screen at any zoom
+    // (was 2 plan-units → thick on a large store plan). Rebuilt on every
+    // zoom/fit via redrawShapes(), so it tracks the scale.
+    strokeWidth: 1.6 / stage.scaleX(),
     closed: closed,
     fill: closed ? color + "22" : undefined,
     draggable: false,
     name: `${kind}:${idx}`,
-    hitStrokeWidth: 12,
+    hitStrokeWidth: 12 / stage.scaleX(),
   });
   line.on("mousedown", (e) => {
     if (tool === "select") {
@@ -291,8 +312,8 @@ function makeLine(pts, color, closed, kind, idx, label) {
   });
   if (label && pts.length) {
     const t = new Konva.Text({
-      x: pts[0][0] + 4, y: pts[0][1] - 16 / stage.scaleX(), text: label,
-      fontSize: 13 / stage.scaleX(), fontStyle: "bold", fill: color, listening: false,
+      x: pts[0][0] + 4, y: pts[0][1] - 14 / stage.scaleX(), text: label,
+      fontSize: 11.5 / stage.scaleX(), fontStyle: "bold", fill: color, listening: false,
     });
     line._label = t;
     shapeLayer.add(t);
@@ -305,9 +326,11 @@ function makeLine(pts, color, closed, kind, idx, label) {
 // «W × H м» + area «… м²» for fixtures. Counter-scaled so they read ~constant on
 // screen; rebuilt every render(), so no manual cleanup.
 function addDimLabels(pts, color, kind) {
-  const fs = 11 / stage.scaleX();
+  // Counter-scaled to read ~constant on screen. Lighter + un-bolded + smaller
+  // than before (the bold 2-dp numbers read as heavy/ugly on a dense plan).
+  const fs = 9.5 / stage.scaleX();
   const mk = (x, y, text, opts) => shapeLayer.add(new Konva.Text(Object.assign(
-    { x, y, text, fontSize: fs, fill: "#cbd5e1", listening: false, fontStyle: "bold" }, opts || {})));
+    { x, y, text, fontSize: fs, fill: "#9aa6b6", listening: false }, opts || {})));
   if (kind === "wall") {
     for (let i = 0; i < pts.length - 1; i++) {
       const a = pts[i], b = pts[i + 1];
@@ -315,15 +338,15 @@ function addDimLabels(pts, color, kind) {
       if (len < 1e-6) continue;
       // nudge the label just off the segment midpoint (perpendicular)
       const nx = -(b[1] - a[1]) / len, ny = (b[0] - a[0]) / len;
-      mk((a[0] + b[0]) / 2 + nx * fs * 0.6, (a[1] + b[1]) / 2 + ny * fs * 0.6, `${fmtM(len)} м`, { fill: "#e2e8f0" });
+      mk((a[0] + b[0]) / 2 + nx * fs * 0.6, (a[1] + b[1]) / 2 + ny * fs * 0.6, `${fmtDim(len)} м`, { fill: "#c2cad6" });
     }
   } else {
     const b = bbox(pts);
-    const lines = [`${fmtM(b.w)} × ${fmtM(b.h)} м`];
-    if (SHOW_AREA) lines.push(`${fmtM(polyArea(pts))} м²`);
+    const lines = [`${fmtDim(b.w)} × ${fmtDim(b.h)} м`];
+    if (SHOW_AREA) lines.push(`${fmtDim(polyArea(pts))} м²`);
     const t = new Konva.Text({
-      text: lines.join("\n"), fontSize: fs, fill: color, fontStyle: "bold",
-      align: "center", lineHeight: 1.15, listening: false,
+      text: lines.join("\n"), fontSize: fs, fill: color,
+      align: "center", lineHeight: 1.2, listening: false, opacity: 0.9,
     });
     t.position({ x: b.x + b.w / 2, y: b.y + b.h / 2 });
     t.offsetX(t.width() / 2);
@@ -378,6 +401,11 @@ function makeCamera(cam, idx) {
   g.add(label);
   const badgeNode = makeBadge(cam);
   if (badgeNode) g.add(badgeNode);
+  // The glyph is drawn in plan-units; counter-scale the whole group so the
+  // camera marker + label read ~constant on screen (not gigantic on a big store
+  // plan). dragend reads g.x()/g.y(), which group scale does not affect.
+  const s = stage.scaleX() || 1;
+  g.scale({ x: 1 / s, y: 1 / s });
   g.on("mousedown", (e) => {
     if (tool === "select") {
       e.cancelBubble = true;
@@ -707,7 +735,13 @@ stage.on("mousedown", (e) => {
   }
   if (tool === "camera") { placeCamera(raw); return; }
   // Room tool: drag a rectangle that becomes 4 connected WALLS (store outline).
-  if (tool === "room") { startRect(raw); return; }
+  // If a width×height (m) is typed, one click drops that exact outline instead.
+  if (tool === "room") {
+    const dims = rectDims();
+    if (dims) placeRoomExact(snapPoint(raw) || raw, dims.w, dims.h);
+    else startRect(raw);
+    return;
+  }
   // Fixtures (тавиур/орц-гарц/касс) are boxes. If a width×height (m) is typed,
   // one click drops that exact box; otherwise just drag a rectangle (no Shift).
   if (FIX[tool]) {
@@ -751,6 +785,16 @@ function placeRectExact(raw, w, h) {
   pushUndo();
   render();
   setStatus(`▦ ${fmtM(w)} × ${fmtM(h)} м нэмэгдлээ`);
+}
+// Drop a room/outer-wall rectangle of an EXACT size (metres) — 4 connected
+// walls (closed loop), top-left at the click. Mirrors finishRect's room branch.
+function placeRoomExact(raw, w, h) {
+  const x1 = round2(raw[0]), y1 = round2(raw[1]);
+  const x2 = round2(x1 + w), y2 = round2(y1 + h);
+  PLAN.walls.push({ points: [[x1, y1], [x2, y1], [x2, y2], [x1, y2], [x1, y1]] });
+  pushUndo();
+  render();
+  setStatus(`▭ Хана-дөрвөлжин ${fmtM(w)} × ${fmtM(h)} м нэмэгдлээ`);
 }
 
 stage.on("mousemove", () => {
@@ -1276,7 +1320,7 @@ function fit() {
   const z = Math.min(stage.width() / pw, stage.height() / ph) * 0.9;
   stage.scale({ x: z, y: z });
   stage.position({ x: (stage.width() - pw * z) / 2, y: (stage.height() - ph * z) / 2 });
-  drawGrid();
+  redrawShapes(); // recompute counter-scaled labels/strokes at the new scale
 }
 
 // (deselect on empty is handled by the marquee — a click = a zero-size marquee)
