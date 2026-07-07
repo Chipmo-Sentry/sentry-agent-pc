@@ -48,12 +48,16 @@ from sentry_agent_pc.gui.widgets import (
     UI_BORDER,
     UI_DANGER,
     UI_FG,
+    UI_LINE_SOFT,
     UI_MUTED,
     UI_MUTED_FG,
     UI_MUTED_HOVER,
     UI_SUCCESS,
     UI_SURFACE,
-    UI_WARNING,
+    UI_SURFACE_2,
+    Panel,
+    StatusPill,
+    dark_menu,
 )
 from sentry_agent_pc.gui.zone_editor import ZoneEditorDialog
 from sentry_agent_pc.logging_setup import get_logger
@@ -175,6 +179,7 @@ _CLIP_COL_CAM = 150
 _CLIP_COL_WHEN = 150
 _CLIP_COL_RISK = 72
 _CLIP_COL_DUR = 64
+_CLIP_COL_STATUS = 110
 # Edge clip id (`{camera_id}_{epoch}`) — the SAME string the backend stores as the
 # alert's `edge_clip_id`, so this row matches its frontend «Сэжигтэй үйлдэл» alert.
 _CLIP_COL_ID = 210
@@ -366,9 +371,11 @@ class AgentApp(ctk.CTk):
         self._content.pack(side="left", fill="both", expand=True)
 
         self._pages: dict[str, ctk.CTkFrame] = {}
-        self._page_cameras = ctk.CTkFrame(self._content, fg_color="transparent")
-        self._build_toolbar(self._page_cameras)
-        self._build_camera_list(self._page_cameras)
+        self._selected_cam: CameraRecord | None = None
+        self._cam_rows: dict[str, ctk.CTkFrame] = {}
+        self._selected_clip: ClipRecord | None = None
+        self._clip_rows: dict[str, ctk.CTkFrame] = {}
+        self._page_cameras = self._build_cameras_page(self._content)
         self._pages["cameras"] = self._page_cameras
         self._pages["plan"] = self._build_plan_page(self._content)
         self._pages["alerts"] = self._build_alerts_page(self._content)
@@ -380,6 +387,9 @@ class AgentApp(ctk.CTk):
         self._pages["live"] = ctk.CTkFrame(self._content, fg_color="transparent")
         self._live_view: Any = None
         self._live_empty: Any = None
+        self._live_container: Any = None
+        self._live_events_list: Any = None
+        self._live_events_detail: Any = None
         self._show_page("cameras")
 
         self.refresh_cameras()
@@ -409,133 +419,189 @@ class AgentApp(ctk.CTk):
 
     # === Layout ===
 
+    # Page-key → topbar title. Kept separate from the sidebar labels (which carry
+    # icons) so the topbar reads as a clean operations-console header.
+    _PAGE_TITLES: dict[str, str] = {
+        "cameras": "Камерууд",
+        "plan": "Plan зураг",
+        "live": "Шууд хяналт",
+        "alerts": "Сэжигтэй event",
+        "behaviors": "Зан үйл",
+        "settings": "Тохиргоо",
+    }
+
     def _build_header(self) -> None:
-        header = ctk.CTkFrame(self, height=56, corner_radius=0)
+        header = ctk.CTkFrame(self, height=58, corner_radius=0, fg_color=UI_SURFACE)
         header.pack(fill="x", side="top")
         header.pack_propagate(False)
+        # Hairline under the topbar so it reads as a distinct band over the page.
+        ctk.CTkFrame(self, height=1, fg_color=UI_BORDER, corner_radius=0).pack(fill="x", side="top")
 
-        # Brand lockup: the Chipmo "C" mark + "Sentry" wordmark (replaces the
-        # placeholder shield emoji). The CTkImage ref is kept on self so Tk
-        # doesn't garbage-collect it.
+        # Brand lockup: the Chipmo "C" mark + "Sentry" wordmark. The CTkImage ref
+        # is kept on self so Tk doesn't garbage-collect it.
         brand = ctk.CTkFrame(header, fg_color="transparent")
-        brand.pack(side="left", padx=16)
+        brand.pack(side="left", padx=(16, 10))
         try:
             _logo = Image.open(resources.logo_header_png())
-            self._logo_img = ctk.CTkImage(light_image=_logo, dark_image=_logo, size=(26, 26))
-            ctk.CTkLabel(brand, image=self._logo_img, text="").pack(side="left", padx=(0, 9))
+            self._logo_img = ctk.CTkImage(light_image=_logo, dark_image=_logo, size=(24, 24))
+            ctk.CTkLabel(brand, image=self._logo_img, text="").pack(side="left", padx=(0, 8))
         except Exception as e:  # noqa: BLE001 — logo is cosmetic; fall back to text
             log.debug("header.logo_failed", error=str(e))
         ctk.CTkLabel(
             brand,
             text="Sentry",
-            font=ctk.CTkFont(size=19, weight="bold"),
+            font=ctk.CTkFont(size=17, weight="bold"),
             text_color=UI_FG,
         ).pack(side="left")
 
-        # Pairing / backend status sits next to the brand. The «Холболт» +
-        # «Шинэчлэл» actions and the version live in the «Тохиргоо» page — the
-        # header stays a clean brand bar (no duplicate controls).
-        self.backend_label = ctk.CTkLabel(
-            header,
-            text="Backend: шалгаж байна…",
-            font=ctk.CTkFont(size=12),
-            text_color=UI_MUTED_FG,
+        # Vertical divider, then the current-page title — the header names the
+        # page the operator is on (updated by _show_page), console-style.
+        ctk.CTkFrame(header, width=1, height=26, fg_color=UI_BORDER, corner_radius=0).pack(
+            side="left", padx=6
         )
-        self.backend_label.pack(side="left", padx=8)
+        self._page_title = ctk.CTkLabel(
+            header,
+            text="",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color=UI_FG,
+        )
+        self._page_title.pack(side="left", padx=(6, 0))
 
-    def _build_toolbar(self, parent: ctk.CTkBaseClass) -> None:
-        bar = ctk.CTkFrame(parent, height=56, corner_radius=0, fg_color="transparent")
-        bar.pack(fill="x", padx=16, pady=(12, 4))
+        # Right side: live status pills. The backend/pairing pill replaces the old
+        # plain "Backend: …" label; camera + AI pills give an at-a-glance health
+        # line. All three are updated live (heartbeat / refresh / edge ticks).
+        self._pill_ai = StatusPill(header, "AI…", "neutral", dot=True)
+        self._pill_ai.pack(side="right", padx=(0, 16))
+        self._pill_cameras = StatusPill(header, "0 камер", "neutral", dot=True)
+        self._pill_cameras.pack(side="right", padx=(0, 8))
+        self._pill_backend = StatusPill(header, "шалгаж байна…", "neutral", dot=True)
+        self._pill_backend.pack(side="right", padx=(0, 8))
 
-        ctk.CTkButton(
-            bar,
-            text="🔍  Камер хайх (Scan)",
-            width=180,
-            height=40,
-            font=ctk.CTkFont(size=14, weight="bold"),
-            command=self.open_scan,
-        ).pack(side="left")
-
-        ctk.CTkButton(
-            bar,
-            text="➕  Камер нэмэх (Add)",
-            width=180,
-            height=40,
-            font=ctk.CTkFont(size=14, weight="bold"),
-            fg_color=BRAND_PRIMARY,
-            hover_color=BRAND_PRIMARY_HOVER,
-            command=self.open_add,
-        ).pack(side="left", padx=(10, 0))
-
-        ctk.CTkButton(
-            bar,
-            text="↻ Сэргээх",
-            width=110,
-            height=40,
-            fg_color="transparent",
-            border_width=1,
-            command=self.refresh_cameras,
-        ).pack(side="right")
-        # NB: "Шууд харах" lives in the left sidebar nav (a global action) — no
-        # duplicate button here. The toolbar holds only camera-list actions
-        # (Scan / Add / Refresh).
-
-    # Fluid data columns: (title, weight, minsize). Columns expand to fill the
-    # window width on a wide screen and shrink (to minsize) on a narrow one —
-    # the same weights are applied to the header AND every row so they line up.
-    _COLUMNS: tuple[tuple[str, int, int], ...] = (
-        ("Нэр", 3, 120),
-        ("IP", 2, 90),
-        ("Path", 2, 80),
-        ("Codec", 1, 55),
-        ("Чанар", 2, 80),
-        ("Push", 1, 70),
+    # Camera data-grid columns: (key, title, weight, minsize). The same weights
+    # are applied to the header AND every row so cells line up; pill columns
+    # (Статус/AI/Push) and the ⋯ column carry weight 0 (fixed).
+    _COLUMNS: tuple[tuple[str, str, int, int], ...] = (
+        ("name", "Нэр", 3, 120),
+        ("ip", "IP", 2, 90),
+        ("status", "Статус", 0, 96),
+        ("ai", "AI", 0, 96),
+        ("quality", "Чанар", 2, 80),
+        ("push", "Push", 0, 92),
+        ("menu", "", 0, 40),
     )
-    _ACTIONS_MINSIZE = 280  # fixed column for the 3 per-row action buttons
 
     def _configure_grid(self, frame: ctk.CTkBaseClass) -> None:
         """Apply the shared column weights/minsizes to a header or row frame."""
-        for i, (_t, weight, minsize) in enumerate(self._COLUMNS):
+        for i, (_k, _t, weight, minsize) in enumerate(self._COLUMNS):
             frame.grid_columnconfigure(i, weight=weight, minsize=minsize)
-        frame.grid_columnconfigure(len(self._COLUMNS), weight=0, minsize=self._ACTIONS_MINSIZE)
 
-    def _build_camera_list(self, parent: ctk.CTkBaseClass) -> None:
-        # Column headers — grid with the shared weights. Extra right pad ≈ the
-        # scrollable-frame scrollbar so the header lines up with the rows below.
-        head = ctk.CTkFrame(parent, fg_color=UI_MUTED, height=34)
-        head.pack(fill="x", padx=16, pady=(8, 0))
+    def _build_cameras_page(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
+        """Table-first camera management: a searchable data grid on the left, a
+        camera detail panel on the right. Row actions live in the ⋯ menu + the
+        detail panel (rows stay clean)."""
+        page = ctk.CTkFrame(parent, fg_color="transparent")
+        toolbar = self._page_head(
+            page, "Камерууд",
+            "Мөр сонгоход баруун талд дэлгэрэнгүй нээгдэнэ · ⋯ дээр үйлдлүүд.",
+        )
+        # Search box filters the rendered rows live.
+        self._cam_search = ctk.CTkEntry(
+            toolbar, placeholder_text="Камер, IP хайх…", width=200, height=32
+        )
+        self._cam_search.pack(side="left", padx=(0, 8))
+        self._cam_search.bind("<KeyRelease>", lambda _e: self._apply_camera_filter())
+        ctk.CTkButton(
+            toolbar, text="🔍 Scan", width=90, height=32,
+            fg_color="transparent", border_width=1, border_color=UI_BORDER,
+            command=self.open_scan,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            toolbar, text="➕ Нэмэх", width=100, height=32,
+            fg_color=BRAND_PRIMARY, hover_color=BRAND_PRIMARY_HOVER,
+            command=self.open_add,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            toolbar, text="↻ Сэргээх", width=100, height=32,
+            fg_color="transparent", border_width=1, border_color=UI_BORDER,
+            command=self.refresh_cameras,
+        ).pack(side="left")
+
+        # Split: data grid (expands) | fixed-width detail panel.
+        split = ctk.CTkFrame(page, fg_color="transparent")
+        split.pack(fill="both", expand=True, padx=18, pady=(0, 12))
+
+        grid_panel = Panel(split, "Камерын жагсаалт", pad=0)
+        grid_panel.pack(side="left", fill="both", expand=True, padx=(0, 12))
+        head = ctk.CTkFrame(grid_panel.body, fg_color="transparent", height=32)
+        head.pack(fill="x", padx=12, pady=(6, 0))
         head.pack_propagate(False)
         self._configure_grid(head)
-        for i, (text, _w, _m) in enumerate(self._COLUMNS):
+        for i, (_k, text, _w, _m) in enumerate(self._COLUMNS):
             ctk.CTkLabel(
-                head,
-                text=text,
-                anchor="w",
-                font=ctk.CTkFont(size=12, weight="bold"),
-                text_color=UI_FG,
+                head, text=text, anchor="w",
+                font=ctk.CTkFont(size=11, weight="bold"), text_color=UI_MUTED_FG,
             ).grid(row=0, column=i, sticky="w", padx=6)
-        ctk.CTkLabel(
-            head,
-            text="Үйлдэл",
-            anchor="w",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=UI_FG,
-        ).grid(row=0, column=len(self._COLUMNS), sticky="w", padx=6)
+        ctk.CTkFrame(grid_panel.body, height=1, fg_color=UI_LINE_SOFT, corner_radius=0).pack(
+            fill="x", padx=12, pady=(6, 0)
+        )
+        self.list_frame = ctk.CTkScrollableFrame(grid_panel.body, fg_color="transparent")
+        self.list_frame.pack(fill="both", expand=True, padx=8, pady=(2, 8))
 
-        self.list_frame = ctk.CTkScrollableFrame(parent, fg_color="transparent")
-        self.list_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        detail_panel = Panel(split, "Камерын дэлгэрэнгүй")
+        detail_panel.configure(width=320)
+        detail_panel.pack(side="left", fill="y")
+        detail_panel.pack_propagate(False)
+        self._cam_detail = detail_panel.body
+        self._render_camera_detail(None)
+        return page
 
     def _build_statusbar(self) -> None:
-        bar = ctk.CTkFrame(self, height=28, corner_radius=0)
+        # Hairline above the status bar, then the bar itself.
+        ctk.CTkFrame(self, height=1, fg_color=UI_BORDER, corner_radius=0).pack(
+            fill="x", side="bottom"
+        )
+        bar = ctk.CTkFrame(self, height=26, corner_radius=0, fg_color=UI_SURFACE)
         bar.pack(fill="x", side="bottom")
         bar.pack_propagate(False)
+        # Left: transient status message (set_status). Right: fixed system segments
+        # (Store · Camera · AI · Version) — the console's always-on health line.
         self.status_label = ctk.CTkLabel(
             bar,
             text="Бэлэн",
             font=ctk.CTkFont(size=11),
             text_color=UI_MUTED_FG,
+            anchor="w",
         )
-        self.status_label.pack(side="left", padx=16)
+        self.status_label.pack(side="left", padx=14)
+
+        self._sys_segments: dict[str, ctk.CTkLabel] = {}
+
+        def _seg(key: str, initial: str) -> None:
+            lbl = ctk.CTkLabel(
+                bar, text=initial, font=ctk.CTkFont(size=11), text_color=UI_MUTED_FG
+            )
+            lbl.pack(side="right", padx=(0, 14))
+            self._sys_segments[key] = lbl
+
+        # Packed right-to-left, so declare in reverse of visual order.
+        _seg("version", f"v{__version__}")
+        _seg("ai", "AI: —")
+        _seg("camera", "Камер: —")
+        _seg("store", "Дэлгүүр: —")
+        self._refresh_statusbar()
+
+    def _refresh_statusbar(self) -> None:
+        """Repaint the fixed right-hand system segments from current state."""
+        segs = getattr(self, "_sys_segments", None)
+        if not segs:
+            return
+        st = load_state()
+        n = len(st.cameras)
+        ai_text, _ = self._edge_status_pill()
+        with contextlib.suppress(Exception):
+            segs["store"].configure(text=f"Дэлгүүр: {st.store_name or '—'}")
+            segs["camera"].configure(text=f"Камер: {n}")
+            segs["ai"].configure(text=f"AI: {ai_text}")
 
     # === Sidebar navigation + pages ===
 
@@ -569,17 +635,34 @@ class AgentApp(ctk.CTk):
             btn.pack(fill="x", padx=10, pady=(10 if key == "cameras" else 2, 2))
             if kind == "page":
                 self._nav_buttons[key] = btn
-        # Edge-AI status pinned to the bottom so "is the AI running" is always visible.
-        self._edge_status_label = ctk.CTkLabel(
-            side,
-            text=self._edge_status_text(),
-            anchor="w",
-            justify="left",
-            font=ctk.CTkFont(size=11),
-            text_color=UI_MUTED_FG,
-            wraplength=148,
+        # Sidebar footer — a compact mini-status block (mockup: AI Engine · Stream ·
+        # Version). Pinned to the bottom so "is the AI running / are we connected"
+        # is always visible without opening «Тохиргоо».
+        footer = ctk.CTkFrame(side, fg_color="transparent")
+        footer.pack(side="bottom", fill="x", padx=10, pady=10)
+        ctk.CTkFrame(footer, height=1, fg_color=UI_BORDER, corner_radius=0).pack(
+            fill="x", pady=(0, 10)
         )
-        self._edge_status_label.pack(side="bottom", fill="x", padx=12, pady=12)
+
+        def _mini_row(label: str) -> ctk.CTkFrame:
+            r = ctk.CTkFrame(footer, fg_color="transparent")
+            r.pack(fill="x", pady=2)
+            ctk.CTkLabel(
+                r, text=label, anchor="w", font=ctk.CTkFont(size=11), text_color=UI_MUTED_FG
+            ).pack(side="left")
+            return r
+
+        ai_row = _mini_row("AI хөдөлгүүр")
+        self._mini_ai = StatusPill(ai_row, "…", "neutral", dot=True)
+        self._mini_ai.pack(side="right")
+        stream_row = _mini_row("Урсгал")
+        self._mini_stream = StatusPill(stream_row, "RTSP", "neutral", dot=False)
+        self._mini_stream.pack(side="right")
+        ver_row = _mini_row("Хувилбар")
+        ctk.CTkLabel(
+            ver_row, text=f"v{__version__}", anchor="e", font=ctk.CTkFont(size=11, weight="bold")
+        ).pack(side="right")
+        self._refresh_edge_status()
 
     def _page_cmd(self, key: str) -> Callable[[], None]:
         """A nav-button command that shows `key`'s page (binds key, no loop closure bug)."""
@@ -600,6 +683,9 @@ class AgentApp(ctk.CTk):
         self._pages[name].pack(fill="both", expand=True)
         for key, btn in self._nav_buttons.items():
             btn.configure(fg_color=BRAND_PRIMARY if key == name else "transparent")
+        # Topbar title tracks the visible page (console header).
+        if getattr(self, "_page_title", None) is not None:
+            self._page_title.configure(text=self._PAGE_TITLES.get(name, ""))
         if name == "live":
             self._ensure_live()
         elif name == "alerts":
@@ -608,10 +694,16 @@ class AgentApp(ctk.CTk):
             self._refresh_behaviors()
         elif name == "plan":
             self._refresh_plan_preview()
+        elif name == "settings":
+            self._refresh_settings()
 
     def _ensure_live(self) -> None:
-        """Build the live grid inside the «Шууд харах» page (or an empty-state
-        when no cameras are registered). Idempotent."""
+        """Build the live monitoring page: the camera grid (left) + a Live Events
+        panel (right) inside a split. Empty-state when no cameras. Idempotent.
+
+        The events panel reads the shared clip store — it does NOT touch the
+        LocalLiveView threading; LocalLiveView is just reparented into the left
+        column of the split."""
         if self._live_view is not None or self._live_empty is not None:
             return
         if not load_state().cameras:
@@ -626,20 +718,141 @@ class AgentApp(ctk.CTk):
             return
         from sentry_agent_pc.gui.local_view import LocalLiveView
 
-        self._live_view = LocalLiveView(self._pages["live"])
-        self._live_view.pack(fill="both", expand=True)
+        container = ctk.CTkFrame(self._pages["live"], fg_color="transparent")
+        container.pack(fill="both", expand=True)
+        self._live_container = container
+        self._live_view = LocalLiveView(container)
+        self._live_view.pack(side="left", fill="both", expand=True)
+        self._build_live_events(container)
         self.set_status("Шууд харах (LAN-аас шууд)…")
 
     def _teardown_live(self) -> None:
-        """Stop + remove the live grid (releases RTSP). Safe to call any time."""
+        """Stop + remove the live grid (releases RTSP) and the events panel. Safe
+        to call any time."""
         if self._live_view is not None:
             with contextlib.suppress(Exception):
-                self._live_view.stop()
+                self._live_view.stop()  # releases RTSP + destroys its frame
             self._live_view = None
+        if getattr(self, "_live_container", None) is not None:
+            with contextlib.suppress(Exception):
+                self._live_container.destroy()
+            self._live_container = None
+        self._live_events_list = None
+        self._live_events_detail = None
         if self._live_empty is not None:
             with contextlib.suppress(Exception):
                 self._live_empty.destroy()
             self._live_empty = None
+
+    def _build_live_events(self, parent: ctk.CTkBaseClass) -> None:
+        """Right-hand «Live Events» panel: a compact scrollable clip queue (top) +
+        an inline detail card (bottom). Mirrors the cloud /live console."""
+        panel = Panel(parent, "Live Events")
+        panel.configure(width=340)
+        panel.pack(side="left", fill="y", padx=(12, 0))
+        panel.pack_propagate(False)
+        self._live_events_count = StatusPill(panel.head, "0", "neutral", dot=False)
+        self._live_events_count.pack(side="right")
+        # Top: scrollable list of recent clips.
+        self._live_events_list = ctk.CTkScrollableFrame(panel.body, fg_color="transparent")
+        self._live_events_list.pack(fill="both", expand=True)
+        # Bottom: inline detail card for the selected clip.
+        ctk.CTkFrame(panel.body, height=1, fg_color=UI_LINE_SOFT, corner_radius=0).pack(
+            fill="x", pady=8
+        )
+        self._live_events_detail = ctk.CTkFrame(panel.body, fg_color="transparent", height=150)
+        self._live_events_detail.pack(fill="x")
+        self._live_events_detail.pack_propagate(False)
+        self._refresh_live_events()
+
+    def _refresh_live_events(self) -> None:
+        holder = getattr(self, "_live_events_list", None)
+        if holder is None:
+            return
+        for w in holder.winfo_children():
+            w.destroy()
+        try:
+            clips = self._clip_store().records()
+        except Exception:  # noqa: BLE001 — a corrupt index must not break the page
+            clips = []
+        with contextlib.suppress(Exception):
+            self._live_events_count.set(str(len(clips)), "warn" if clips else "neutral")
+        if not clips:
+            ctk.CTkLabel(
+                holder, text="Одоогоор event алга.\nAI сэжигтэй үйлдэл илрүүлбэл энд гарна.",
+                text_color=UI_MUTED_FG, justify="center", font=ctk.CTkFont(size=11),
+            ).pack(pady=30)
+            self._render_live_event_detail(None)
+            return
+        recent = sorted(clips, key=lambda r: r.created_at, reverse=True)[:40]
+        for clip in recent:
+            self._render_live_event_row(clip)
+        self._render_live_event_detail(recent[0])
+
+    def _render_live_event_row(self, clip: ClipRecord) -> None:
+        import datetime
+
+        row = ctk.CTkFrame(self._live_events_list, fg_color=_CLIP_ROW_BG, corner_radius=8)
+        row.pack(fill="x", pady=2)
+        when = datetime.datetime.fromtimestamp(clip.started_at).strftime("%H:%M:%S")
+        ctk.CTkLabel(
+            row, text=when, width=64, anchor="w", font=ctk.CTkFont(size=11),
+            text_color=UI_MUTED_FG,
+        ).pack(side="left", padx=(8, 4), pady=7)
+        StatusPill(row, f"{clip.risk_pct:.0f}%", self._risk_variant(clip.risk_pct), dot=False).pack(
+            side="left", padx=4
+        )
+        labels = [_EDGE_BEHAVIOR_LABELS.get(b, b) for b in clip.behaviors]
+        ctk.CTkLabel(
+            row, text=(" · ".join(labels) or "—"), anchor="w", justify="left",
+            font=ctk.CTkFont(size=11), text_color=UI_FG,
+        ).pack(side="left", fill="x", expand=True, padx=4)
+        _bind_row_click(row, lambda: self._render_live_event_detail(clip))
+
+    def _render_live_event_detail(self, clip: ClipRecord | None) -> None:
+        holder = getattr(self, "_live_events_detail", None)
+        if holder is None:
+            return
+        for w in holder.winfo_children():
+            w.destroy()
+        if clip is None:
+            ctk.CTkLabel(
+                holder, text="Event сонгоно уу.", text_color=UI_MUTED_FG,
+                font=ctk.CTkFont(size=11),
+            ).pack(expand=True)
+            return
+        import datetime
+
+        ctk.CTkLabel(
+            holder, text=clip.camera_id, anchor="w", font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(anchor="w")
+        top = ctk.CTkFrame(holder, fg_color="transparent")
+        top.pack(fill="x", pady=(3, 2))
+        StatusPill(top, f"Эрсдэл {clip.risk_pct:.0f}%", self._risk_variant(clip.risk_pct), dot=False).pack(
+            side="left"
+        )
+        ctk.CTkLabel(
+            top, text=datetime.datetime.fromtimestamp(clip.started_at).strftime("%H:%M:%S")
+            + f" · {clip.duration:.0f}с",
+            text_color=UI_MUTED_FG, font=ctk.CTkFont(size=11),
+        ).pack(side="left", padx=8)
+        labels = [_EDGE_BEHAVIOR_LABELS.get(b, b) for b in clip.behaviors]
+        ctk.CTkLabel(
+            holder, text=(" · ".join(labels) or "—"), anchor="w", justify="left",
+            font=ctk.CTkFont(size=11), text_color=UI_MUTED_FG, wraplength=300,
+        ).pack(anchor="w", pady=(2, 6))
+        btns = ctk.CTkFrame(holder, fg_color="transparent")
+        btns.pack(fill="x")
+        ctk.CTkButton(
+            btns, text="▶ Видео", height=30,
+            fg_color=BRAND_PRIMARY, hover_color=BRAND_PRIMARY_HOVER,
+            command=lambda p=clip.path: self._open_clip(p),
+        ).pack(side="left", fill="x", expand=True, padx=(0, 4))
+        ctk.CTkButton(
+            btns, text="⛶ Дэлгэрэнгүй", height=30,
+            fg_color="transparent", border_width=1, border_color=UI_BORDER,
+            command=lambda c=clip: self._open_clip_detail(c),
+        ).pack(side="left", fill="x", expand=True, padx=(4, 0))
 
     def _edge_status_text(self) -> str:
         """Human-readable edge-AI readiness for the sidebar / settings."""
@@ -670,59 +883,66 @@ class AgentApp(ctk.CTk):
         return ClipStore(DEFAULT_CONFIG_DIR / "edge" / "clips.json")
 
     def _build_alerts_page(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
+        """Incident queue (left) + review panel (right). A row selects a clip and
+        shows its full per-fire timeline inline; «▶ Видео» opens the recording."""
         page = ctk.CTkFrame(parent, fg_color="transparent")
-        bar = ctk.CTkFrame(page, fg_color="transparent")
-        bar.pack(fill="x", padx=16, pady=(14, 4))
-        ctk.CTkLabel(bar, text="Сэжигтэй бичлэгүүд", font=ctk.CTkFont(size=16, weight="bold")).pack(
-            side="left"
+        toolbar = self._page_head(
+            page, "Сэжигтэй event",
+            "AI сэжигтэй үйлдэл илрүүлбэл [−3с…+3с] бичлэг энд орж ирнэ. Мөр сонгож шалгана.",
         )
         ctk.CTkButton(
-            bar,
-            text="↻ Сэргээх",
-            width=100,
-            height=32,
-            fg_color="transparent",
-            border_width=1,
+            toolbar, text="↻ Сэргээх", width=100, height=32,
+            fg_color="transparent", border_width=1, border_color=UI_BORDER,
             command=self._refresh_alerts,
         ).pack(side="right")
-        ctk.CTkLabel(
-            page,
-            text="Мөр дээр дарж тухайн тохиолдлын дэлгэрэнгүй (зан үйл·оноо·цаг) хараарай.",
-            anchor="w",
-            font=ctk.CTkFont(size=11),
-            text_color=UI_MUTED_FG,
-        ).pack(anchor="w", padx=16, pady=(0, 6))
+
+        split = ctk.CTkFrame(page, fg_color="transparent")
+        split.pack(fill="both", expand=True, padx=18, pady=(0, 12))
+
+        queue = Panel(split, "Incident queue", pad=0)
+        queue.pack(side="left", fill="both", expand=True, padx=(0, 12))
+        self._alerts_count = StatusPill(queue.head, "0", "neutral", dot=False)
+        self._alerts_count.pack(side="right")
         # Column header — shares the row cell widths so columns line up.
-        hdr = ctk.CTkFrame(page, fg_color=UI_MUTED, corner_radius=6)
-        hdr.pack(fill="x", padx=16, pady=(0, 2))
+        hdr = ctk.CTkFrame(queue.body, fg_color="transparent")
+        hdr.pack(fill="x", padx=12, pady=(6, 0))
         for text, w, anchor in (
             ("Камер", _CLIP_COL_CAM, "w"),
             ("Огноо · цаг", _CLIP_COL_WHEN, "w"),
-            ("Эрсдэл", _CLIP_COL_RISK, "e"),
+            ("Эрсдэл", _CLIP_COL_RISK, "w"),
             ("Зан үйл", 0, "w"),
             ("Хугацаа", _CLIP_COL_DUR, "e"),
-            ("ID", _CLIP_COL_ID, "w"),
+            ("Төлөв", _CLIP_COL_STATUS, "w"),
         ):
-            lbl = ctk.CTkLabel(
-                hdr,
-                text=text,
-                anchor=anchor,
-                font=ctk.CTkFont(size=11, weight="bold"),
-                text_color=UI_MUTED_FG,
+            ctk.CTkLabel(
+                hdr, text=text, anchor=anchor,
+                font=ctk.CTkFont(size=11, weight="bold"), text_color=UI_MUTED_FG,
                 **({"width": w} if w else {}),
-            )
-            lbl.pack(side="left", fill=("x" if not w else None), expand=(not w), padx=8, pady=5)
-        self._alerts_frame = ctk.CTkScrollableFrame(page, fg_color="transparent")
-        self._alerts_frame.pack(fill="both", expand=True, padx=16, pady=(0, 10))
+            ).pack(side="left", fill=("x" if not w else None), expand=(not w), padx=8)
+        ctk.CTkFrame(queue.body, height=1, fg_color=UI_LINE_SOFT, corner_radius=0).pack(
+            fill="x", padx=12, pady=(6, 0)
+        )
+        self._alerts_frame = ctk.CTkScrollableFrame(queue.body, fg_color="transparent")
+        self._alerts_frame.pack(fill="both", expand=True, padx=8, pady=(2, 8))
+
+        review = Panel(split, "Review")
+        review.configure(width=360)
+        review.pack(side="left", fill="y")
+        review.pack_propagate(False)
+        self._alerts_review = review.body
+        self._render_clip_review(None)
         return page
 
     def _refresh_alerts(self) -> None:
         for w in self._alerts_frame.winfo_children():
             w.destroy()
+        self._clip_rows = {}
         try:
             clips = self._clip_store().records()
         except Exception:  # noqa: BLE001 — a corrupt index must not break the page
             clips = []
+        with contextlib.suppress(Exception):
+            self._alerts_count.set(str(len(clips)), "warn" if clips else "neutral")
         if not clips:
             ctk.CTkLabel(
                 self._alerts_frame,
@@ -730,87 +950,265 @@ class AgentApp(ctk.CTk):
                 text_color=UI_MUTED_FG,
                 justify="center",
             ).pack(pady=50)
+            self._render_clip_review(None)
             return
         for clip in sorted(clips, key=lambda r: r.created_at, reverse=True):
             self._render_clip_row(clip)
 
+    @staticmethod
+    def _risk_variant(risk_pct: float) -> str:
+        """Low = green, Medium = amber, High = red (mockup risk bands)."""
+        return "danger" if risk_pct >= 70 else ("warn" if risk_pct >= 40 else "good")
+
+    @staticmethod
+    def _clip_status_meta(status: str) -> tuple[str, str]:
+        """(label, pill variant) for a clip's operator-triage status."""
+        return {
+            "confirmed": ("Батлагдсан", "danger"),
+            "dismissed": ("Няцаагдсан", "neutral"),
+            "escalated": ("☁ Дээшлүүлсэн", "danger"),
+        }.get(status, ("Нээлттэй", "blue"))
+
+    def _set_clip_status(self, clip: ClipRecord, status: str) -> None:
+        """Operator triage: persist a clip's status locally, then repaint the
+        queue + review panel so the change is immediate."""
+        try:
+            self._clip_store().set_status(clip.clip_id, status)
+        except Exception as e:  # noqa: BLE001 — a triage write must not crash the page
+            self.set_status(f"⚠ Төлөв хадгалж чадсангүй: {str(e)[:60]}")
+            return
+        clip.status = status  # reflect in the in-memory record we still hold
+        label, _ = self._clip_status_meta(status)
+        self.set_status(f"Тохиолдол «{label}» болголоо")
+        self._refresh_alerts()
+        self._select_clip(clip)
+
+    def _escalate_clip(self, clip: ClipRecord) -> None:
+        """Operator escalation: push this local clip up to the cloud so it becomes
+        an org-wide alert (server re-scores + runs the VLM). Useful when a clip
+        stayed local — its auto-upload failed, or the camera is edge-only. Reuses
+        the existing `/agent/edge/clips` upload (no backend change). Runs on a
+        background thread (network + retry backoff); on success marks the clip
+        «escalated»."""
+        from pathlib import Path
+
+        cam = next((c for c in load_state().cameras if c.name == clip.camera_id), None)
+        if cam is None or not cam.uuid:
+            self.set_status("⚠ Энэ камер бүртгэлгүй тул cloud руу дээшлүүлэх боломжгүй")
+            return
+        if not Path(clip.path).exists():
+            self.set_status("⚠ Бичлэгийн файл олдсонгүй — дээшлүүлэх боломжгүй")
+            return
+        camera_uuid = cam.uuid
+
+        def work() -> dict[str, Any]:
+            from sentry_agent_pc.edge.uploader import upload_clip
+
+            ok = upload_clip(BackendClient(), clip, camera_uuid)
+            return {"ok": ok}
+
+        def done(result: Any) -> None:
+            if isinstance(result, dict) and result.get("ok"):
+                self._set_clip_status(clip, "escalated")
+                self.set_status("☁ Тохиолдол cloud руу дээшлүүлэгдэж, alert үүслээ")
+            else:
+                self.set_status("⚠ Cloud руу илгээж чадсангүй — сүлжээ/холболтоо шалгаад дахина уу")
+
+        self._run_bg(work, done, status="☁ Cloud руу дээшлүүлж байна…")
+
     def _render_clip_row(self, clip: ClipRecord) -> None:
-        """One clip as a clickable table row — whole row opens the detail."""
+        """One clip as a clickable incident-queue row — click fills the review panel."""
         import datetime
 
-        row = ctk.CTkFrame(self._alerts_frame, fg_color=_CLIP_ROW_BG, corner_radius=8)
+        selected = self._selected_clip is not None and clip.clip_id == self._selected_clip.clip_id
+        base = UI_SURFACE_2 if selected else _CLIP_ROW_BG
+        row = ctk.CTkFrame(self._alerts_frame, fg_color=base, corner_radius=8)
         row.pack(fill="x", pady=2)
+        self._clip_rows[clip.clip_id] = row
         when = datetime.datetime.fromtimestamp(clip.started_at).strftime("%Y-%m-%d %H:%M:%S")
-        color = (
-            UI_DANGER
-            if clip.risk_pct >= 70
-            else (BRAND_PRIMARY if clip.risk_pct >= 40 else UI_MUTED_FG)
-        )
         labels = [_EDGE_BEHAVIOR_LABELS.get(b, b) for b in clip.behaviors]
         beh = " · ".join(labels) or "—"
 
         ctk.CTkLabel(
-            row,
-            text=clip.camera_id,
-            width=_CLIP_COL_CAM,
-            anchor="w",
+            row, text=clip.camera_id, width=_CLIP_COL_CAM, anchor="w",
             font=ctk.CTkFont(size=12, weight="bold"),
-        ).pack(side="left", padx=8, pady=9)
+        ).pack(side="left", padx=8, pady=8)
         ctk.CTkLabel(
-            row,
-            text=when,
-            width=_CLIP_COL_WHEN,
-            anchor="w",
-            font=ctk.CTkFont(size=11),
-            text_color=UI_MUTED_FG,
+            row, text=when, width=_CLIP_COL_WHEN, anchor="w",
+            font=ctk.CTkFont(size=11), text_color=UI_MUTED_FG,
         ).pack(side="left", padx=8)
+        risk_pill = StatusPill(
+            row, f"{clip.risk_pct:.0f}%", self._risk_variant(clip.risk_pct), dot=False
+        )
+        risk_pill.pack(side="left", padx=8)
         ctk.CTkLabel(
-            row,
-            text=f"{clip.risk_pct:.0f}%",
-            width=_CLIP_COL_RISK,
-            anchor="e",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=color,
-        ).pack(side="left", padx=8)
-        ctk.CTkLabel(
-            row,
-            text=beh,
-            anchor="w",
-            justify="left",
-            font=ctk.CTkFont(size=11),
-            text_color=UI_FG,
+            row, text=beh, anchor="w", justify="left",
+            font=ctk.CTkFont(size=11), text_color=UI_FG,
         ).pack(side="left", fill="x", expand=True, padx=8)
         ctk.CTkLabel(
-            row,
-            text=f"{clip.duration:.0f}с",
-            width=_CLIP_COL_DUR,
-            anchor="e",
-            font=ctk.CTkFont(size=11),
-            text_color=UI_MUTED_FG,
+            row, text=f"{clip.duration:.0f}с", width=_CLIP_COL_DUR, anchor="e",
+            font=ctk.CTkFont(size=11), text_color=UI_MUTED_FG,
         ).pack(side="left", padx=8)
-        # Edge clip id — the SAME string the frontend alert shows as its "ID", so
-        # the operator can match this row to its cloud «Сэжигтэй үйлдэл» alert.
-        ctk.CTkLabel(
-            row,
-            text=clip.clip_id,
-            width=_CLIP_COL_ID,
-            anchor="w",
-            font=ctk.CTkFont(size=10, family="Consolas"),
-            text_color=UI_MUTED_FG,
-        ).pack(side="left", padx=8)
-        ctk.CTkLabel(
-            row,
-            text="›",
-            width=18,
-            anchor="e",
-            font=ctk.CTkFont(size=16),
-            text_color=UI_MUTED_FG,
-        ).pack(side="left", padx=(0, 8))
+        st_label, st_variant = self._clip_status_meta(clip.status)
+        # Fixed-width holder (with an explicit height so the row stays compact —
+        # a propagate-off frame with no height would inflate the row).
+        st_holder = ctk.CTkFrame(row, fg_color="transparent", width=_CLIP_COL_STATUS, height=26)
+        st_holder.pack(side="left", padx=8, pady=6)
+        st_holder.pack_propagate(False)
+        StatusPill(st_holder, st_label, st_variant, dot=False).pack(side="left")
 
-        _bind_row_click(row, lambda: self._open_clip_detail(clip))
-        # Hover highlight for the whole row.
-        row.bind("<Enter>", lambda _e: row.configure(fg_color=_CLIP_ROW_HOVER))
-        row.bind("<Leave>", lambda _e: row.configure(fg_color=_CLIP_ROW_BG))
+        _bind_row_click(row, lambda: self._select_clip(clip))
+        for child in row.winfo_children():
+            with contextlib.suppress(Exception):
+                child.bind("<Button-1>", lambda _e: self._select_clip(clip))
+
+    def _select_clip(self, clip: ClipRecord) -> None:
+        """Highlight the incident row + populate the review panel."""
+        self._selected_clip = clip
+        for cid, row in self._clip_rows.items():
+            with contextlib.suppress(Exception):
+                row.configure(fg_color=UI_SURFACE_2 if cid == clip.clip_id else _CLIP_ROW_BG)
+        self._render_clip_review(clip)
+
+    def _render_clip_review(self, clip: ClipRecord | None) -> None:
+        """Fill the right-side review panel: header, per-fire timeline table, note
+        and the «▶ Видео» / «⛶ Дэлгэрэнгүй» actions (or an empty-state hint)."""
+        import datetime
+
+        holder = getattr(self, "_alerts_review", None)
+        if holder is None:
+            return
+        for w in holder.winfo_children():
+            w.destroy()
+        if clip is None:
+            ctk.CTkLabel(
+                holder, text="Тохиолдол сонгоно уу.\n\nЗүүн талын жагсаалтаас мөр\nдээр дарж шалгана.",
+                text_color=UI_MUTED_FG, justify="center", font=ctk.CTkFont(size=12),
+            ).pack(expand=True, pady=40)
+            return
+        started = datetime.datetime.fromtimestamp(clip.started_at)
+        ctk.CTkLabel(
+            holder, text=clip.camera_id, anchor="w", font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w")
+        head_row = ctk.CTkFrame(holder, fg_color="transparent")
+        head_row.pack(fill="x", pady=(4, 2))
+        StatusPill(
+            head_row, f"Эрсдэл {clip.risk_pct:.0f}%", self._risk_variant(clip.risk_pct), dot=False
+        ).pack(side="left")
+        ctk.CTkLabel(
+            head_row, text=f"{clip.duration:.0f}с", text_color=UI_MUTED_FG,
+            font=ctk.CTkFont(size=11),
+        ).pack(side="left", padx=8)
+        st_label, st_variant = self._clip_status_meta(clip.status)
+        StatusPill(head_row, st_label, st_variant, dot=True).pack(side="right")
+        ctk.CTkLabel(
+            holder, text=started.strftime("%Y-%m-%d %H:%M:%S"), anchor="w",
+            font=ctk.CTkFont(size=11), text_color=UI_MUTED_FG,
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            holder, text=f"ID: {clip.clip_id}", anchor="w",
+            font=ctk.CTkFont(size=10, family="Consolas"), text_color=UI_MUTED_FG,
+        ).pack(anchor="w", pady=(2, 8))
+
+        from sentry_agent_pc.gui.datatable import DataTable
+
+        rows, note = self._clip_timeline_rows(clip)
+        table = DataTable(
+            holder,
+            columns=(
+                ("time", "Цаг", 92, "w"),
+                ("beh", "Зан үйл", 0, "w"),
+                ("score", "Оноо", 56, "e"),
+            ),
+            height=9,
+        )
+        table.pack(fill="both", expand=True, pady=(0, 6))
+        # Review panel is narrow — collapse the (date, time, beh, score, risk)
+        # timeline to (time, beh, score) here; the full grid is in «⛶ Дэлгэрэнгүй».
+        table.set_rows([(t, b, s) for (_d, t, b, s, _r) in rows])
+        ctk.CTkLabel(
+            holder, text=note, anchor="w", justify="left",
+            font=ctk.CTkFont(size=10), text_color=UI_MUTED_FG, wraplength=320,
+        ).pack(anchor="w", pady=(0, 8))
+        # Escalate — push the clip up to the cloud (org-wide alert + VLM). Full
+        # width + danger accent since it's the strongest operator action.
+        ctk.CTkButton(
+            holder, text="⤴ Cloud руу дээшлүүлэх", height=32,
+            fg_color=UI_DANGER, hover_color="#DC2626", text_color="#0A0A0A",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=lambda c=clip: self._escalate_clip(c),
+        ).pack(fill="x", pady=(0, 6))
+        # Operator triage — Confirm (real incident) / Dismiss (false alarm). Writes
+        # the clip's local status; the queue + this panel repaint immediately.
+        ops = ctk.CTkFrame(holder, fg_color="transparent")
+        ops.pack(fill="x", pady=(0, 6))
+        ctk.CTkButton(
+            ops, text="✓ Батлах", height=32,
+            fg_color="transparent", border_width=1, border_color=UI_DANGER, text_color=UI_DANGER,
+            hover_color=UI_MUTED_HOVER,
+            command=lambda c=clip: self._set_clip_status(c, "confirmed"),
+        ).pack(side="left", fill="x", expand=True, padx=(0, 4))
+        ctk.CTkButton(
+            ops, text="✕ Няцаах", height=32,
+            fg_color="transparent", border_width=1, border_color=UI_BORDER,
+            hover_color=UI_MUTED_HOVER,
+            command=lambda c=clip: self._set_clip_status(c, "dismissed"),
+        ).pack(side="left", fill="x", expand=True, padx=(4, 0))
+        btns = ctk.CTkFrame(holder, fg_color="transparent")
+        btns.pack(fill="x")
+        ctk.CTkButton(
+            btns, text="▶ Видео", height=32,
+            fg_color=BRAND_PRIMARY, hover_color=BRAND_PRIMARY_HOVER,
+            command=lambda p=clip.path: self._open_clip(p),
+        ).pack(side="left", fill="x", expand=True, padx=(0, 4))
+        ctk.CTkButton(
+            btns, text="⛶ Дэлгэрэнгүй", height=32,
+            fg_color="transparent", border_width=1, border_color=UI_BORDER,
+            command=lambda c=clip: self._open_clip_detail(c),
+        ).pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+    def _clip_timeline_rows(
+        self, clip: ClipRecord
+    ) -> tuple[list[tuple[str, str, str, str, str]], str]:
+        """Build the per-fire timeline rows (date, time, beh, score, risk) + a
+        summary note. Shared by the inline review panel and the detail modal."""
+        import datetime
+
+        rows: list[tuple[str, str, str, str, str]] = []
+        if clip.events:
+            total = 0.0
+            for ev in clip.events:
+                key = str(ev.get("key", ""))
+                label = _EDGE_BEHAVIOR_LABELS.get(key, key)
+                amount = float(ev.get("amount", 0) or 0)
+                risk = float(ev.get("risk", 0) or 0)
+                ts = float(ev.get("ts", 0) or 0)
+                total += amount
+                if ts > 0:
+                    dt = datetime.datetime.fromtimestamp(ts)
+                    date_s = dt.strftime("%Y-%m-%d")
+                    time_s = dt.strftime("%H:%M:%S") + f".{int((ts % 1) * 1000):03d}"
+                else:
+                    date_s, time_s = "—", "—"
+                rows.append((date_s, time_s, label, f"+{amount:.0f}", f"{risk:.0f}%"))
+            note = (
+                f"Нийт {len(rows)} дохио · {clip.duration:.0f}с дотор · цугларсан +{total:.0f} оноо. "
+                "Толгойн багана дээр дарж эрэмбэлнэ."
+            )
+        elif clip.behavior_detail:
+            total = 0.0
+            for d in clip.behavior_detail:
+                label = _EDGE_BEHAVIOR_LABELS.get(str(d.get("key", "")), str(d.get("key", "")))
+                score = float(d.get("score", 0) or 0)
+                total += score
+                rows.append(("—", "—", label, f"+{score:.0f}", "—"))
+            note = (
+                "Энэ бичлэг хуучин хувилбараар бичигдсэн тул хугацааны задаргаа алга "
+                f"— зөвхөн нийт +{total:.0f} оноо."
+            )
+        else:
+            note = "Энэ бичлэгт зан үйлийн задаргаа бүртгэгдээгүй."
+        return rows, note
 
     def _open_clip_detail(self, clip: ClipRecord) -> None:
         """Modal: the suspicious episode's full per-fire timeline — one row per
@@ -876,43 +1274,7 @@ class AgentApp(ctk.CTk):
         )
         table.pack(fill="both", expand=True, padx=16, pady=(8, 4))
 
-        rows: list[tuple[str, str, str, str, str]] = []
-        if clip.events:
-            # One row per banking, with the exact wall-clock date + time (ms).
-            total = 0.0
-            for ev in clip.events:
-                key = str(ev.get("key", ""))
-                label = _EDGE_BEHAVIOR_LABELS.get(key, key)
-                amount = float(ev.get("amount", 0) or 0)
-                risk = float(ev.get("risk", 0) or 0)
-                ts = float(ev.get("ts", 0) or 0)
-                total += amount
-                if ts > 0:
-                    dt = datetime.datetime.fromtimestamp(ts)
-                    date_s = dt.strftime("%Y-%m-%d")
-                    time_s = dt.strftime("%H:%M:%S") + f".{int((ts % 1) * 1000):03d}"
-                else:
-                    date_s, time_s = "—", "—"
-                rows.append((date_s, time_s, label, f"+{amount:.0f}", f"{risk:.0f}%"))
-            note = (
-                f"Нийт {len(rows)} дохио · {clip.duration:.0f}с дотор · цугларсан +{total:.0f} оноо. "
-                "Толгойн багана дээр дарж эрэмбэлнэ."
-            )
-        elif clip.behavior_detail:
-            # Older clip (recorded before the per-fire log): no per-event time —
-            # show the aggregated total per behaviour (Огноо/Цаг хоосон).
-            total = 0.0
-            for d in clip.behavior_detail:
-                label = _EDGE_BEHAVIOR_LABELS.get(str(d.get("key", "")), str(d.get("key", "")))
-                score = float(d.get("score", 0) or 0)
-                total += score
-                rows.append(("—", "—", label, f"+{score:.0f}", "—"))
-            note = (
-                "Энэ бичлэг хуучин хувилбараар бичигдсэн тул хугацааны (огноо/цаг) задаргаа алга "
-                f"— зөвхөн нийт +{total:.0f} оноо. Шинэ бичлэгүүдэд дохио бүр огноо/цагтайгаар гарна."
-            )
-        else:
-            note = "Энэ бичлэгт зан үйлийн задаргаа бүртгэгдээгүй."
+        rows, note = self._clip_timeline_rows(clip)
         table.set_rows(rows)
 
         ctk.CTkLabel(
@@ -949,73 +1311,60 @@ class AgentApp(ctk.CTk):
         (оноо · давтамж · үргэлжлэх), then a second table for the remaining
         single-value settings (episode FSM, detection, geometry, recording)."""
         page = ctk.CTkFrame(parent, fg_color="transparent")
-        bar = ctk.CTkFrame(page, fg_color="transparent")
-        bar.pack(fill="x", padx=16, pady=(14, 4))
-        ctk.CTkLabel(
-            bar, text="Зан үйл ба хөдөлгүүрийн тохиргоо", font=ctk.CTkFont(size=16, weight="bold")
-        ).pack(side="left")
+        toolbar = self._page_head(
+            page, "Зан үйл",
+            "AI хөдөлгүүр (YOLO + зан үйл) ЯГ доорх тохиргоогоор ажиллана.",
+        )
+        # Read-only truth: these values are managed globally from superadmin's «Edge
+        # тохиргоо» — the desktop only DISPLAYS them. A pill makes that explicit so
+        # nobody hunts for a Save button that shouldn't exist.
+        StatusPill(toolbar, "🔒 Зөвхөн харах", "neutral", dot=False).pack(side="right", padx=(8, 0))
         ctk.CTkButton(
-            bar,
-            text="↻ Сэргээх",
-            width=100,
-            height=32,
-            fg_color="transparent",
-            border_width=1,
+            toolbar, text="↻ Сэргээх", width=100, height=32,
+            fg_color="transparent", border_width=1, border_color=UI_BORDER,
             command=self._refresh_behaviors,
         ).pack(side="right")
-        ctk.CTkLabel(
-            page,
-            text=(
-                "Энэ компьютер дээрх AI хөдөлгүүр (YOLO + зан үйл) ЯГ доорх тохиргоогоор "
-                "ажиллана. Зан үйл бүр оноо, илрэх давтамж, үргэлжлэх хугацаатай. Доорх "
-                "нь эрсдэл → сэжигтэй бичлэг (эпизод), илрүүлэлт, геометр, бичлэгийн "
-                "тохиргоо. Эдгээрийг superadmin-аас тааруулна (бүх дэлгүүрт нэг ижил) — "
-                "энд зөвхөн харна."
-            ),
-            anchor="w",
-            justify="left",
-            font=ctk.CTkFont(size=11),
-            text_color=UI_MUTED_FG,
-            wraplength=720,
-        ).pack(anchor="w", padx=16, pady=(0, 8))
+
+        body = ctk.CTkScrollableFrame(page, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=18, pady=(0, 12))
         self._behaviors_version = ctk.CTkLabel(
-            page, text="", anchor="w", font=ctk.CTkFont(size=10), text_color=UI_MUTED_FG
+            body, text="", anchor="w", font=ctk.CTkFont(size=10), text_color=UI_MUTED_FG
         )
-        self._behaviors_version.pack(anchor="w", padx=16, pady=(0, 6))
+        self._behaviors_version.pack(anchor="w", pady=(0, 8))
 
         from sentry_agent_pc.gui.datatable import DataTable
 
-        # Table 1 — one row per behaviour, score + timing as COLUMNS.
-        ctk.CTkLabel(
-            page, text="Зан үйлүүд", anchor="w", font=ctk.CTkFont(size=12, weight="bold")
-        ).pack(anchor="w", padx=16, pady=(2, 2))
+        # Panel 1 — one row per behaviour, score + timing + meaning as COLUMNS.
+        p1 = Panel(body, "Зан үйлүүд")
+        p1.pack(fill="x", pady=(0, 12))
         self._behaviors_table = DataTable(
-            page,
+            p1.body,
             columns=(
-                ("beh", "Зан үйл", 0, "w"),
-                ("score", "Оноо", 90, "e"),
-                ("interval", "Давтамж (сек)", 130, "e"),
-                ("mindur", "Үргэлжлэх (сек)", 140, "e"),
+                ("beh", "Зан үйл", 170, "w"),
+                ("desc", "Тайлбар", 0, "w"),
+                ("score", "Оноо", 70, "e"),
+                ("interval", "Давтамж (с)", 110, "e"),
+                ("mindur", "Үргэлжлэх (с)", 120, "e"),
             ),
             height=len(_EDGE_BEHAVIORS) + 1,
         )
-        self._behaviors_table.pack(fill="x", padx=16, pady=(0, 10))
+        self._behaviors_table.pack(fill="x")
 
-        # Table 2 — the remaining single-value settings.
-        ctk.CTkLabel(
-            page, text="Бусад тохиргоо", anchor="w", font=ctk.CTkFont(size=12, weight="bold")
-        ).pack(anchor="w", padx=16, pady=(2, 2))
+        # Panel 2 — the remaining single-value settings (episode FSM / detection /
+        # geometry / recording).
+        p2 = Panel(body, "Бусад тохиргоо")
+        p2.pack(fill="both", expand=True)
         self._other_table = DataTable(
-            page,
+            p2.body,
             columns=(
                 ("group", "Бүлэг", 170, "w"),
                 ("label", "Тохиргоо", 0, "w"),
                 ("value", "Утга", 100, "e"),
                 ("unit", "Нэгж", 90, "w"),
             ),
-            height=14,
+            height=15,
         )
-        self._other_table.pack(fill="both", expand=True, padx=16, pady=(0, 10))
+        self._other_table.pack(fill="both", expand=True)
         self.after(0, self._refresh_behaviors)
         return page
 
@@ -1035,9 +1384,9 @@ class AgentApp(ctk.CTk):
         return merged
 
     @staticmethod
-    def _behavior_table_rows(cfg: dict[str, Any]) -> list[tuple[str, str, str, str]]:
-        """One row per behaviour: label · score (+N) · interval · min-duration. A
-        zero interval/duration shows «—» (no gate / one-shot)."""
+    def _behavior_table_rows(cfg: dict[str, Any]) -> list[tuple[str, str, str, str, str]]:
+        """One row per behaviour: label · meaning · score (+N) · interval ·
+        min-duration. A zero interval/duration shows «—» (no gate / one-shot)."""
 
         def num(raw: Any, *, dash_zero: bool = False) -> str:
             if raw is None:
@@ -1050,12 +1399,13 @@ class AgentApp(ctk.CTk):
                 return "—"
             return f"{f:g}"
 
-        rows: list[tuple[str, str, str, str]] = []
+        rows: list[tuple[str, str, str, str, str]] = []
         for b in _EDGE_BEHAVIORS:
             w = cfg.get(b["weight_key"])
             rows.append(
                 (
                     b["label"],
+                    b.get("desc", ""),
                     f"+{num(w)}" if w is not None else "—",
                     num(cfg.get(b["interval_key"]), dash_zero=True),
                     num(cfg.get(b["mindur_key"]), dash_zero=True),
@@ -1124,40 +1474,102 @@ class AgentApp(ctk.CTk):
             text=f"Серверээс татсан тохиргоо (v{ver}) · superadmin-аас тааруулна."
         )
 
+    # === Shared page scaffolding ===
+
+    def _page_head(
+        self, page: ctk.CTkBaseClass, title: str, subtitle: str
+    ) -> ctk.CTkFrame:
+        """A consistent console page header: title + subtitle on the left, an
+        (empty) toolbar frame returned for the caller to pack right-aligned
+        actions into. Every page uses this so headers line up identically."""
+        head = ctk.CTkFrame(page, fg_color="transparent")
+        head.pack(fill="x", padx=18, pady=(16, 10))
+        titles = ctk.CTkFrame(head, fg_color="transparent")
+        titles.pack(side="left")
+        ctk.CTkLabel(
+            titles, text=title, anchor="w", font=ctk.CTkFont(size=18, weight="bold"),
+            text_color=UI_FG,
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            titles, text=subtitle, anchor="w", font=ctk.CTkFont(size=12),
+            text_color=UI_MUTED_FG,
+        ).pack(anchor="w")
+        toolbar = ctk.CTkFrame(head, fg_color="transparent")
+        toolbar.pack(side="right")
+        return toolbar
+
     def _build_settings_page(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
         page = ctk.CTkFrame(parent, fg_color="transparent")
-        ctk.CTkLabel(page, text="Тохиргоо", font=ctk.CTkFont(size=16, weight="bold")).pack(
-            anchor="w", padx=16, pady=(14, 8)
-        )
-        card = ctk.CTkFrame(page, fg_color=UI_SURFACE, corner_radius=10)
-        card.pack(fill="x", padx=16, pady=4)
-
-        def _row(label: str, value: str) -> None:
-            r = ctk.CTkFrame(card, fg_color="transparent")
-            r.pack(fill="x", padx=14, pady=6)
-            ctk.CTkLabel(r, text=label, anchor="w", text_color=UI_MUTED_FG, width=140).pack(
-                side="left"
-            )
-            ctk.CTkLabel(r, text=value, anchor="w").pack(side="left")
-
-        st = load_state()
-        _row("Хувилбар", f"v{__version__}")
-        _row("Холболт", "холбогдсон" if st.is_paired else "холбогдоогүй")
-        _row("Edge AI", self._edge_status_text())
-        btns = ctk.CTkFrame(page, fg_color="transparent")
-        btns.pack(fill="x", padx=16, pady=10)
-        ctk.CTkButton(btns, text="🔗 Холболт", width=120, command=self.open_pairing).pack(
-            side="left"
+        toolbar = self._page_head(
+            page, "Тохиргоо", "Desktop console системийн тохиргоо ба холболт."
         )
         ctk.CTkButton(
-            btns,
-            text="⬆ Шинэчлэл",
-            width=120,
-            fg_color="transparent",
-            border_width=1,
+            toolbar, text="🔗 Холболт", width=110, height=32,
+            fg_color=BRAND_PRIMARY, hover_color=BRAND_PRIMARY_HOVER,
+            command=self.open_pairing,
+        ).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(
+            toolbar, text="⬆ Шинэчлэл", width=110, height=32,
+            fg_color="transparent", border_width=1, border_color=UI_BORDER,
             command=self.open_update,
-        ).pack(side="left", padx=8)
+        ).pack(side="right")
+
+        panel = Panel(page, "Системийн тохиргоо", pad=0)
+        panel.pack(fill="x", padx=18, pady=(0, 12))
+        self._settings_body = panel.body
+        # Column header for the settings grid.
+        hdr = ctk.CTkFrame(panel.body, fg_color="transparent", height=30)
+        hdr.pack(fill="x", padx=14, pady=(6, 0))
+        for text, w in (("Бүлэг", 150), ("Тохиргоо", 200), ("Утга", 0), ("Төлөв", 120)):
+            ctk.CTkLabel(
+                hdr, text=text, anchor="w", font=ctk.CTkFont(size=11, weight="bold"),
+                text_color=UI_MUTED_FG, **({"width": w} if w else {}),
+            ).pack(side="left", fill=("x" if not w else None), expand=(not w))
+        ctk.CTkFrame(panel.body, height=1, fg_color=UI_LINE_SOFT, corner_radius=0).pack(
+            fill="x", padx=14, pady=(6, 0)
+        )
+        self._settings_rows = ctk.CTkFrame(panel.body, fg_color="transparent")
+        self._settings_rows.pack(fill="x", padx=14, pady=(0, 10))
+        self._refresh_settings()
         return page
+
+    def _refresh_settings(self) -> None:
+        """(Re)paint the settings grid from current state — version, connection,
+        AI engine, stream. Called on build and when the settings page is shown."""
+        rows = getattr(self, "_settings_rows", None)
+        if rows is None:
+            return
+        for w in rows.winfo_children():
+            w.destroy()
+        st = load_state()
+        ai_text, ai_variant = self._edge_status_pill()
+        specs: tuple[tuple[str, str, str, str, str], ...] = (
+            ("AI", "Хөдөлгүүр", ai_text, ai_text, ai_variant),
+            ("Урсгал", "Протокол", "RTSP", "Идэвхтэй", "good"),
+            (
+                "Холболт", "Дэлгүүр",
+                st.store_name or "—",
+                "Холбогдсон" if st.is_paired else "Холбогдоогүй",
+                "good" if st.is_paired else "warn",
+            ),
+            ("Апп", "Хувилбар", f"v{__version__}", "Одоогийн", "blue"),
+            ("Бичлэг", "Хадгалалт", "Local (энэ PC)", "Local", "blue"),
+        )
+        for i, (group, name, value, state_text, variant) in enumerate(specs):
+            r = ctk.CTkFrame(rows, fg_color="transparent")
+            r.pack(fill="x")
+            if i:
+                ctk.CTkFrame(rows, height=1, fg_color=UI_LINE_SOFT, corner_radius=0).pack(
+                    fill="x", before=r
+                )
+            ctk.CTkLabel(r, text=group, anchor="w", width=150, text_color=UI_MUTED_FG,
+                        font=ctk.CTkFont(size=12)).pack(side="left", pady=8)
+            ctk.CTkLabel(r, text=name, anchor="w", width=200,
+                        font=ctk.CTkFont(size=12)).pack(side="left")
+            ctk.CTkLabel(r, text=value, anchor="w",
+                        font=ctk.CTkFont(size=12)).pack(side="left", fill="x", expand=True)
+            pill = StatusPill(r, state_text, variant, dot=True)
+            pill.pack(side="right")
 
     # === Camera list rendering ===
 
@@ -1166,28 +1578,77 @@ class AgentApp(ctk.CTk):
         # backend in the background — so a camera deleted on the web disappears
         # here too, and the desktop list always matches the web.
         self._render_camera_list(load_state().cameras)
+        self._update_camera_pill()
+        self._refresh_statusbar()
         self._reconcile_in_bg()
 
+    def _update_camera_pill(self) -> None:
+        """Topbar camera chip: connected/total cameras. Green only when every
+        camera has a stream configured (a bare count shouldn't imply health);
+        amber when some are still in setup, neutral when none registered."""
+        pill = getattr(self, "_pill_cameras", None)
+        if pill is None:
+            return
+        cams = load_state().cameras
+        n = len(cams)
+        online = sum(1 for c in cams if c.rtsp_url)
+        with contextlib.suppress(Exception):
+            if not n:
+                pill.set("0 камер", "neutral")
+            elif online == n:
+                pill.set(f"{n} камер", "good")
+            else:
+                pill.set(f"{online}/{n} камер", "warn")
+
     def _render_camera_list(self, cameras: list[CameraRecord]) -> None:
+        # Keep the full list so the search box can filter without a re-fetch, then
+        # paint through the active filter. A backend reconcile drops a stale
+        # selection that no longer exists.
+        self._all_cameras = list(cameras)
+        if self._selected_cam is not None and not any(
+            c.matches(self._selected_cam) for c in cameras
+        ):
+            self._selected_cam = None
+            self._render_camera_detail(None)
+        self._paint_camera_rows()
+        if cameras:
+            self._refresh_streaming()
+
+    def _apply_camera_filter(self) -> None:
+        """Re-paint rows through the search box (name / IP substring)."""
+        self._paint_camera_rows()
+
+    def _paint_camera_rows(self) -> None:
         for w in self.list_frame.winfo_children():
             w.destroy()
         self._push_labels = {}  # rows (and their labels) are being recreated
+        self._cam_rows = {}
+        cameras = getattr(self, "_all_cameras", [])
+        query = ""
+        entry = getattr(self, "_cam_search", None)
+        if entry is not None:
+            query = entry.get().strip().lower()
+        if query:
+            cameras = [
+                c for c in cameras
+                if query in (c.name or "").lower() or query in (c.ip or "").lower()
+            ]
         if not cameras:
+            msg = (
+                "Хайлтад тохирох камер алга."
+                if query
+                else "Камер бүртгэгдээгүй байна.\n\n"
+                "'🔍 Scan' дарж автоматаар олох, эсвэл '➕ Нэмэх' дарж гараар нэмнэ үү."
+            )
             ctk.CTkLabel(
-                self.list_frame,
-                text="Камер бүртгэгдээгүй байна.\n\n"
-                "'Камер хайх' дарж автоматаар олох, эсвэл 'Камер нэмэх' дарж гараар нэмнэ үү.",
-                font=ctk.CTkFont(size=13),
-                text_color=UI_MUTED_FG,
-                justify="center",
+                self.list_frame, text=msg, font=ctk.CTkFont(size=13),
+                text_color=UI_MUTED_FG, justify="center",
             ).pack(pady=60)
-            self.set_status("0 камер")
+            self.set_status(f"{len(getattr(self, '_all_cameras', []))} камер бүртгэлтэй")
             return
-
         for cam in cameras:
             self._render_camera_row(cam)
-        self.set_status(f"{len(cameras)} камер бүртгэлтэй")
-        self._refresh_streaming()
+        self.set_status(f"{len(getattr(self, '_all_cameras', []))} камер бүртгэлтэй")
 
     def _reconcile_in_bg(self) -> None:
         """Sync the camera list with the backend off the UI thread; re-render
@@ -1255,13 +1716,26 @@ class AgentApp(ctk.CTk):
         finally:
             self._schedule("periodic_refresh", 30000, self._tick_periodic_refresh)
 
+    def _edge_status_pill(self) -> tuple[str, str]:
+        """(short label, pill variant) for the AI-engine chips (topbar + sidebar).
+
+        Derived from the same readiness probe as `_edge_status_text()` but trimmed
+        to a chip and mapped to a colour band."""
+        text = self._edge_status_text()
+        if text.startswith("🟢"):
+            return "OpenVINO", "good"
+        if text.startswith("⚠"):
+            return "AI алдаа", "danger"
+        return "AI унтарсан", "neutral"
+
     def _refresh_edge_status(self) -> None:
-        """Repaint the sidebar edge-AI badge so a live-view runtime failure (or a
-        recovery) shows without restarting the app."""
-        label = getattr(self, "_edge_status_label", None)
-        if label is not None:
-            with contextlib.suppress(Exception):
-                label.configure(text=self._edge_status_text())
+        """Repaint the AI-engine chips (topbar pill + sidebar mini-status) so a
+        live-view runtime failure (or a recovery) shows without a restart."""
+        label, variant = self._edge_status_pill()
+        for pill in (getattr(self, "_pill_ai", None), getattr(self, "_mini_ai", None)):
+            if pill is not None:
+                with contextlib.suppress(Exception):
+                    pill.set(label, variant)
 
     def _tick_heartbeat(self) -> None:
         """Periodic heartbeat so the cloud keeps this computer marked online.
@@ -1278,113 +1752,172 @@ class AgentApp(ctk.CTk):
     def _update_push_indicators(self) -> None:
         ctrl = get_stream_controller()
         status_by_path = {s["path"]: s for s in ctrl.status()}
-        for path, lbl in self._push_labels.items():
+        for path, pill in self._push_labels.items():
             try:
                 if not ctrl.push_enabled:
-                    lbl.configure(text="—", text_color=UI_MUTED_FG)
+                    pill.set("—", "neutral")
                     continue
                 st = status_by_path.get(path)
                 if st is None:
-                    lbl.configure(text="⏳ хүлээж", text_color=UI_MUTED_FG)
+                    pill.set("хүлээж", "neutral")
                 elif st.get("running"):
-                    lbl.configure(text="🟢 дамжуулж", text_color=UI_SUCCESS)
+                    pill.set("дамжуулж", "good")
                 else:
-                    lbl.configure(text="🔴 тасарсан", text_color=UI_DANGER)
-            except Exception:  # noqa: BLE001 — label may have been destroyed mid-refresh
+                    pill.set("тасарсан", "danger")
+            except Exception:  # noqa: BLE001 — pill may have been destroyed mid-refresh
                 continue
 
     def _render_camera_row(self, cam: CameraRecord) -> None:
-        row = ctk.CTkFrame(self.list_frame, fg_color=UI_SURFACE, corner_radius=8)
-        row.pack(fill="x", pady=3)
+        selected = self._selected_cam is not None and cam.matches(self._selected_cam)
+        base = UI_SURFACE_2 if selected else UI_SURFACE
+        row = ctk.CTkFrame(self.list_frame, fg_color=base, corner_radius=8)
+        row.pack(fill="x", pady=2)
         self._configure_grid(row)
+        key = cam.uuid or cam.mediamtx_path or cam.ip or cam.name
+        self._cam_rows[key] = row
 
         res = f"{cam.resolution[0]}×{cam.resolution[1]}" if cam.resolution else "—"
-        cells = [
-            cam.name,
-            cam.ip or "—",
-            cam.mediamtx_path or "—",
-            (cam.codec or "—").upper(),
-            res,
-        ]
-        for i, text in enumerate(cells):
-            ctk.CTkLabel(
-                row,
-                text=text,
-                anchor="w",
-                font=ctk.CTkFont(size=12),
-            ).grid(row=0, column=i, sticky="w", padx=6, pady=8)
-
-        # Push status (cloud topology) — updated live by _tick_push_status.
-        push_lbl = ctk.CTkLabel(
-            row,
-            text="—",
-            anchor="w",
-            font=ctk.CTkFont(size=12),
+        # col 0 — name (bold), col 1 — IP.
+        ctk.CTkLabel(
+            row, text=cam.name, anchor="w", font=ctk.CTkFont(size=12, weight="bold"),
+        ).grid(row=0, column=0, sticky="w", padx=6, pady=8)
+        ctk.CTkLabel(
+            row, text=cam.ip or "—", anchor="w", font=ctk.CTkFont(size=12),
             text_color=UI_MUTED_FG,
+        ).grid(row=0, column=1, sticky="w", padx=6, pady=8)
+
+        # col 2 — connection status pill (has a stored stream ⇒ configured).
+        online = bool(cam.rtsp_url)
+        status_pill = StatusPill(
+            row, "Online" if online else "Setup", "good" if online else "warn", dot=True
         )
-        push_lbl.grid(row=0, column=5, sticky="w", padx=6, pady=8)
+        status_pill.grid(row=0, column=2, sticky="w", padx=6, pady=6)
+
+        # col 3 — AI engine pill (edge tier ⇒ OpenVINO runs on this PC).
+        is_edge = getattr(cam, "compute_tier", "") == "edge_pc"
+        ai_pill = StatusPill(
+            row, "OpenVINO" if is_edge else "Cloud", "blue" if is_edge else "neutral", dot=False
+        )
+        ai_pill.grid(row=0, column=3, sticky="w", padx=6, pady=6)
+
+        # col 4 — quality (resolution + codec as a hint).
+        qual = res if not cam.codec else f"{res} · {cam.codec.upper()}"
+        ctk.CTkLabel(
+            row, text=qual, anchor="w", font=ctk.CTkFont(size=12), text_color=UI_MUTED_FG,
+        ).grid(row=0, column=4, sticky="w", padx=6, pady=8)
+
+        # col 5 — push status pill (cloud topology) — updated by _tick_push_status.
+        push_pill = StatusPill(row, "—", "neutral", dot=True)
+        push_pill.grid(row=0, column=5, sticky="w", padx=6, pady=6)
         if cam.mediamtx_path:
-            self._push_labels[cam.mediamtx_path] = push_lbl
+            self._push_labels[cam.mediamtx_path] = push_pill
 
-        # Action buttons — packed into one cell so they group at the row's end.
-        actions = ctk.CTkFrame(row, fg_color="transparent")
-        actions.grid(row=0, column=len(self._COLUMNS), sticky="e", padx=(6, 8), pady=6)
+        # col 6 — the ⋯ action menu (all row actions live here + the detail panel).
+        menu_btn = ctk.CTkButton(
+            row, text="⋯", width=30, height=26,
+            fg_color="transparent", border_width=1, border_color=UI_BORDER,
+            hover_color=UI_MUTED_HOVER, font=ctk.CTkFont(size=15, weight="bold"),
+            command=lambda c=cam, r=row: self._open_camera_menu(c, r),
+        )
+        menu_btn.grid(row=0, column=6, sticky="e", padx=(2, 8), pady=6)
 
+        # Whole-row click selects the camera (populates the detail panel). The ⋯
+        # button keeps its own command (it doesn't propagate to the row handler).
+        # `cam` is a stable method arg (not a loop var) so a plain closure is safe.
+        _bind_row_click(row, lambda: self._select_camera(cam))
+        for child in row.winfo_children():
+            if child is not menu_btn:
+                with contextlib.suppress(Exception):
+                    child.bind("<Button-1>", lambda _e: self._select_camera(cam))
+
+    def _select_camera(self, cam: CameraRecord) -> None:
+        """Mark a camera selected: highlight its row + fill the detail panel."""
+        self._selected_cam = cam
+        for key, row in self._cam_rows.items():
+            with contextlib.suppress(Exception):
+                is_sel = (cam.uuid or cam.mediamtx_path or cam.ip or cam.name) == key
+                row.configure(fg_color=UI_SURFACE_2 if is_sel else UI_SURFACE)
+        self._render_camera_detail(cam)
+
+    def _open_camera_menu(self, cam: CameraRecord, anchor: ctk.CTkBaseClass) -> None:
+        """Popup the row's ⋯ action menu (Засах / Зон / Холбох / Устгах)."""
+        self._select_camera(cam)
+        menu = dark_menu(self)
+        menu.add_command(label="✎  Засах", command=lambda: self._edit_camera(cam))
+        menu.add_command(label="▦  Зон тохируулах", command=lambda: self._edit_zones(cam))
+        menu.add_command(label="↻  Дахин холбох", command=lambda: self._reconnect_camera(cam))
+        menu.add_separator()
+        menu.add_command(label="🗑  Устгах", command=lambda: self._delete_camera(cam))
+        try:
+            x = anchor.winfo_rootx() + anchor.winfo_width() - 40
+            y = anchor.winfo_rooty() + anchor.winfo_height()
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def _render_camera_detail(self, cam: CameraRecord | None) -> None:
+        """Fill the right-side detail panel for the selected camera (or an
+        empty-state hint when nothing is selected). All row actions live here."""
+        holder = getattr(self, "_cam_detail", None)
+        if holder is None:
+            return
+        for w in holder.winfo_children():
+            w.destroy()
+        if cam is None:
+            ctk.CTkLabel(
+                holder, text="Камер сонгоно уу.\n\nЖагсаалтаас мөр дээр дарж\nдэлгэрэнгүйг харна.",
+                text_color=UI_MUTED_FG, justify="center", font=ctk.CTkFont(size=12),
+            ).pack(expand=True, pady=40)
+            return
+        ctk.CTkLabel(
+            holder, text=cam.name, anchor="w", font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", pady=(0, 8))
+        res = f"{cam.resolution[0]}×{cam.resolution[1]}" if cam.resolution else "—"
+        is_edge = getattr(cam, "compute_tier", "") == "edge_pc"
+        fields: tuple[tuple[str, str], ...] = (
+            ("IP", cam.ip or "—"),
+            ("Path", cam.mediamtx_path or "—"),
+            ("Урсгал", "RTSP холбогдсон" if cam.rtsp_url else "тохируулаагүй"),
+            ("Codec", (cam.codec or "—").upper()),
+            ("Чанар", res),
+            ("AI", "OpenVINO (edge PC)" if is_edge else "Cloud"),
+        )
+        for k, v in fields:
+            r = ctk.CTkFrame(holder, fg_color="transparent")
+            r.pack(fill="x", pady=3)
+            ctk.CTkLabel(
+                r, text=k, anchor="w", width=90, text_color=UI_MUTED_FG,
+                font=ctk.CTkFont(size=12),
+            ).pack(side="left")
+            ctk.CTkLabel(
+                r, text=v, anchor="w", font=ctk.CTkFont(size=12), justify="left",
+                wraplength=170,
+            ).pack(side="left", fill="x", expand=True)
+
+        ctk.CTkFrame(holder, height=1, fg_color=UI_LINE_SOFT, corner_radius=0).pack(
+            fill="x", pady=10
+        )
         ctk.CTkButton(
-            actions,
-            text="✎ Засах",
-            width=70,
-            height=26,
-            fg_color="transparent",
-            border_width=1,
-            text_color=BRAND_PRIMARY,
-            border_color=BRAND_PRIMARY,
-            hover_color=UI_MUTED_HOVER,
+            holder, text="✎ Засах", height=32,
+            fg_color=BRAND_PRIMARY, hover_color=BRAND_PRIMARY_HOVER,
             command=lambda c=cam: self._edit_camera(c),
-        ).pack(side="left", padx=2)
-
-        # Draw detection zones (exit/shelf/…) on a freeze-frame (docs/29 P1a).
+        ).pack(fill="x", pady=2)
         ctk.CTkButton(
-            actions,
-            text="▦ Зон",
-            width=64,
-            height=26,
-            fg_color="transparent",
-            border_width=1,
-            text_color=BRAND_PRIMARY,
-            border_color=BRAND_PRIMARY,
-            hover_color=UI_MUTED_HOVER,
+            holder, text="▦ Зон тохируулах", height=32,
+            fg_color="transparent", border_width=1, border_color=UI_BORDER,
             command=lambda c=cam: self._edit_zones(c),
-        ).pack(side="left", padx=2)
-
-        # Manual repair: re-probe the camera and restart its relay. Recovers a
-        # camera that was unplugged + came back (the auto-reconnect backoff can
-        # be slow) or whose RTSP path drifted, without deleting + re-adding it.
+        ).pack(fill="x", pady=2)
         ctk.CTkButton(
-            actions,
-            text="↻ Холбох",
-            width=78,
-            height=26,
-            fg_color="transparent",
-            border_width=1,
-            text_color=BRAND_PRIMARY,
-            border_color=BRAND_PRIMARY,
-            hover_color=UI_MUTED_HOVER,
+            holder, text="↻ Дахин холбох", height=32,
+            fg_color="transparent", border_width=1, border_color=UI_BORDER,
             command=lambda c=cam: self._reconnect_camera(c),
-        ).pack(side="left", padx=2)
-
+        ).pack(fill="x", pady=2)
         ctk.CTkButton(
-            actions,
-            text="🗑 Устгах",
-            width=78,
-            height=26,
-            fg_color="transparent",
-            border_width=1,
-            text_color=UI_DANGER,
-            border_color=UI_DANGER,
-            hover_color=UI_MUTED_HOVER,
+            holder, text="🗑 Устгах", height=32,
+            fg_color="transparent", border_width=1, border_color=UI_DANGER,
+            text_color=UI_DANGER, hover_color=UI_MUTED_HOVER,
             command=lambda c=cam: self._delete_camera(c),
-        ).pack(side="left", padx=2)
+        ).pack(fill="x", pady=2)
 
     def _reconnect_camera(self, cam: CameraRecord) -> None:
         def work() -> dict[str, Any]:
@@ -1528,34 +2061,102 @@ class AgentApp(ctk.CTk):
     # === «Plan зураг» — in-app read-only preview + «Засах» opens the editor ===
 
     def _build_plan_page(self, parent: ctk.CTkBaseClass) -> ctk.CTkFrame:
-        """The «Plan зураг» page: a read-only schematic of the saved store plan,
-        with «✏ Засах» opening the full editor window (unchanged behaviour)."""
+        """The «Plan зураг» page: a read-only schematic of the saved store plan
+        (left) + a coverage/setup inspector (right). «✏ Засах» opens the full
+        editor window (unchanged behaviour)."""
         page = ctk.CTkFrame(parent, fg_color="transparent")
-        header = ctk.CTkFrame(page, fg_color="transparent")
-        header.pack(fill="x", padx=16, pady=(14, 8))
-        ctk.CTkLabel(
-            header, text="🗺  Дэлгүүрийн план",
-            font=ctk.CTkFont(size=18, weight="bold"), text_color=UI_FG,
-        ).pack(side="left")
+        toolbar = self._page_head(
+            page, "Plan зураг",
+            "Дэлгүүрийн план ба камерын хамрах талбай. «✏ Засах» дэлгэрэнгүй засварлагч нээнэ.",
+        )
         ctk.CTkButton(
-            header, text="✏  Засах", width=110, height=36, corner_radius=8,
+            toolbar, text="✏ Засах", width=100, height=32,
             fg_color=BRAND_PRIMARY, hover_color=BRAND_PRIMARY_HOVER,
             command=self.open_floor_plan,
-        ).pack(side="right")
+        ).pack(side="right", padx=(8, 0))
         ctk.CTkButton(
-            header, text="🔄  Сэргээх", width=110, height=36, corner_radius=8,
+            toolbar, text="↻ Сэргээх", width=100, height=32,
             fg_color="transparent", border_width=1, border_color=UI_BORDER,
-            text_color=UI_FG, hover_color=UI_MUTED_HOVER,
             command=self._refresh_plan_preview,
-        ).pack(side="right", padx=(0, 8))
-        holder = ctk.CTkFrame(page, fg_color=UI_SURFACE, corner_radius=12)
-        holder.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+        ).pack(side="right")
+
+        split = ctk.CTkFrame(page, fg_color="transparent")
+        split.pack(fill="both", expand=True, padx=18, pady=(0, 12))
+        canvas_panel = Panel(split, "Floor plan")
+        canvas_panel.pack(side="left", fill="both", expand=True, padx=(0, 12))
+        # Darker CAD-like canvas backdrop for the schematic preview.
+        holder = ctk.CTkFrame(canvas_panel.body, fg_color="#070A0E", corner_radius=8)
+        holder.pack(fill="both", expand=True)
         self._plan_preview = ctk.CTkLabel(
             holder, text="Ачаалж байна…", text_color=UI_MUTED_FG, font=ctk.CTkFont(size=14),
         )
-        self._plan_preview.pack(fill="both", expand=True, padx=12, pady=12)
+        self._plan_preview.pack(fill="both", expand=True, padx=10, pady=10)
         self._plan_img: Any = None
+
+        inspector = Panel(split, "Inspector")
+        inspector.configure(width=320)
+        inspector.pack(side="left", fill="y")
+        inspector.pack_propagate(False)
+        self._plan_inspector = inspector.body
+        self._render_plan_inspector(None)
         return page
+
+    def _render_plan_inspector(self, plan: dict[str, Any] | None) -> None:
+        """Coverage summary + setup-progress checklist for the loaded plan."""
+        holder = getattr(self, "_plan_inspector", None)
+        if holder is None:
+            return
+        for w in holder.winfo_children():
+            w.destroy()
+        walls = (plan or {}).get("walls") or []
+        fixtures = (plan or {}).get("fixtures") or []
+        cameras = (plan or {}).get("cameras") or []
+        n_shelf = sum(1 for f in fixtures if f.get("type") == "shelf")
+        n_cash = sum(1 for f in fixtures if f.get("type") == "checkout")
+        n_door = sum(1 for f in fixtures if f.get("type") in ("exit", "entrance"))
+        n_cam = len(cameras)
+
+        # Setup checklist — honest, derived from what's actually drawn.
+        steps = (
+            ("Талбай / хана зурсан", bool(walls or fixtures)),
+            ("Тавиур / касс байрлуулсан", bool(fixtures)),
+            ("Камер байрлуулсан", n_cam > 0),
+        )
+        done = sum(1 for _, ok in steps if ok)
+        ctk.CTkLabel(
+            holder, text="Setup progress", anchor="w", font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(anchor="w")
+        bar = ctk.CTkProgressBar(holder, height=8)
+        bar.pack(fill="x", pady=(8, 6))
+        bar.set(done / len(steps) if steps else 0)
+        for text, ok in steps:
+            r = ctk.CTkFrame(holder, fg_color="transparent")
+            r.pack(fill="x", pady=2)
+            ctk.CTkLabel(
+                r, text="✓" if ok else "•", width=18,
+                text_color=UI_SUCCESS if ok else UI_MUTED_FG, font=ctk.CTkFont(size=13, weight="bold"),
+            ).pack(side="left")
+            ctk.CTkLabel(
+                r, text=text, anchor="w", font=ctk.CTkFont(size=12),
+                text_color=UI_FG if ok else UI_MUTED_FG, wraplength=250, justify="left",
+            ).pack(side="left", fill="x", expand=True)
+
+        ctk.CTkFrame(holder, height=1, fg_color=UI_LINE_SOFT, corner_radius=0).pack(
+            fill="x", pady=12
+        )
+        ctk.CTkLabel(
+            holder, text="Coverage", anchor="w", font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(anchor="w", pady=(0, 6))
+        for label, count, variant in (
+            ("Камер", n_cam, "good" if n_cam else "warn"),
+            ("Тавиур", n_shelf, "good" if n_shelf else "neutral"),
+            ("Касс", n_cash, "good" if n_cash else "neutral"),
+            ("Орц / гарц", n_door, "good" if n_door else "neutral"),
+        ):
+            r = ctk.CTkFrame(holder, fg_color="transparent")
+            r.pack(fill="x", pady=2)
+            ctk.CTkLabel(r, text=label, anchor="w", font=ctk.CTkFont(size=12)).pack(side="left")
+            StatusPill(r, str(count), variant, dot=False).pack(side="right")
 
     def _refresh_plan_preview(self) -> None:
         """Fetch the plan off-thread and re-render the preview (called on page show
@@ -1577,11 +2178,14 @@ class AgentApp(ctk.CTk):
     def _apply_plan_preview(self, plan: dict[str, Any] | None, err: str | None) -> None:
         if getattr(self, "_plan_preview", None) is None:
             return
+        self._render_plan_inspector(plan)
         if err is not None or plan is None:
             self._plan_preview.configure(text=f"Планыг ачаалж чадсангүй.\n{err or ''}", image="")
             self._plan_img = None
             return
-        img = render_plan_image(plan)
+        # Render at a modest size so the preview fits beside the fixed-width
+        # inspector in the split (a 900px image would squeeze the inspector).
+        img = render_plan_image(plan, size=(560, 410))
         if img is None:
             self._plan_preview.configure(
                 text="Одоогоор зурсан план алга.\n«✏ Засах» дарж дэлгүүрээ зураарай.",
@@ -1719,10 +2323,7 @@ class AgentApp(ctk.CTk):
     def _check_backend_async(self) -> None:
         state = load_state()
         if not state.is_paired:
-            self.backend_label.configure(
-                text="Холбогдоогүй — '🔗 Холболт' дарна уу",
-                text_color=UI_WARNING,
-            )
+            self._pill_backend.set("Холбогдоогүй", "warn")
             return
         store = state.store_name or "дэлгүүр"
 
@@ -1753,15 +2354,9 @@ class AgentApp(ctk.CTk):
             if self._closing or not self.winfo_exists():
                 return
             if result.get("ok"):
-                self.backend_label.configure(
-                    text=f"✅ {store}",
-                    text_color=UI_SUCCESS,
-                )
+                self._pill_backend.set(store, "good")
             else:
-                self.backend_label.configure(
-                    text=f"⚠ {store} — холбогдсонгүй",
-                    text_color=UI_DANGER,
-                )
+                self._pill_backend.set(f"{store} — тасарсан", "danger")
 
         self._run_bg(work, done)
 

@@ -403,19 +403,21 @@ function drawGrid() {
   gridLayer.destroyChildren();
   const [pw, ph] = PLAN.size;
   const sx = stage.scaleX() || 1;
-  // Too many minor lines (a very large plan) → drop them, keep the major grid.
-  const minor = pw / GRID_MINOR_M > 600 || ph / GRID_MINOR_M > 600 ? GRID_MAJOR_M : GRID_MINOR_M;
+  // Too many minor lines → drop them, keep the major grid. A lower threshold
+  // (was 600) trades minor detail for a cleaner, less noisy CAD canvas on the
+  // large plans typical of a store (a 1000 m plan would draw 200 minor lines/axis).
+  const minor = pw / GRID_MINOR_M > 160 || ph / GRID_MINOR_M > 160 ? GRID_MAJOR_M : GRID_MINOR_M;
   const isMajor = (v) => Math.abs(v % GRID_MAJOR_M) < 1e-6 || Math.abs((v % GRID_MAJOR_M) - GRID_MAJOR_M) < 1e-6;
   const fs = 10 / sx;
   for (let x = 0; x <= pw + 1e-6; x += minor) {
     const major = isMajor(x);
-    gridLayer.add(new Konva.Line({ points: [x, 0, x, ph], stroke: major ? "#2b2b33" : "#191920", strokeWidth: (major ? 1.2 : 1) / sx, listening: false }));
-    if (major && x > 0) gridLayer.add(new Konva.Text({ x: x + 2 / sx, y: 2 / sx, text: String(Math.round(x)), fontSize: fs, fill: "#52525b", listening: false }));
+    gridLayer.add(new Konva.Line({ points: [x, 0, x, ph], stroke: major ? "#26262e" : "#141418", strokeWidth: (major ? 1.2 : 1) / sx, listening: false }));
+    if (major && x > 0) gridLayer.add(new Konva.Text({ x: x + 2 / sx, y: 2 / sx, text: String(Math.round(x)), fontSize: fs, fill: "#48484f", listening: false }));
   }
   for (let y = 0; y <= ph + 1e-6; y += minor) {
     const major = isMajor(y);
-    gridLayer.add(new Konva.Line({ points: [0, y, pw, y], stroke: major ? "#2b2b33" : "#191920", strokeWidth: (major ? 1.2 : 1) / sx, listening: false }));
-    if (major && y > 0) gridLayer.add(new Konva.Text({ x: 2 / sx, y: y + 2 / sx, text: String(Math.round(y)), fontSize: fs, fill: "#52525b", listening: false }));
+    gridLayer.add(new Konva.Line({ points: [0, y, pw, y], stroke: major ? "#26262e" : "#141418", strokeWidth: (major ? 1.2 : 1) / sx, listening: false }));
+    if (major && y > 0) gridLayer.add(new Konva.Text({ x: 2 / sx, y: y + 2 / sx, text: String(Math.round(y)), fontSize: fs, fill: "#48484f", listening: false }));
   }
   gridLayer.add(new Konva.Rect({ x: 0, y: 0, width: pw, height: ph, stroke: "#3f3f46", strokeWidth: 1.5 / sx, listening: false }));
   gridLayer.draw();

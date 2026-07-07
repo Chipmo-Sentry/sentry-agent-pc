@@ -85,6 +85,10 @@ class ClipRecord:
     created_at: float
     behavior_detail: list[dict[str, Any]] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
+    # Operator triage state (local to this agent): "open" (needs review),
+    # "confirmed" (real incident) or "dismissed" (false alarm). Set from the
+    # desktop «Сэжигтэй» review panel; persisted in the clip index JSON.
+    status: str = "open"
 
     @property
     def duration(self) -> float:
@@ -157,6 +161,7 @@ def _record_from_dict(d: dict[str, Any]) -> ClipRecord:
         created_at=float(d["created_at"]),
         behavior_detail=list(d.get("behavior_detail", [])),
         events=list(d.get("events", [])),
+        status=str(d.get("status", "open")),
     )
 
 
@@ -242,6 +247,21 @@ class ClipStore:
         with self._lock:
             recs = [*self.records(), rec]
             self._save(self._prune(recs, now if now is not None else time.time()))
+
+    def set_status(self, clip_id: str, status: str) -> bool:
+        """Set a clip's operator-triage status (open/confirmed/dismissed) and
+        persist. Returns True if the clip was found. Does NOT prune — a status
+        change must never delete clip files."""
+        with self._lock:
+            recs = self.records()
+            found = False
+            for r in recs:
+                if r.clip_id == clip_id:
+                    r.status = status
+                    found = True
+            if found:
+                self._save(recs)
+            return found
 
     def _prune(self, recs: list[ClipRecord], now: float) -> list[ClipRecord]:
         fresh = [r for r in recs if now - r.created_at <= self.max_age_sec]

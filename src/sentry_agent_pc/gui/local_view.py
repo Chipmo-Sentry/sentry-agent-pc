@@ -951,10 +951,12 @@ class LocalLiveView(ctk.CTkFrame):
         store = load_state().store_name
         title = ctk.CTkFrame(self, fg_color="transparent")
         title.pack(fill="x", padx=18, pady=(14, 0))
+        # Section label (the app topbar already names the page «Шууд хяналт», so
+        # this reads as the camera-feeds section header, not a duplicate title).
         ctk.CTkLabel(
             title,
-            text="Шууд харах",
-            font=ctk.CTkFont(size=20, weight="bold"),
+            text="Камерын дүрс",
+            font=ctk.CTkFont(size=18, weight="bold"),
             text_color="gray95",
             anchor="w",
         ).pack(side="left")
@@ -983,23 +985,27 @@ class LocalLiveView(ctk.CTkFrame):
         kpi.pack(fill="x", padx=18, pady=(12, 0))
 
         def _chip(value: str, label: str, value_color: str = "gray95") -> ctk.CTkLabel:
-            box = ctk.CTkFrame(kpi, fg_color="#141417", corner_radius=10)
+            # Bordered metric tile — matches the console's shared metric_chip look.
+            box = ctk.CTkFrame(
+                kpi, fg_color="#161616", corner_radius=11, border_width=1, border_color="#262626"
+            )
             box.pack(side="left", padx=(0, 8))
+            ctk.CTkLabel(box, text=label, font=ctk.CTkFont(size=10), text_color="gray55").pack(
+                anchor="w", padx=12, pady=(8, 0)
+            )
             v = ctk.CTkLabel(
                 box,
                 text=value,
-                font=ctk.CTkFont(size=15, weight="bold"),
+                font=ctk.CTkFont(size=16, weight="bold"),
                 text_color=value_color,
             )
-            v.pack(anchor="w", padx=12, pady=(7, 0))
-            ctk.CTkLabel(box, text=label, font=ctk.CTkFont(size=10), text_color="gray55").pack(
-                anchor="w", padx=12, pady=(0, 7)
-            )
+            v.pack(anchor="w", padx=12, pady=(1, 8))
             return v
 
         _chip(str(len(cams)), "Камер")
         self._kpi_risk = _chip("—", "Эрсдэл")
-        self._kpi_ai = _chip("Ачаалж байна", "AI", "gray70")
+        self._kpi_ai = _chip("Ачаалж байна", "AI хөдөлгүүр", "gray70")
+        _chip(self._last_event_text(), "Сүүлийн event")
         if store:
             _chip(store, "Дэлгүүр")
 
@@ -1143,6 +1149,21 @@ class LocalLiveView(ctk.CTkFrame):
                     tile.paint()
             self._update_risk_kpi()
         self._tick_after = self.after(int(1000 / _TARGET_FPS), self._tick)
+
+    @staticmethod
+    def _last_event_text() -> str:
+        """HH:MM of the most recent suspicious clip (or «—»). Best-effort — a
+        missing/corrupt index just shows «—»."""
+        try:
+            import datetime
+
+            recs = _shared_clip_store().records()
+            if not recs:
+                return "—"
+            latest = max(recs, key=lambda r: r.created_at)
+            return datetime.datetime.fromtimestamp(latest.started_at).strftime("%H:%M")
+        except Exception:  # noqa: BLE001 — a KPI must never break the live grid
+            return "—"
 
     def _update_risk_kpi(self) -> None:
         """Refresh the «Эрсдэл» KPI = highest live risk across the cameras, in the
