@@ -912,6 +912,8 @@ class AgentApp(ctk.CTk):
             ("Эрсдэл", _CLIP_COL_RISK, "w"),
             ("Зан үйл", 0, "w"),
             ("Хугацаа", _CLIP_COL_DUR, "e"),
+            # Edge clip id — matches the frontend «Сэжигтэй үйлдэл» alert's edge id.
+            ("ID", _CLIP_COL_ID, "w"),
             ("Төлөв", _CLIP_COL_STATUS, "w"),
         ):
             ctk.CTkLabel(
@@ -1048,6 +1050,12 @@ class AgentApp(ctk.CTk):
         ctk.CTkLabel(
             row, text=f"{clip.duration:.0f}с", width=_CLIP_COL_DUR, anchor="e",
             font=ctk.CTkFont(size=11), text_color=UI_MUTED_FG,
+        ).pack(side="left", padx=8)
+        # Edge clip id — the SAME string as the frontend alert's `edge_clip_id`,
+        # so staff can cross-reference a desktop clip with its cloud alert.
+        ctk.CTkLabel(
+            row, text=clip.clip_id, width=_CLIP_COL_ID, anchor="w",
+            font=ctk.CTkFont(size=11, family="Consolas"), text_color=UI_MUTED_FG,
         ).pack(side="left", padx=8)
         st_label, st_variant = self._clip_status_meta(clip.status)
         # Fixed-width holder (with an explicit height so the row stays compact —
