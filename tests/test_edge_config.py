@@ -82,8 +82,9 @@ def test_behaviors_page_registry_keys_are_real_fields() -> None:
 
 
 def test_behavior_table_rows_columnar() -> None:
-    # Each behaviour is ONE ROW with score + timing as columns (founder request):
-    # label · +score · interval · min-duration; a zero interval/duration → «—».
+    # Each behaviour is ONE ROW: label · meaning · +score · interval · min-duration;
+    # a zero interval/duration → «—». (The console UI added the «Тайлбар» column at
+    # index 1, so score/interval/mindur now start at index 2.)
     from sentry_agent_pc.gui.app import AgentApp
 
     cfg = {
@@ -94,10 +95,11 @@ def test_behavior_table_rows_columnar() -> None:
         "interval_exit_after_conceal": 0.0,
     }
     rows = {r[0]: r for r in AgentApp._behavior_table_rows(cfg)}
-    assert rows["Эд зүйл нуух"][1:] == ("+14", "0.5", "0.6")
+    assert rows["Эд зүйл нуух"][2:] == ("+14", "0.5", "0.6")
+    assert rows["Эд зүйл нуух"][1]  # meaning/description column is populated
     # one-shot zone behaviour: interval 0 → «—»
-    assert rows["Нуусны дараа гарц руу"][1] == "+40"
-    assert rows["Нуусны дараа гарц руу"][2] == "—"
+    assert rows["Нуусны дараа гарц руу"][2] == "+40"
+    assert rows["Нуусны дараа гарц руу"][3] == "—"
 
 
 def test_other_config_rows_excludes_behaviour_fields() -> None:

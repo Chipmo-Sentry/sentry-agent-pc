@@ -95,6 +95,23 @@ def test_clipstore_roundtrip_and_count_retention(tmp_path: Path) -> None:
     assert (tmp_path / "c4.mp4").exists()
 
 
+def test_clipstore_set_status(tmp_path: Path) -> None:
+    # Operator triage: set_status persists a clip's status, survives a reload, and
+    # never deletes the clip file. A default record is "open".
+    store = ClipStore(tmp_path / "index.json")
+    now = 1_000_000.0
+    store.add(_clip(tmp_path, "c0", now), now=now)
+    assert store.records()[0].status == "open"
+
+    assert store.set_status("c0", "confirmed") is True
+    # Reload from a fresh store instance to prove it round-trips through JSON.
+    assert ClipStore(tmp_path / "index.json").records()[0].status == "confirmed"
+    assert (tmp_path / "c0.mp4").exists()  # status change never deletes the file
+
+    # Unknown clip id → no-op, returns False.
+    assert store.set_status("nope", "dismissed") is False
+
+
 def test_clipstore_age_retention(tmp_path: Path) -> None:
     store = ClipStore(tmp_path / "index.json", max_clips=100, max_age_sec=10.0)
     now = 2_000_000.0

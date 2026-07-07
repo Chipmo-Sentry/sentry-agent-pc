@@ -46,7 +46,7 @@
       button.primary:hover { background: var(--primary2); }
       .body { flex: 1; display: flex; min-height: 0; }
       .canvas-wrap { flex: 1; position: relative; display: flex; min-width: 0; min-height: 0; }
-      #canvas-holder { flex: 1; background: #0e0e10; position: relative; }
+      #canvas-holder { flex: 1; background: #0a0c11; position: relative; }
       aside {
         width: 250px; border-left: 1px solid var(--border); background: var(--panel);
         padding: 12px; overflow-y: auto;
@@ -58,6 +58,19 @@
       }
       .hint { color: var(--muted); font-size: 11px; line-height: 1.5; margin: 8px 0; }
       .keys { color: #71717a; font-size: 10.5px; line-height: 1.6; white-space: pre-line; }
+      /* Collapsible help — the long instruction/shortcut text is hidden by
+         default so the inspector stays clean (mockup direction). */
+      details.help { margin: 10px 0; border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); }
+      details.help > summary {
+        cursor: pointer; list-style: none; padding: 8px 10px; font-size: 12px;
+        color: var(--fg); font-weight: 600; display: flex; align-items: center; gap: 6px;
+      }
+      details.help > summary::-webkit-details-marker { display: none; }
+      details.help > summary::before { content: "▸"; color: var(--muted); font-size: 11px; }
+      details.help[open] > summary::before { content: "▾"; }
+      details.help > summary:hover { color: var(--primary); }
+      details.help .help-body { padding: 0 10px 8px; }
+      details.help .hint, details.help .keys { margin: 6px 0; }
       #elements { margin-top: 8px; }
       .elem {
         display: flex; align-items: center; gap: 6px; padding: 5px 7px;
@@ -103,7 +116,7 @@
         padding: 6px 12px; font-size: 12px; color: var(--muted);
         border-bottom: 1px solid var(--border);
       }
-      .calib-canvas { flex: 1; min-height: 0; background: #0e0e10; cursor: crosshair; }
+      .calib-canvas { flex: 1; min-height: 0; background: #0a0c11; cursor: crosshair; }
       /* numeric wall-length input (shown only while drawing a wall) */
       #len-wrap {
         display: inline-flex; align-items: center; gap: 6px; padding: 0 8px;
@@ -205,28 +218,33 @@
           <h2>Байрлуулах камер</h2>
           <select id="cam-pick"></select>
           <div id="cam-settings" class="cs-hidden"></div>
-          <p class="hint">
-            Бүх хэмжээ <b>метрээр</b>. «Талбайн хэмжээ»-нд дэлгүүрийнхээ
-            өргөн×өндрийг метрээр оруул (анхдагч 200×200). <b>«Тавиур/Орц/Касс»</b>:
-            чирээд тэгш өнцөгт зур, эсвэл <b>өргөн×өндрийг метрээр бичээд</b> нэг
-            товшилтоор тавь. <b>«Хана»</b>: дараалан дарж зур; чиглэлээ заагаад
-            <b>урт (м, 2 орон) бичээд Enter</b> дарвал яг тэр уртаар тавина, хоосон
-            Enter/давхар дарж дуусга. <b>«Сонгох»</b>: дүрс дээр дарж сонгоод
-            <b>нэг чирэлтээр зөөх</b>, булан чирж хэлбэр засах; сонгосон дүрсний
-            <b>хэмжээг хажуугаас тоогоор засах</b>. Хана/дөрвөлжин дээр урт/Ө×Ө,
-            талбай (м²) шошго харагдана. <b>«⊙ Цэг»</b> (P) асаавал цэгүүд байгаа
-            дүрсийн булан дээр татагдана. <b>«▢ Хана-дөрвөлжин»</b> — нэг чирэлтээр
-            дэлгүүрийн хүрээ. <b>«90° Босоо»</b> (O) — хана зөвхөн босоо/хэвтээ.
-            Хана зурж байхад <b>гар дээр тоо дармагц</b> урт-талбар нээгдэнэ; эхэнд
-            нь буцаж очвол гогцоо автоматаар хаагдана. Space+чирэх = гүйлгэх.
-            <b>«👁 Хамрах талбай»</b> (V) — камер бүрийн харах талбайг (калибровктой
-            бол яг, үгүй бол баримжаа конус) болон <b>хяналтгүй 🔴 сохор бүс</b>-ийг
-            харуулж, дэлгүүрийн <b>хамрагдалт %</b>-ийг тооцно.
-          </p>
-          <div class="keys">⌨ 1 Сонгох · 2 Хана · 3 Хана-дөрвөлжин · 4 Тавиур · 5 Орц · 6 Касс · 7 Камер
+          <details class="help">
+            <summary>Заавар ба товчлуурууд</summary>
+            <div class="help-body">
+              <p class="hint">
+                Бүх хэмжээ <b>метрээр</b>. «Талбайн хэмжээ»-нд дэлгүүрийнхээ
+                өргөн×өндрийг метрээр оруул (анхдагч 200×200). <b>«Тавиур/Орц/Касс»</b>:
+                чирээд тэгш өнцөгт зур, эсвэл <b>өргөн×өндрийг метрээр бичээд</b> нэг
+                товшилтоор тавь. <b>«Хана»</b>: дараалан дарж зур; чиглэлээ заагаад
+                <b>урт (м, 2 орон) бичээд Enter</b> дарвал яг тэр уртаар тавина, хоосон
+                Enter/давхар дарж дуусга. <b>«Сонгох»</b>: дүрс дээр дарж сонгоод
+                <b>нэг чирэлтээр зөөх</b>, булан чирж хэлбэр засах; сонгосон дүрсний
+                <b>хэмжээг хажуугаас тоогоор засах</b>. Хана/дөрвөлжин дээр урт/Ө×Ө,
+                талбай (м²) шошго харагдана. <b>«⊙ Цэг»</b> (P) асаавал цэгүүд байгаа
+                дүрсийн булан дээр татагдана. <b>«▢ Хана-дөрвөлжин»</b> — нэг чирэлтээр
+                дэлгүүрийн хүрээ. <b>«90° Босоо»</b> (O) — хана зөвхөн босоо/хэвтээ.
+                Хана зурж байхад <b>гар дээр тоо дармагц</b> урт-талбар нээгдэнэ; эхэнд
+                нь буцаж очвол гогцоо автоматаар хаагдана. Space+чирэх = гүйлгэх.
+                <b>«👁 Хамрах талбай»</b> (V) — камер бүрийн харах талбайг (калибровктой
+                бол яг, үгүй бол баримжаа конус) болон <b>хяналтгүй 🔴 сохор бүс</b>-ийг
+                харуулж, дэлгүүрийн <b>хамрагдалт %</b>-ийг тооцно.
+              </p>
+              <div class="keys">⌨ 1 Сонгох · 2 Хана · 3 Хана-дөрвөлжин · 4 Тавиур · 5 Орц · 6 Касс · 7 Камер
 Хана: дарж зур, тоо бичээд урт, эхэндээ очвол хаах · Тавиур: чирэх эсвэл Ө×Ө(м)
 Enter дуусгах · Esc болих · Del устгах · Space+чирэх гүйлгэх
 G өнцөг · P цэг-snap · O босоо · V хамрах талбай · F багтаах · Ctrl+Z/Y · Ctrl+S</div>
+            </div>
+          </details>
           <h2 style="margin-top:14px">Элементүүд</h2>
           <div id="elements"></div>
         </aside>
