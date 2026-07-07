@@ -1854,6 +1854,13 @@ class AgentApp(ctk.CTk):
         menu.add_command(label="✎  Засах", command=lambda: self._edit_camera(cam))
         menu.add_command(label="▦  Зон тохируулах", command=lambda: self._edit_zones(cam))
         menu.add_command(label="↻  Дахин холбох", command=lambda: self._reconnect_camera(cam))
+        # AI engine tier — edge_pc ⇒ this PC runs YOLO + behaviour and uploads
+        # suspicious clips to the cloud VLM; cloud ⇒ central Stage-1 (ADR-0029).
+        is_edge = getattr(cam, "compute_tier", "") == "edge_pc"
+        menu.add_command(
+            label="🧠  Cloud AI руу буцаах" if is_edge else "🧠  Edge AI (энэ PC) асаах",
+            command=lambda: self._toggle_edge_mode(cam),
+        )
         menu.add_separator()
         menu.add_command(label="🗑  Устгах", command=lambda: self._delete_camera(cam))
         try:
@@ -1926,6 +1933,57 @@ class AgentApp(ctk.CTk):
             text_color=UI_DANGER, hover_color=UI_MUTED_HOVER,
             command=lambda c=cam: self._delete_camera(c),
         ).pack(fill="x", pady=2)
+
+    def _toggle_edge_mode(self, cam: CameraRecord) -> None:
+        """Flip a camera between cloud Stage-1 and edge_pc. In edge_pc mode THIS
+        PC runs YOLO + behaviour 24/7 and uploads each suspicious clip to the
+        cloud VLM (→ it shows up in the web «Сэжигтэй үйлдэл»). Needs the camera
+        to be registered with the backend (a uuid)."""
+        if not cam.uuid:
+            self.set_status("⚠ Камер cloud-д бүртгэгдээгүй байна — эхлээд холбоно уу")
+            return
+        to_edge = getattr(cam, "compute_tier", "") != "edge_pc"
+        new_tier = "edge_pc" if to_edge else "cloud"
+
+        def work() -> dict[str, Any]:
+            from sentry_agent_pc.state import mutate_state
+
+            # 1. Persist the tier on the backend (source of truth; syncs back on
+            #    the next discovery poll too).
+            BackendClient().agent_update_camera(cam.uuid, compute_tier=new_tier)
+
+            # 2. Reflect it locally NOW so the upload gate + engine react without
+            #    waiting for the sync.
+            def _apply(s: Any) -> None:
+                for c in s.cameras:
+                    if c.matches(cam):
+                        c.compute_tier = new_tier
+
+            mutate_state(_apply)
+
+            # 3. Start/stop the always-on edge worker to match the new tier.
+            try:
+                from sentry_agent_pc.edge.controller import get_edge_controller
+
+                get_edge_controller().refresh()
+            except Exception:  # noqa: BLE001 — engine reconcile is best-effort
+                log.exception("toggle_edge.refresh_failed")
+            return {"ok": True, "tier": new_tier}
+
+        def done(result: Any) -> None:
+            self.refresh_cameras()
+            if isinstance(result, dict) and result.get("ok"):
+                if result["tier"] == "edge_pc":
+                    self.set_status(
+                        "🧠 Edge AI аслаа — сэжигтэй бичлэг үүл рүү автоматаар илгээгдэнэ ✓"
+                    )
+                else:
+                    self.set_status("Cloud AI руу буцаалаа ✓")
+            else:
+                err = str(result.get("error", ""))[:60] if isinstance(result, dict) else ""
+                self.set_status(f"⚠ AI горим солиж чадсангүй — сүлжээгээ шалгана уу {err}")
+
+        self._run_bg(work, done, status="AI горим солиж байна…")
 
     def _reconnect_camera(self, cam: CameraRecord) -> None:
         def work() -> dict[str, Any]:

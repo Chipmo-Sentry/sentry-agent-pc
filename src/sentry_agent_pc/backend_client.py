@@ -246,12 +246,16 @@ class BackendClient:
         rtsp_url: str | None = None,
         risk_threshold: float | None = None,
         zones: list[dict[str, Any]] | None = None,
+        compute_tier: str | None = None,
     ) -> dict[str, Any]:
-        """PATCH /api/v1/agent/cameras/{id} — edit name / connection / threshold / zones.
+        """PATCH /api/v1/agent/cameras/{id} — edit name / connection / threshold /
+        zones / compute_tier.
 
         Only non-None fields are sent (partial update). The backend re-points
         the live worker at the new rtsp_url when it changes. For ``zones``,
-        ``None`` = leave unchanged (omitted), ``[]`` = clear all zones (docs/29)."""
+        ``None`` = leave unchanged (omitted), ``[]`` = clear all zones (docs/29).
+        ``compute_tier`` ("cloud" | "edge_pc") switches a camera between central
+        Stage-1 and this PC's edge engine (ADR-0029)."""
         body: dict[str, Any] = {}
         if name is not None:
             body["name"] = name
@@ -261,6 +265,8 @@ class BackendClient:
             body["risk_threshold"] = risk_threshold
         if zones is not None:
             body["zones"] = zones
+        if compute_tier is not None:
+            body["compute_tier"] = compute_tier
         r = self._request(
             "PATCH",
             f"/api/v1/agent/cameras/{camera_uuid}",
