@@ -688,8 +688,8 @@ function showShapeSettings(kindPlural, idx) {
     el.innerHTML =
       `<h2>▦ ${(FIX[f.type] || {}).label || f.type}</h2>` +
       `<div class="ss-row">нэр<input id="ss-name" type="text" maxlength="64" placeholder="ж: Архины тавиур" value="${f.label ? esc(f.label) : ""}"></div>` +
-      `<div class="ss-row">өргөн (м)<input id="ss-w" type="number" min="0.1" step="0.01" value="${fmtM(b.w)}"></div>` +
-      `<div class="ss-row">өндөр (м)<input id="ss-h" type="number" min="0.1" step="0.01" value="${fmtM(b.h)}"></div>` +
+      `<div class="ss-row">урт (м)<input id="ss-w" type="number" min="0.1" step="0.01" value="${fmtM(b.w)}"></div>` +
+      `<div class="ss-row">өргөн (м)<input id="ss-h" type="number" min="0.1" step="0.01" value="${fmtM(b.h)}"></div>` +
       `<div class="ss-muted">Талбай: ${fmtM(polyArea(f.points))} м² · нэр нь аналитикт харагдана</div>` +
       `<button id="ss-apply" class="primary">Тавих</button>`;
     el.classList.remove("cs-hidden");
@@ -1329,14 +1329,42 @@ function buildCalibStages(frame) {
   const pz = Math.min(pw / PW, ph / PH) * 0.92;
   calib.plan.scale({ x: pz, y: pz });
   calib.plan.position({ x: (pw - PW * pz) / 2, y: (ph - PH * pz) / 2 });
-  PLAN.walls.forEach((w) => planLayer.add(new Konva.Line({ points: w.points.flat(), stroke: WALL_COLOR, strokeWidth: 2 / pz })));
+  const planShapes = []; // outlines to counter-scale on zoom (stay ~2px on screen)
+  PLAN.walls.forEach((w) => {
+    const l = new Konva.Line({ points: w.points.flat(), stroke: WALL_COLOR, strokeWidth: 2 / pz });
+    planShapes.push(l);
+    planLayer.add(l);
+  });
   PLAN.fixtures.forEach((f) => {
     const c = (FIX[f.type] || {}).color || "#999";
-    planLayer.add(new Konva.Line({ points: f.points.flat(), stroke: c, strokeWidth: 2 / pz, closed: true, fill: c + "22" }));
+    const l = new Konva.Line({ points: f.points.flat(), stroke: c, strokeWidth: 2 / pz, closed: true, fill: c + "22" });
+    planShapes.push(l);
+    planLayer.add(l);
   });
   calib.planMarks = new Konva.Group();
   planLayer.add(calib.planMarks);
   planLayer.draw();
+  // Same wheel language as the main canvas: wheel scrolls, Shift+wheel sideways,
+  // Ctrl+wheel (trackpad pinch) zooms about the cursor. Precise pair-clicking on
+  // a big store needs to get CLOSE — a fitted 40 m plan makes 1 px ≈ 8 cm.
+  calib.plan.on("wheel", (e) => {
+    e.evt.preventDefault();
+    if (!(e.evt.ctrlKey || e.evt.metaKey)) {
+      const dx = e.evt.shiftKey && !e.evt.deltaX ? e.evt.deltaY : e.evt.deltaX;
+      const dy = e.evt.shiftKey ? 0 : e.evt.deltaY;
+      calib.plan.position({ x: calib.plan.x() - dx, y: calib.plan.y() - dy });
+      return;
+    }
+    const old = calib.plan.scaleX();
+    const pointer = calib.plan.getPointerPosition();
+    if (!pointer) return;
+    const to = { x: (pointer.x - calib.plan.x()) / old, y: (pointer.y - calib.plan.y()) / old };
+    const ns = Math.max(pz * 0.5, Math.min(pz * 40, old * (e.evt.deltaY > 0 ? 1 / 1.15 : 1.15)));
+    calib.plan.scale({ x: ns, y: ns });
+    calib.plan.position({ x: pointer.x - to.x * ns, y: pointer.y - to.y * ns });
+    planShapes.forEach((l) => l.strokeWidth(2 / ns));
+    redrawCalibMarks(); // point marks re-derive their size from the new scale
+  });
   calib.plan.on("mousedown", () => {
     if (!calib.pendingImg) { setCalibStatus("Эхлээд камерын зураг дээр цэг дар ←"); return; }
     const p = calib.plan.getRelativePointerPosition();
