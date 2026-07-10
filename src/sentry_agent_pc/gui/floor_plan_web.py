@@ -62,6 +62,8 @@ def _compute_calibration(
 
     zones: list[dict[str, Any]] = []
     for i, fix in enumerate(fixtures):
+        if fix.get("type") == "furniture":
+            continue  # scenery (буйдан/сандал) — never a detection zone
         pts = fix.get("points") or []
         if len(pts) < 3:
             continue
@@ -178,6 +180,21 @@ def _run_window() -> None:
         js_api=api,
     )
     api.bind(window)
+
+    def _confirm_close() -> bool:
+        # Unsaved edits must not vanish on a stray window close — the editor is a
+        # detached process, so this dialog is the ONLY guard. Returning False
+        # cancels the close (pywebview `closing` contract).
+        if not api.dirty:
+            return True
+        return bool(
+            window.create_confirmation_dialog(
+                "Sentry — Plan зураг",
+                "Хадгалаагүй өөрчлөлт байна. Хадгалахгүйгээр хаах уу?",
+            )
+        )
+
+    window.events.closing += _confirm_close
     webview.start()
 
 
@@ -189,9 +206,17 @@ class FloorPlanApi:
 
     def __init__(self) -> None:
         self._window: Any = None
+        # Mirrors the editor's unsaved-changes flag (set_dirty) so the window's
+        # closing handler can guard against losing work.
+        self.dirty = False
 
     def bind(self, window: Any) -> None:
         self._window = window
+
+    def set_dirty(self, dirty: bool) -> None:
+        """The editor reports its unsaved-changes state after every mutation/save
+        so the close guard (see _run_window) knows whether to prompt."""
+        self.dirty = bool(dirty)
 
     def list_cameras(self) -> list[dict[str, str]]:
         """Registered cameras (name + mediamtx_path id) for the placement picker."""
@@ -227,7 +252,9 @@ class FloorPlanApi:
         serialized = json.dumps(plan, separators=(",", ":"))
         if len(serialized.encode("utf-8")) > _MAX_PLAN_BYTES:
             raise ValueError("План хэт том байна — элемент тоог багасгана уу")
-        return BackendClient().agent_update_floor_plan(plan)
+        result = BackendClient().agent_update_floor_plan(plan)
+        self.dirty = False  # saved — the close guard can stand down
+        return result
 
     def get_camera_frame(self, camera_id: str) -> dict[str, Any]:
         """Grab a still from the camera (matched by mediamtx_path) for Phase B
@@ -256,6 +283,23 @@ class FloorPlanApi:
             "width": res.width,
             "height": res.height,
         }
+
+    def preview_calibration(
+        self, pairs: list[dict[str, Any]], plan: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Phase B dry-run: fit the homography + derive zones WITHOUT saving, so
+        the editor can overlay the projected zones on the camera snapshot and the
+        operator verifies the mapping BY EYE before committing. Pure compute —
+        no backend calls, no state writes. {ok, reproj_err, zones} or {ok: False,
+        error} (never raises: a degenerate point set is normal mid-calibration)."""
+        try:
+            if not isinstance(plan, dict):
+                raise ValueError("plan нь объект байх ёстой")
+            homography, reproj_err, zones = _compute_calibration(pairs, plan.get("fixtures") or [])
+        except Exception as e:  # noqa: BLE001 — preview must degrade, not crash
+            return {"ok": False, "error": str(e)[:200]}
+        del homography  # preview only surfaces quality + zones; H is refit on save
+        return {"ok": True, "reproj_err": reproj_err, "zones": zones}
 
     def save_calibration(
         self, camera_id: str, pairs: list[dict[str, Any]], plan: dict[str, Any]
@@ -293,6 +337,7 @@ class FloorPlanApi:
         client = BackendClient()
         client.agent_update_floor_plan(plan)
         client.agent_update_camera(cam.uuid, zones=zones)
+        self.dirty = False  # calibration persists the whole plan too
         log.info(
             "floor_plan.calibrated", camera_id=camera_id, reproj_err=reproj_err, zones=len(zones)
         )

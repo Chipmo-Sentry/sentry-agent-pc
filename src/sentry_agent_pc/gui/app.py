@@ -1942,6 +1942,9 @@ class AgentApp(ctk.CTk):
         if not cam.uuid:
             self.set_status("⚠ Камер cloud-д бүртгэгдээгүй байна — эхлээд холбоно уу")
             return
+        # Bind after the guard: the narrowed `str` doesn't survive into the
+        # nested closure (mypy), and the record could mutate before it runs.
+        cam_uuid = cam.uuid
         to_edge = getattr(cam, "compute_tier", "") != "edge_pc"
         new_tier = "edge_pc" if to_edge else "cloud"
 
@@ -1950,7 +1953,7 @@ class AgentApp(ctk.CTk):
 
             # 1. Persist the tier on the backend (source of truth; syncs back on
             #    the next discovery poll too).
-            BackendClient().agent_update_camera(cam.uuid, compute_tier=new_tier)
+            BackendClient().agent_update_camera(cam_uuid, compute_tier=new_tier)
 
             # 2. Reflect it locally NOW so the upload gate + engine react without
             #    waiting for the sync.

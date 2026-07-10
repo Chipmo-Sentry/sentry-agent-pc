@@ -11,6 +11,9 @@ const FIX = {
   exit: { color: "#E5484D", label: "Орц/Гарц" },
   shelf: { color: "#3DD56D", label: "Тавиур" },
   checkout: { color: "#E0A82E", label: "Касс" },
+  // Scenery (буйдан/сандал/ширээ): drawable + shown in analytics, but NEVER
+  // derived into Camera.zones (no engine meaning — see _compute_calibration).
+  furniture: { color: "#A78BFA", label: "Тавилга" },
 };
 const WALL_COLOR = "#9CA3AF";
 const CAM_COLOR = "#2563EB"; // brand royal-blue (the camera is the Sentry element)
@@ -19,10 +22,18 @@ const ROT_SNAPS = [0, 45, 90, 135, 180, 225, 270, 315];
 
 // ── real-world scale ────────────────────────────────────────────────────────
 // 1 plan-unit == 1 METRE. PLAN.size therefore IS the store's real width × height
-// in metres (default 200×200 m), so lengths are entered/shown directly in metres.
-const DEFAULT_SIZE_M = [200, 200]; // default working canvas (m); adjustable via «Талбайн хэмжээ»
-const GRID_MINOR_M = 5; // faint grid line every 5 m
-const GRID_MAJOR_M = 25; // brighter, labelled grid line every 25 m
+// in metres, so lengths are entered/shown directly in metres. A typical retail
+// store is ~10×10 m → the default canvas is 20×20 (the old 200×200 made a real
+// store a tiny speck); bigger stores set «Талбайн хэмжээ».
+const DEFAULT_SIZE_M = [20, 20];
+// Grid density adapts to the canvas so a 20 m plan gets 1 m lines and a 200 m
+// warehouse doesn't drown in them. Returns [minor, major] in metres.
+function gridSteps() {
+  const m = Math.max(PLAN.size[0], PLAN.size[1]);
+  if (m <= 40) return [1, 5];
+  if (m <= 120) return [2, 10];
+  return [5, 25];
+}
 const COORD_DP = 2; // store coords to 2 dp → 1 cm precision
 const SHOW_AREA = true; // show m² on fixtures + a store-area total
 // Camera coverage overlay: a CALIBRATED camera's footprint is exact (image 0-1
@@ -32,6 +43,8 @@ const CAM_FOV_DEG = 90; // assumed horizontal field of view for the rough wedge
 const CAM_RANGE_M = 12; // assumed useful range (m) for the rough wedge
 
 const round2 = (v) => Math.round(v * 100) / 100;
+// HTML-escape for user-supplied text (fixture labels) that lands in innerHTML.
+const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 const fmtM = (u) => round2(u).toFixed(COORD_DP); // "12.50" — inputs / status
 // Clean display for on-canvas dimension labels: drop trailing ".00" (whole
 // numbers show bare, else 1 dp) so "760.00" reads as "760" and "0.50" as "0.5".
@@ -168,7 +181,9 @@ stage.on("wheel", (e) => {
   const old = stage.scaleX();
   const pointer = stage.getPointerPosition();
   const to = { x: (pointer.x - stage.x()) / old, y: (pointer.y - stage.y()) / old };
-  const ns = Math.max(0.05, Math.min(20, old * (e.evt.deltaY > 0 ? 1 / 1.1 : 1.1)));
+  // 0.02..400 px/m: 400 zooms a 2 m shelf across an HD screen (fine vertex
+  // work); the old cap of 20 couldn't even fill the window with a 10 m store.
+  const ns = Math.max(0.02, Math.min(400, old * (e.evt.deltaY > 0 ? 1 / 1.1 : 1.1)));
   stage.scale({ x: ns, y: ns });
   stage.position({ x: pointer.x - to.x * ns, y: pointer.y - to.y * ns });
   redrawShapes(); // keep labels/strokes ~constant on-screen while zooming
@@ -212,7 +227,7 @@ function redrawShapes() {
   camLayer.destroyChildren();
   PLAN.walls.forEach((w, i) => shapeLayer.add(makeLine(w.points, WALL_COLOR, false, "wall", i)));
   PLAN.fixtures.forEach((f, i) =>
-    shapeLayer.add(makeLine(f.points, (FIX[f.type] || {}).color || "#999", true, "fixture", i, (FIX[f.type] || {}).label)),
+    shapeLayer.add(makeLine(f.points, (FIX[f.type] || {}).color || "#999", true, "fixture", i, f.label || (FIX[f.type] || {}).label)),
   );
   PLAN.cameras.forEach((c, i) => camLayer.add(makeCamera(c, i)));
   shapeLayer.draw();
@@ -431,9 +446,9 @@ function drawGrid() {
   gridLayer.destroyChildren();
   const [pw, ph] = PLAN.size;
   const sx = stage.scaleX() || 1;
-  // Too many minor lines → drop them, keep the major grid. A lower threshold
-  // (was 600) trades minor detail for a cleaner, less noisy CAD canvas on the
-  // large plans typical of a store (a 1000 m plan would draw 200 minor lines/axis).
+  const [GRID_MINOR_M, GRID_MAJOR_M] = gridSteps();
+  // Too many minor lines → drop them, keep the major grid (guards a huge
+  // hand-typed canvas even after the adaptive steps).
   const minor = pw / GRID_MINOR_M > 160 || ph / GRID_MINOR_M > 160 ? GRID_MAJOR_M : GRID_MINOR_M;
   const isMajor = (v) => Math.abs(v % GRID_MAJOR_M) < 1e-6 || Math.abs((v % GRID_MAJOR_M) - GRID_MAJOR_M) < 1e-6;
   const fs = 10 / sx;
@@ -457,7 +472,8 @@ function updateScaleBar() {
   const bar = document.getElementById("scalebar");
   if (!bar) return;
   const sx = stage.scaleX() || 1;
-  const nice = [0.5, 1, 2, 5, 10, 20, 25, 50, 100, 200, 500];
+  // Down to 5 cm — the zoom now goes deep enough that 0.5 m spans the screen.
+  const nice = [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 25, 50, 100, 200, 500];
   let m = nice[0];
   for (const n of nice) { if (n * sx <= 130) m = n; }
   bar.style.width = Math.round(m * sx) + "px";
@@ -624,17 +640,29 @@ function showShapeSettings(kindPlural, idx) {
     const b = bbox(f.points);
     el.innerHTML =
       `<h2>▦ ${(FIX[f.type] || {}).label || f.type}</h2>` +
+      `<div class="ss-row">нэр<input id="ss-name" type="text" maxlength="64" placeholder="ж: Архины тавиур" value="${f.label ? esc(f.label) : ""}"></div>` +
       `<div class="ss-row">өргөн (м)<input id="ss-w" type="number" min="0.1" step="0.01" value="${fmtM(b.w)}"></div>` +
       `<div class="ss-row">өндөр (м)<input id="ss-h" type="number" min="0.1" step="0.01" value="${fmtM(b.h)}"></div>` +
-      `<div class="ss-muted">Талбай: ${fmtM(polyArea(f.points))} м²</div>` +
-      `<button id="ss-apply" class="primary">Хэмжээ тавих</button>`;
+      `<div class="ss-muted">Талбай: ${fmtM(polyArea(f.points))} м² · нэр нь аналитикт харагдана</div>` +
+      `<button id="ss-apply" class="primary">Тавих</button>`;
     el.classList.remove("cs-hidden");
     const apply = () => {
+      // Name first (cheap, no geometry), then dimensions if they changed.
+      const name = document.getElementById("ss-name").value.trim();
+      const renamed = (name || null) !== (f.label || null);
+      if (renamed) { f.label = name || null; pushUndo(); }
       const w = parseFloat(document.getElementById("ss-w").value);
       const h = parseFloat(document.getElementById("ss-h").value);
-      if (w > 0 && h > 0) resizeFixture(idx, w, h);
+      if (w > 0 && h > 0 && (Math.abs(w - b.w) > 0.005 || Math.abs(h - b.h) > 0.005)) {
+        resizeFixture(idx, w, h);
+      } else if (renamed) {
+        reselectShape("fixtures", idx);
+        setStatus(name ? `Нэр «${name}» хадгалагдлаа` : "Нэр арилгалаа");
+      }
     };
     document.getElementById("ss-apply").onclick = apply;
+    const nameEl = document.getElementById("ss-name");
+    nameEl.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); apply(); } e.stopPropagation(); });
   } else if (kindPlural === "walls") {
     const segs = [];
     const pts = PLAN.walls[idx].points;
@@ -832,8 +860,11 @@ function drawPreview(raw, shift) {
     const sp = snapPoint(raw);
     if (sp) showSnapMarker(sp, "#22d3ee"); // cyan ring = snapping to a corner
   }
+  // Counter-scaled: a fixed 2 plan-unit stroke was 2 METRES thick — a fat
+  // ribbon on any real store. Same for the dash rhythm.
+  const psx = stage.scaleX() || 1;
   const flat = pts.flat().concat(hover);
-  previewLine = new Konva.Line({ points: flat, stroke: color, strokeWidth: 2, dash: [6, 4], listening: false });
+  previewLine = new Konva.Line({ points: flat, stroke: color, strokeWidth: 1.6 / psx, dash: [6 / psx, 4 / psx], listening: false });
   uiLayer.add(previewLine);
   // (no per-vertex dots — the dashed preview line + snap ring are enough, and
   //  loose dots were never cleaned up → they lingered after drawing.)
@@ -873,9 +904,10 @@ function previewRect(rawIn) {
   const [x0, y0] = rectDraft.start;
   const isRoom = rectDraft.type === "room";
   const color = isRoom ? WALL_COLOR : ((FIX[rectDraft.type] || {}).color || "#999");
+  const rsx = stage.scaleX() || 1; // counter-scaled like drawPreview
   previewLine = new Konva.Line({
     points: [x0, y0, raw[0], y0, raw[0], raw[1], x0, raw[1]],
-    stroke: color, strokeWidth: 2, dash: [6, 4], closed: true,
+    stroke: color, strokeWidth: 1.6 / rsx, dash: [6 / rsx, 4 / rsx], closed: true,
     fill: isRoom ? undefined : color + "22", listening: false,
   });
   uiLayer.add(previewLine);
@@ -969,6 +1001,20 @@ function clearMarqueeSel() {
   marqueeNodes.length = 0;
 }
 
+// Ctrl+M / Ctrl+A — select EVERYTHING (walls, fixtures, cameras) as a marquee
+// selection, so a whole draft can be deleted (Del) or inspected in one go.
+function selectAll() {
+  setTool("select");
+  deselect();
+  PLAN.fixtures.forEach((_f, i) => marqueeSel.push({ kind: "fixtures", idx: i }));
+  PLAN.walls.forEach((_w, i) => marqueeSel.push({ kind: "walls", idx: i }));
+  PLAN.cameras.forEach((_c, i) => marqueeSel.push({ kind: "cameras", idx: i }));
+  highlightMarqueeSel();
+  setStatus(marqueeSel.length
+    ? `Бүгд сонгогдлоо — ${marqueeSel.length} объект (Del товчоор устгана)`
+    : "Сонгох объект алга");
+}
+
 // ── delete the current selection (single or marquee) ────────────────────────
 function deleteSelection() {
   if (marqueeSel.length) {
@@ -997,24 +1043,41 @@ function placeCamera(raw) {
   const cam = cameras.find((c) => c.name === name) || {};
   const cid = cam.camera_id || name;
   const existing = PLAN.cameras.find((c) => c.camera_id === cid);
-  if (existing) existing.pos = raw;
-  else PLAN.cameras.push({ camera_id: cid, name: name, pos: raw, dir_deg: 0, homography: null });
+  if (existing) {
+    existing.pos = raw;
+    setStatus(`📷 «${name}» аль хэдийн байрлуулсан — шинэ цэг рүү зөөлөө (Ctrl+Z буцаана)`);
+  } else {
+    PLAN.cameras.push({ camera_id: cid, name: name, pos: raw, dir_deg: 0, homography: null });
+  }
   pushUndo();
   render();
 }
 
+// ── unsaved-changes (dirty) tracking ────────────────────────────────────────
+// Every mutation funnels through pushUndo/undo/redo, so those are the single
+// place dirty flips on. The Python side mirrors it (set_dirty) to guard the
+// window close; the save button shows a «•» so the state is visible too.
+let dirty = false;
+function setDirty(on) {
+  dirty = on;
+  const b = document.getElementById("btn-save");
+  if (b) b.textContent = on ? "Хадгалах •" : "Хадгалах";
+  try { window.pywebview.api.set_dirty(on); } catch (e) { /* bridge not ready */ }
+}
+
 // ── undo / redo ───────────────────────────────────────────────────────────
 function snapshot() { return JSON.stringify(PLAN); }
-function pushUndo() { undoStack.push(snapshot()); if (undoStack.length > 100) undoStack.shift(); redoStack.length = 0; }
+function pushUndo() { undoStack.push(snapshot()); if (undoStack.length > 100) undoStack.shift(); redoStack.length = 0; setDirty(true); }
 function undo() {
   if (undoStack.length < 2) return;
   redoStack.push(undoStack.pop());
   PLAN = JSON.parse(undoStack[undoStack.length - 1]);
+  setDirty(true);
   relinkCalibCam(); deselect(); render();
 }
 function redo() {
   if (!redoStack.length) return;
-  const s = redoStack.pop(); undoStack.push(s); PLAN = JSON.parse(s); relinkCalibCam(); deselect(); render();
+  const s = redoStack.pop(); undoStack.push(s); PLAN = JSON.parse(s); setDirty(true); relinkCalibCam(); deselect(); render();
 }
 // undo/redo replace PLAN wholesale (fresh camera objects). If a calibration is
 // open, re-point calib.cam at the NEW object with the same id, so a later save
@@ -1032,7 +1095,7 @@ function renderElements() {
   el.innerHTML = "";
   const rows = [];
   PLAN.cameras.forEach((c, i) => rows.push(["cameras", i, CAM_COLOR, "📷 " + (c.name || c.camera_id)]));
-  PLAN.fixtures.forEach((f, i) => rows.push(["fixtures", i, (FIX[f.type] || {}).color || "#999", "▦ " + ((FIX[f.type] || {}).label || f.type)]));
+  PLAN.fixtures.forEach((f, i) => rows.push(["fixtures", i, (FIX[f.type] || {}).color || "#999", "▦ " + (f.label || (FIX[f.type] || {}).label || f.type)]));
   PLAN.walls.forEach((_w, i) => rows.push(["walls", i, WALL_COLOR, "▭ Хана " + (i + 1)]));
   if (!rows.length) { el.innerHTML = '<p class="hint">Хоосон</p>'; return; }
   rows.forEach(([kind, idx, color, text]) => {
@@ -1041,17 +1104,34 @@ function renderElements() {
     // Camera rows get a «calibrate» action (Phase B) before the delete button.
     const calib = kind === "cameras"
       ? `<button class="calib" title="Калибровк хийх">📐</button>` : "";
-    row.innerHTML = `<span class="dot" style="background:${color}"></span><span class="name">${text}</span>${calib}<button class="del">✕</button>`;
+    row.innerHTML = `<span class="dot" style="background:${color}"></span><span class="name" title="Дарж сонгох">${esc(text)}</span>${calib}<button class="del">✕</button>`;
     row.querySelector(".del").onclick = () => { PLAN[kind].splice(idx, 1); deselect(); pushUndo(); render(); };
     if (kind === "cameras") row.querySelector(".calib").onclick = () => startCalibration(idx);
+    // Click a row → select that element on the canvas (same as clicking the shape).
+    row.querySelector(".name").onclick = () => selectFromList(kind, idx);
     el.appendChild(row);
   });
+}
+
+// Select an element from the sidebar list — resolve its live Konva node the
+// same way canvas clicks do, so the settings panel/anchors open identically.
+function selectFromList(kind, idx) {
+  setTool("select");
+  if (kind === "cameras") {
+    const g = camLayer.getChildren()[idx];
+    if (g) selectCamera(g, idx);
+    return;
+  }
+  const singular = kind === "walls" ? "wall" : "fixture";
+  let node = null;
+  shapeLayer.find("Line").forEach((l) => { if (l.name() === `${singular}:${idx}`) node = l; });
+  if (node) selectShape(node, singular, idx);
 }
 
 // ── new / clear ────────────────────────────────────────────────────────────
 function clearPlan() {
   if (!window.confirm("Бүх зураг (хана, бүс, камер) устгаж шинээр эхлэх үү?")) return;
-  PLAN.size = DEFAULT_SIZE_M.slice(); // «Шинээр эхлэх» → анхдагч талбай (200×200 м)
+  PLAN.size = DEFAULT_SIZE_M.slice(); // «Шинээр эхлэх» → анхдагч талбай
   PLAN.walls = [];
   PLAN.fixtures = [];
   PLAN.cameras = [];
@@ -1060,7 +1140,7 @@ function clearPlan() {
   pushUndo();
   render();
   fit();
-  setStatus("Шинэ хоосон зураг (200 × 200 м) — зурж эхлээрэй");
+  setStatus(`Шинэ хоосон зураг (${DEFAULT_SIZE_M[0]} × ${DEFAULT_SIZE_M[1]} м) — зурж эхлээрэй`);
 }
 
 // ── camera settings panel (click a camera → its settings + live status) ─────
@@ -1082,7 +1162,7 @@ function showCameraSettings(idx) {
     ? `✅ Хийсэн${cam.reproj_err != null ? ` · <b style="color:${v.color}">${v.word}</b> (${(cam.reproj_err * 100).toFixed(1)}%)` : ""}`
     : `<span style="color:#E0A82E">❌ Хийгээгүй — зон үүсэхгүй</span>`;
   el.innerHTML = `
-    <h2>📷 ${cam.name || cam.camera_id}</h2>
+    <h2>📷 ${esc(cam.name || cam.camera_id)}</h2>
     <div class="cs-row">Төлөв: <span id="cs-online">${onlineTxt}</span></div>
     <div class="cs-row">Калибрац: ${calibTxt}</div>
     <div class="cs-row">Чиглэл: ${cam.dir_deg || 0}°</div>
@@ -1173,6 +1253,10 @@ function buildCalibStages(frame) {
     const dw = iw * sc, dh = ih * sc, ox = (cw - dw) / 2, oy = (ch - dh) / 2;
     calib.imgFit = { ox, oy, dw, dh };
     imgLayer.add(new Konva.Image({ image: imageObj, x: ox, y: oy, width: dw, height: dh }));
+    // Derived-zone preview UNDER the point marks: the operator sees exactly
+    // where the plan fixtures land on this camera before saving.
+    calib.zoneMarks = new Konva.Group();
+    imgLayer.add(calib.zoneMarks);
     calib.imgMarks = new Konva.Group();
     imgLayer.add(calib.imgMarks);
     imgLayer.draw();
@@ -1209,10 +1293,12 @@ function buildCalibStages(frame) {
   calib.plan.on("mousedown", () => {
     if (!calib.pendingImg) { setCalibStatus("Эхлээд камерын зураг дээр цэг дар ←"); return; }
     const p = calib.plan.getRelativePointerPosition();
-    calib.pairs.push({ image: calib.pendingImg, plan: [+p.x.toFixed(1), +p.y.toFixed(1)] });
+    // 2 dp = 1 cm — anchor points at 0.1 m (1 dp) were coarse enough to inflate
+    // the homography's reprojection error on small stores.
+    calib.pairs.push({ image: calib.pendingImg, plan: [round2(p.x), round2(p.y)] });
     calib.pendingImg = null;
     redrawCalibMarks();
-    setCalibStatus(`${calib.pairs.length} цэг хослол${calib.pairs.length < 4 ? " (≥4 хэрэгтэй)" : " — Хадгалахад бэлэн"}`);
+    refreshCalibPreview();
   });
   setCalibStatus("1) Камерын зураг дээр танигдах цэг дар → 2) планы таарах цэгийг дар. ≥4 хослол.");
 }
@@ -1244,7 +1330,53 @@ function undoCalibPoint() {
   if (calib.pendingImg) calib.pendingImg = null;
   else calib.pairs.pop();
   redrawCalibMarks();
-  setCalibStatus(`${calib.pairs.length} цэг хослол`);
+  refreshCalibPreview();
+}
+
+// ── live zone preview ────────────────────────────────────────────────────────
+// From the 4th point pair on, every added/removed pair re-fits the homography
+// (dry-run, nothing saved) and paints the DERIVED zones straight onto the
+// camera snapshot — "does the касс polygon actually sit on the касс?" is
+// answered by eye before Хадгалах, which used to require a blind save.
+async function refreshCalibPreview() {
+  const n = calib.pairs.length;
+  if (n < 4) {
+    // Invalidate any in-flight ≥4-pair preview too — otherwise its late
+    // response would repaint stale zones right after an undo below 4 pairs.
+    calib.previewSeq = (calib.previewSeq || 0) + 1;
+    if (calib.zoneMarks) { calib.zoneMarks.destroyChildren(); calib.zoneMarks.getLayer().batchDraw(); }
+    setCalibStatus(`${n} цэг хослол (≥4 хэрэгтэй)`);
+    return;
+  }
+  const seq = (calib.previewSeq = (calib.previewSeq || 0) + 1);
+  let r = null;
+  try { r = await window.pywebview.api.preview_calibration(calib.pairs, PLAN); }
+  catch (e) { r = { ok: false, error: String(e) }; }
+  if (seq !== calib.previewSeq || !calib.zoneMarks) return; // stale response / closed
+  calib.zoneMarks.destroyChildren();
+  if (!r || !r.ok) {
+    calib.zoneMarks.getLayer().batchDraw();
+    setCalibStatus(`${n} цэг хослол · ⚠ ${(r && r.error) || "урьдчилан харуулж чадсангүй"}`);
+    return;
+  }
+  const f = calib.imgFit;
+  (r.zones || []).forEach((z) => {
+    const color = (FIX[z.type] || {}).color || "#999";
+    const flat = [];
+    z.points.forEach(([zx, zy]) => { flat.push(f.ox + zx * f.dw, f.oy + zy * f.dh); });
+    calib.zoneMarks.add(new Konva.Line({
+      points: flat, closed: true, stroke: color, strokeWidth: 2,
+      fill: color + "33", dash: [6, 4], listening: false,
+    }));
+  });
+  calib.zoneMarks.getLayer().batchDraw();
+  const v = calibVerdict(r.reproj_err);
+  const zn = (r.zones || []).length;
+  setCalibStatus(
+    `${n} цэг · алдаа ${(r.reproj_err * 100).toFixed(1)}% — ${v.word}` +
+    (zn ? ` · ${zn} зон зураг дээр буув — байрлал таарч байвал Хадгал` : " · энэ камерт харагдах зон алга") +
+    (v.hint ? ` (${v.hint})` : ""),
+  );
 }
 
 function closeCalibration() {
@@ -1252,6 +1384,7 @@ function closeCalibration() {
   if (calib.img) { calib.img.destroy(); calib.img = null; }
   if (calib.plan) { calib.plan.destroy(); calib.plan = null; }
   calib.pairs = []; calib.pendingImg = null;
+  calib.zoneMarks = null; calib.previewSeq = (calib.previewSeq || 0) + 1; // drop in-flight previews
 }
 
 async function saveCalibration() {
@@ -1266,6 +1399,9 @@ async function saveCalibration() {
     // Mark calibrated so the camera badge + settings panel update.
     calib.cam._calibrated = true;
     calib.cam.reproj_err = r.reproj_err;
+    // save_calibration persisted the whole PLAN we passed (the overlay blocks
+    // canvas edits meanwhile), so the unsaved-changes flag stands down too.
+    setDirty(false);
     render();
     setTimeout(closeCalibration, 1400);
   } catch (e) {
@@ -1299,11 +1435,15 @@ const TEMPLATE = {
   ],
 };
 function loadTemplate() {
-  // A ~44×34 m store CENTRED inside the 200×200 default canvas (contained, not
-  // filling it). Template is authored in 1000×800 units spanning ~60..940 / 60..740.
-  const K = 0.05, OX = 75, OY = 80;
+  // Replaces the drawn walls/fixtures — irreversible except via undo, so ask
+  // first when there is anything to lose (a blank canvas loads silently).
+  if ((PLAN.walls.length || PLAN.fixtures.length) &&
+      !window.confirm("Жишээ загвар таны зурсан хана/бүсийг ДАРЖ бичнэ (камерууд хэвээр). Үргэлжлүүлэх үү?")) return;
+  // A ~44×34 m store on a matching 50×40 m canvas (template authored in
+  // 1000×800 units spanning ~60..940 / 60..740; K scales to metres).
+  const K = 0.05, OX = 0, OY = 0;
   const sc = (pts) => pts.map(([x, y]) => [round2(x * K + OX), round2(y * K + OY)]);
-  PLAN.size = DEFAULT_SIZE_M.slice(); // keep the 200×200 default — the store sits inside it
+  PLAN.size = [50, 40];
   PLAN.walls = TEMPLATE.walls.map((w) => ({ points: sc(w.points) }));
   PLAN.fixtures = TEMPLATE.fixtures.map((f) => ({ type: f.type, points: sc(f.points) }));
   // keep PLAN.cameras — the user's placed cameras are theirs
@@ -1311,15 +1451,34 @@ function loadTemplate() {
   pushUndo();
   render();
   fit();
-  setStatus("Жишээ загвар — 200×200 м талбайд багтсан дэлгүүр. Өөрийн дэлгүүрт тааруулж засаарай.");
+  setStatus("Жишээ загвар — 44×34 м дэлгүүр (50×40 м талбайд). Өөрийн дэлгүүрт тааруулж засаарай.");
 }
 
 // ── fit ─────────────────────────────────────────────────────────────────────
+// Bounding box of everything DRAWN (walls/fixtures/cameras), or null when blank.
+function contentBBox() {
+  let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity, any = false;
+  const eat = (p) => { any = true; x1 = Math.min(x1, p[0]); y1 = Math.min(y1, p[1]); x2 = Math.max(x2, p[0]); y2 = Math.max(y2, p[1]); };
+  PLAN.walls.forEach((w) => w.points.forEach(eat));
+  PLAN.fixtures.forEach((f) => f.points.forEach(eat));
+  PLAN.cameras.forEach((c) => eat(c.pos));
+  return any ? { x: x1, y: y1, w: Math.max(x2 - x1, 0.5), h: Math.max(y2 - y1, 0.5) } : null;
+}
+
+// Fit the DRAWN store, not the whole canvas: a 10×10 m store on a big canvas
+// used to shrink to a speck. Padded 10% (min 1 m); a blank plan fits the canvas.
 function fit() {
-  const [pw, ph] = PLAN.size;
-  const z = Math.min(stage.width() / pw, stage.height() / ph) * 0.9;
+  const b = contentBBox();
+  let x, y, w, h;
+  if (b) {
+    const pad = Math.max(Math.min(b.w, b.h) * 0.1, 1);
+    x = b.x - pad; y = b.y - pad; w = b.w + 2 * pad; h = b.h + 2 * pad;
+  } else {
+    x = 0; y = 0; [w, h] = PLAN.size;
+  }
+  const z = Math.min(stage.width() / w, stage.height() / h) * 0.95;
   stage.scale({ x: z, y: z });
-  stage.position({ x: (stage.width() - pw * z) / 2, y: (stage.height() - ph * z) / 2 });
+  stage.position({ x: (stage.width() - w * z) / 2 - x * z, y: (stage.height() - h * z) / 2 - y * z });
   redrawShapes(); // recompute counter-scaled labels/strokes at the new scale
 }
 
@@ -1395,20 +1554,23 @@ if (planBtn) planBtn.onclick = planApply;
 });
 
 // ── keyboard shortcuts ──────────────────────────────────────────────────────
-const TOOL_KEYS = ["select", "wall", "room", "shelf", "exit", "checkout", "camera"];
+const TOOL_KEYS = ["select", "wall", "room", "shelf", "exit", "checkout", "furniture", "camera"];
 window.addEventListener("keydown", (e) => {
   // Typing in an input (e.g. length) must not trigger tool shortcuts.
   if (e.target && e.target.tagName === "INPUT") return;
   if (e.ctrlKey && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); return; }
   if (e.ctrlKey && e.key.toLowerCase() === "y") { e.preventDefault(); redo(); return; }
   if (e.ctrlKey && e.key.toLowerCase() === "s") { e.preventDefault(); save(); return; }
+  if (e.ctrlKey && (e.key.toLowerCase() === "m" || e.key.toLowerCase() === "a")) {
+    e.preventDefault(); selectAll(); return;
+  }
   // While drawing a wall, typing a digit/decimal opens the length box pre-filled,
   // so you can set the length without reaching for the toolbar.
   if (draft && draft.type === "wall" && /^[0-9.]$/.test(e.key)) {
     const i = document.getElementById("len-input");
     if (i) { showLenInput(); i.value = e.key; i.focus(); e.preventDefault(); return; }
   }
-  if (e.key >= "1" && e.key <= "7") setTool(TOOL_KEYS[+e.key - 1]);
+  if (e.key >= "1" && e.key <= "8") setTool(TOOL_KEYS[+e.key - 1]);
   else if (e.key === "Enter") finishDraft();
   else if (e.key === "Escape") { cancelDraft(); cancelRect(); cancelMarquee(); deselect(); }
   else if (e.key === "Backspace" && draft) { draft.pts.pop(); if (!draft.pts.length) cancelDraft(); else drawPreview(draft.pts[draft.pts.length - 1], false); }
@@ -1431,15 +1593,20 @@ window.addEventListener("keyup", (e) => {
 
 window.addEventListener("resize", () => {
   stage.size({ width: holder.clientWidth, height: holder.clientHeight });
-  drawGrid();
+  redrawShapes(); // includes drawGrid + coverage, so overlays track the new size
 });
 
 // ── load / save via pywebview bridge ───────────────────────────────────────
 async function save() {
   if (draft && draft.pts.length >= (draft.type === "wall" ? 2 : 3)) finishDraft();
   setStatus("Хадгалж байна…");
+  const saved = snapshot(); // what actually went to the backend
   try {
     await window.pywebview.api.save_plan(PLAN);
+    // Only stand the dirty flag down if nothing changed DURING the await —
+    // an edit made mid-save must survive as unsaved.
+    if (snapshot() === saved) setDirty(false);
+    else try { window.pywebview.api.set_dirty(true); } catch (e) { /* keep JS state */ }
     // Save always succeeds (WIP is fine), but flag a not-yet-protected setup.
     const cams = PLAN.cameras;
     const uncal = cams.filter((c) => !c.homography).length;
@@ -1466,6 +1633,7 @@ async function boot() {
     if (loaded && typeof loaded === "object") PLAN = normalize(loaded);
   } catch { /* empty plan */ }
   undoStack.length = 0; undoStack.push(snapshot());
+  setDirty(false); // freshly loaded = nothing to lose yet
   // Re-measure the canvas now that the window is shown + laid out — if the stage
   // was created before layout (0×0), pan/draw coords would be broken until a
   // resize. boot() runs on pywebviewready (window visible), so the holder is sized.
@@ -1477,17 +1645,27 @@ async function boot() {
 }
 
 function normalize(p) {
-  return {
+  const out = {
     version: p.version || 1,
     size: p.size && p.size.length === 2 ? p.size : DEFAULT_SIZE_M.slice(),
     walls: (p.walls || []).map((w) => ({ points: w.points || [] })),
-    fixtures: (p.fixtures || []).map((f) => ({ id: f.id, type: f.type, points: f.points || [] })),
+    fixtures: (p.fixtures || []).map((f) => ({ id: f.id, type: f.type, label: f.label || null, points: f.points || [] })),
     cameras: (p.cameras || []).map((c) => ({
       camera_id: c.camera_id, name: c.name, pos: c.pos || [0, 0],
       dir_deg: c.dir_deg || 0, homography: c.homography || null,
       reproj_err: c.reproj_err, calib_points: c.calib_points,
     })),
   };
+  // Units migration: stores created before the metre pivot (v0.7.66) got the
+  // old backend default 1000×800 "relative units" canvas; briefly the metre
+  // default was 200×200 (too big for a ~10×10 m store). If NOTHING was ever
+  // drawn, quietly start on the current default.
+  const legacy = (out.size[0] === 1000 && out.size[1] === 800) ||
+    (out.size[0] === 200 && out.size[1] === 200);
+  if (!out.walls.length && !out.fixtures.length && !out.cameras.length && legacy) {
+    out.size = DEFAULT_SIZE_M.slice();
+  }
+  return out;
 }
 
 // pywebview injects the api asynchronously; wait for it.

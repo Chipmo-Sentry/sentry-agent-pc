@@ -127,6 +127,61 @@ def test_compute_calibration_needs_four_points() -> None:
         fpw._compute_calibration([{"plan": [0, 0], "image": [0, 0]}], [])
 
 
+def test_compute_calibration_skips_furniture() -> None:
+    # Furniture is scenery: visible on the plan/analytics, but must NOT become a
+    # detection zone (the engine has no semantics for it, and backend Zone
+    # consumers only know shelf/exit/entrance/checkout).
+    pairs = [
+        {"plan": [0, 0], "image": [0, 0]},
+        {"plan": [1000, 0], "image": [1, 0]},
+        {"plan": [1000, 800], "image": [1, 1]},
+        {"plan": [0, 800], "image": [0, 1]},
+    ]
+    fixtures = [
+        {"type": "furniture", "points": [[250, 200], [750, 200], [750, 600], [250, 600]]},
+        {"type": "shelf", "points": [[250, 200], [750, 200], [750, 600], [250, 600]]},
+    ]
+    _h, _e, zones = fpw._compute_calibration(pairs, fixtures)
+    assert [z["type"] for z in zones] == ["shelf"]
+
+
+def test_preview_calibration_dry_run() -> None:
+    # Same geometry as the identity-scale test, but through the bridge: returns
+    # the derived zones + error WITHOUT touching backend/state (pure compute).
+    pairs = [
+        {"plan": [0, 0], "image": [0, 0]},
+        {"plan": [1000, 0], "image": [1, 0]},
+        {"plan": [1000, 800], "image": [1, 1]},
+        {"plan": [0, 800], "image": [0, 1]},
+    ]
+    plan = {
+        "fixtures": [{"type": "shelf", "points": [[250, 200], [750, 200], [750, 600], [250, 600]]}]
+    }
+    r = FloorPlanApi().preview_calibration(pairs, plan)
+    assert r["ok"] is True
+    assert r["reproj_err"] < 1e-6
+    assert len(r["zones"]) == 1 and r["zones"][0]["type"] == "shelf"
+
+
+def test_preview_calibration_degrades_not_raises() -> None:
+    # Mid-calibration states (too few points) must return {ok: False}, never
+    # bubble an exception into the JS Promise — the preview runs on every click.
+    r = FloorPlanApi().preview_calibration([{"plan": [0, 0], "image": [0, 0]}], {})
+    assert r["ok"] is False and "4" in r["error"]
+    assert FloorPlanApi().preview_calibration([], "not-a-dict")["ok"] is False  # type: ignore[arg-type]
+
+
+def test_set_dirty_mirrors_flag_and_save_clears_it(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    fake = _FakeBackend()
+    monkeypatch.setattr("sentry_agent_pc.backend_client.BackendClient", lambda: fake)
+    api = FloorPlanApi()
+    assert api.dirty is False
+    api.set_dirty(True)
+    assert api.dirty is True
+    api.save_plan(_PLAN)  # successful save stands the close guard down
+    assert api.dirty is False
+
+
 def test_rtsp_host_port_parsing() -> None:
     assert fpw._rtsp_host_port("rtsp://admin:pw@192.168.1.64:554/Streaming") == (
         "192.168.1.64",
