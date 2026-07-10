@@ -4,11 +4,13 @@ The Windows camera agent for **Chipmo Sentry**. It runs on a PC inside the store
 local network, pairs the store to the cloud with a 6-digit code, and relays each camera's stream up to the
 AI host — with **zero new hardware** and a one-click installer.
 
-Python 3.11 · CustomTkinter (desktop GUI) · ONVIF · OpenCV · ffmpeg · PyInstaller (`--onedir` .exe) · Apache-2.0
+Python 3.11 · CustomTkinter (desktop GUI) · ONVIF · OpenCV · ffmpeg · OpenVINO (edge Stage-1) · PyInstaller (`--onedir` .exe) · Apache-2.0
 
-**Current release: v0.7.2** — the **offline LAN live view** now pulls each camera's **low-res sub-stream**
-(falling back to the main stream), so the grid stays smooth even on a PC that's also running the AI workers.
-Builds on v0.7.1's responsive dark grid, colour-coded status badges, double-click-to-focus, and fixed tile sizing.
+**Current release: v0.7.88** — the **«Plan зураг» floor-plan editor** now works at real-store scale
+(20×20 m default, fit-to-content, deep zoom), adds a **«Тавилга»** furniture tool, live **calibration
+zone preview** on the camera snapshot, an unsaved-changes guard, and named zones that flow through to the
+web **/insights** analytics. Builds on the offline LAN live view, responsive dark grid, and colour-coded
+status badges.
 
 ---
 
@@ -22,7 +24,8 @@ Builds on v0.7.1's responsive dark grid, colour-coded status badges, double-clic
   errors *without* tripping camera account lockouts.
 - **Pair** — enter a 6-digit store code (generated in the web app's "Компьютер холбох" flow) → the agent
   redeems it at `/api/v1/agents/pair`, receives a scoped **agent JWT**, and stores it in an encrypted state
-  file (Fernet key derived from the Windows machine GUID, so it survives reboots and network changes).
+  file (sealed with Windows **DPAPI** — user-bound, OS-held key; a legacy machine-key Fernet fallback derived
+  from the Windows MachineGuid covers non-Windows/dev and is migrated to DPAPI on next save).
   Paired cameras register via the agent-scoped `/api/v1/agent/cameras` endpoints.
 - **Relay (push)** — for each camera, a managed `ffmpeg` relay pushes the LAN RTSP stream to the cloud
   MediaMTX (`-c copy`; **H.265 → H.264** transcode via `libx264` for browser compatibility), with
@@ -68,11 +71,15 @@ src/sentry_agent_pc/
 ├── settings.py / config_file.py — %APPDATA%/Chipmo/sentry-agent config
 ├── autostart.py              — HKCU Run auto-start
 ├── updater.py                — GitHub-release self-updater (SHA-256 verified)
-├── discovery/                — onvif, rtsp_probe, manual (brand templates), rtsp_paths
+├── dpapi.py                  — Windows DPAPI seal/unseal for the state file
+├── discovery/                — onvif, rtsp_probe, manual (brand templates), rtsp_paths, snapshot
 ├── services/discovery_service.py — scan orchestration + state persistence
-├── streaming/                — pusher (per-camera ffmpeg relay), controller (stream-config sync)
-└── gui/                      — app, scan_dialog, add_dialog, local_view, live_view, update_dialog,
-                               tray, widgets
+├── streaming/                — pusher (per-camera ffmpeg relay), controller (stream-config sync),
+│                               tunnel, local_mediamtx (LAN fan-out)
+├── edge/                     — Stage-1 on-agent AI: detector (YOLO OpenVINO), behavior, pipeline,
+│                               recorder, overlay, zones, uploader, config + config_poller
+└── gui/                      — app, scan_dialog, add_dialog, edit_dialog, local_view, live_view,
+                               update_dialog, tray, widgets, datatable, zone_editor, floor_plan_web
 ```
 
 ### Build the `.exe`
@@ -98,9 +105,10 @@ uv run ruff check . && uv run mypy src/sentry_agent_pc
 
 ## Architecture notes
 
-- **No AI on the agent.** The agent only discovers, pairs, and relays — every alert decision is made by
-  [sentry-ai](https://github.com/Chipmo-Sentry/sentry-ai) on the GPU host. (Edge AI is a separate M3 story
-  for the Pi agents.)
+- **Edge Stage-1 AI runs on the agent.** Alongside discover/pair/relay, the agent runs a bundled YOLO
+  OpenVINO IR (`src/sentry_agent_pc/edge/`) on the store PC's Intel iGPU/CPU: detect → behaviour gate →
+  suspicious-clip recorder + live overlay. The heavier VLM/second-stage decisions still run on
+  [sentry-ai](https://github.com/Chipmo-Sentry/sentry-ai) on the GPU host.
 - **RTSP over TCP** everywhere (UDP is unreliable on busy store LANs).
 - **Encrypted, reboot-stable state** means a paired agent reconnects on its own after a power cut.
 
