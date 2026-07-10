@@ -43,6 +43,8 @@ const CAM_FOV_DEG = 90; // assumed horizontal field of view for the rough wedge
 const CAM_RANGE_M = 12; // assumed useful range (m) for the rough wedge
 
 const round2 = (v) => Math.round(v * 100) / 100;
+// HTML-escape for user-supplied text (fixture labels) that lands in innerHTML.
+const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 const fmtM = (u) => round2(u).toFixed(COORD_DP); // "12.50" — inputs / status
 // Clean display for on-canvas dimension labels: drop trailing ".00" (whole
 // numbers show bare, else 1 dp) so "760.00" reads as "760" and "0.50" as "0.5".
@@ -636,7 +638,6 @@ function showShapeSettings(kindPlural, idx) {
   if (kindPlural === "fixtures") {
     const f = PLAN.fixtures[idx];
     const b = bbox(f.points);
-    const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
     el.innerHTML =
       `<h2>▦ ${(FIX[f.type] || {}).label || f.type}</h2>` +
       `<div class="ss-row">нэр<input id="ss-name" type="text" maxlength="64" placeholder="ж: Архины тавиур" value="${f.label ? esc(f.label) : ""}"></div>` +
@@ -1103,7 +1104,7 @@ function renderElements() {
     // Camera rows get a «calibrate» action (Phase B) before the delete button.
     const calib = kind === "cameras"
       ? `<button class="calib" title="Калибровк хийх">📐</button>` : "";
-    row.innerHTML = `<span class="dot" style="background:${color}"></span><span class="name" title="Дарж сонгох">${text}</span>${calib}<button class="del">✕</button>`;
+    row.innerHTML = `<span class="dot" style="background:${color}"></span><span class="name" title="Дарж сонгох">${esc(text)}</span>${calib}<button class="del">✕</button>`;
     row.querySelector(".del").onclick = () => { PLAN[kind].splice(idx, 1); deselect(); pushUndo(); render(); };
     if (kind === "cameras") row.querySelector(".calib").onclick = () => startCalibration(idx);
     // Click a row → select that element on the canvas (same as clicking the shape).
@@ -1161,7 +1162,7 @@ function showCameraSettings(idx) {
     ? `✅ Хийсэн${cam.reproj_err != null ? ` · <b style="color:${v.color}">${v.word}</b> (${(cam.reproj_err * 100).toFixed(1)}%)` : ""}`
     : `<span style="color:#E0A82E">❌ Хийгээгүй — зон үүсэхгүй</span>`;
   el.innerHTML = `
-    <h2>📷 ${cam.name || cam.camera_id}</h2>
+    <h2>📷 ${esc(cam.name || cam.camera_id)}</h2>
     <div class="cs-row">Төлөв: <span id="cs-online">${onlineTxt}</span></div>
     <div class="cs-row">Калибрац: ${calibTxt}</div>
     <div class="cs-row">Чиглэл: ${cam.dir_deg || 0}°</div>
@@ -1340,6 +1341,9 @@ function undoCalibPoint() {
 async function refreshCalibPreview() {
   const n = calib.pairs.length;
   if (n < 4) {
+    // Invalidate any in-flight ≥4-pair preview too — otherwise its late
+    // response would repaint stale zones right after an undo below 4 pairs.
+    calib.previewSeq = (calib.previewSeq || 0) + 1;
     if (calib.zoneMarks) { calib.zoneMarks.destroyChildren(); calib.zoneMarks.getLayer().batchDraw(); }
     setCalibStatus(`${n} цэг хослол (≥4 хэрэгтэй)`);
     return;
@@ -1395,6 +1399,9 @@ async function saveCalibration() {
     // Mark calibrated so the camera badge + settings panel update.
     calib.cam._calibrated = true;
     calib.cam.reproj_err = r.reproj_err;
+    // save_calibration persisted the whole PLAN we passed (the overlay blocks
+    // canvas edits meanwhile), so the unsaved-changes flag stands down too.
+    setDirty(false);
     render();
     setTimeout(closeCalibration, 1400);
   } catch (e) {
@@ -1593,9 +1600,13 @@ window.addEventListener("resize", () => {
 async function save() {
   if (draft && draft.pts.length >= (draft.type === "wall" ? 2 : 3)) finishDraft();
   setStatus("Хадгалж байна…");
+  const saved = snapshot(); // what actually went to the backend
   try {
     await window.pywebview.api.save_plan(PLAN);
-    setDirty(false);
+    // Only stand the dirty flag down if nothing changed DURING the await —
+    // an edit made mid-save must survive as unsaved.
+    if (snapshot() === saved) setDirty(false);
+    else try { window.pywebview.api.set_dirty(true); } catch (e) { /* keep JS state */ }
     // Save always succeeds (WIP is fine), but flag a not-yet-protected setup.
     const cams = PLAN.cameras;
     const uncal = cams.filter((c) => !c.homography).length;
