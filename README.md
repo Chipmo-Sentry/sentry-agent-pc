@@ -6,11 +6,11 @@ AI host — with **zero new hardware** and a one-click installer.
 
 Python 3.11 · CustomTkinter (desktop GUI) · ONVIF · OpenCV · ffmpeg · OpenVINO (edge Stage-1) · PyInstaller (`--onedir` .exe) · Apache-2.0
 
-**Current release: v0.7.88** — the **«Plan зураг» floor-plan editor** now works at real-store scale
-(20×20 m default, fit-to-content, deep zoom), adds a **«Тавилга»** furniture tool, live **calibration
-zone preview** on the camera snapshot, an unsaved-changes guard, and named zones that flow through to the
-web **/insights** analytics. Builds on the offline LAN live view, responsive dark grid, and colour-coded
-status badges.
+**Current release: v0.7.90** — the **«Plan зураг» floor-plan editor** now works at real-store scale
+(20×20 m default, fit-to-content, deep zoom), adds **«Тавилга»** furniture and **«Хөргөгч»** fridge zone
+tools, live **calibration zone preview** on the camera snapshot, an unsaved-changes guard, and named zones
+that flow through to the web **/insights** analytics. Builds on the offline LAN live view, responsive dark
+grid, and colour-coded status badges.
 
 ---
 
