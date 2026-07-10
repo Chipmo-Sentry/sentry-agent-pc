@@ -11,6 +11,9 @@ const FIX = {
   exit: { color: "#E5484D", label: "Орц/Гарц" },
   shelf: { color: "#3DD56D", label: "Тавиур" },
   checkout: { color: "#E0A82E", label: "Касс" },
+  // Item-taking area like a shelf — the edge engine counts fridge visits into
+  // the same repeated-visit behaviour (edge/behavior.py).
+  fridge: { color: "#38BDF8", label: "Хөргүүр" },
   // Scenery (буйдан/сандал/ширээ): drawable + shown in analytics, but NEVER
   // derived into Camera.zones (no engine meaning — see _compute_calibration).
   furniture: { color: "#A78BFA", label: "Тавилга" },
@@ -176,8 +179,17 @@ function clearSnapMarker() {
 }
 
 // ── zoom / pan ──────────────────────────────────────────────────────────
+// Plain wheel scrolls the canvas (Shift = sideways); Ctrl+wheel — which is also
+// what browsers report for a trackpad pinch — zooms about the cursor. Space+drag
+// stays as the free-pan fallback.
 stage.on("wheel", (e) => {
   e.evt.preventDefault();
+  if (!(e.evt.ctrlKey || e.evt.metaKey)) {
+    const dx = e.evt.shiftKey && !e.evt.deltaX ? e.evt.deltaY : e.evt.deltaX;
+    const dy = e.evt.shiftKey ? 0 : e.evt.deltaY;
+    stage.position({ x: stage.x() - dx, y: stage.y() - dy });
+    return;
+  }
   const old = stage.scaleX();
   const pointer = stage.getPointerPosition();
   const to = { x: (pointer.x - stage.x()) / old, y: (pointer.y - stage.y()) / old };
@@ -325,16 +337,51 @@ function makeLine(pts, color, closed, kind, idx, label) {
       selectShape(line, kind, idx);
     }
   });
+  // Double-click near an edge (select mode) inserts a vertex at that spot, so a
+  // drawn shape can gain corners without redrawing it. The distance gate keeps
+  // dblclicks on a fixture's filled interior from inserting phantom points.
+  line.on("dblclick dbltap", (e) => {
+    if (tool !== "select") return;
+    e.cancelBubble = true;
+    const arr = kind === "wall" ? PLAN.walls[idx].points : PLAN.fixtures[idx].points;
+    const p = pointerPlan();
+    const segs = closed ? arr.length : arr.length - 1;
+    let at = -1, bd = 12 / stage.scaleX(), bp = null;
+    for (let i = 0; i < segs; i++) {
+      const a = arr[i], b = arr[(i + 1) % arr.length];
+      const vx = b[0] - a[0], vy = b[1] - a[1];
+      const L2 = vx * vx + vy * vy;
+      const t = L2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / L2)) : 0;
+      const q = [a[0] + vx * t, a[1] + vy * t];
+      const d = Math.hypot(p[0] - q[0], p[1] - q[1]);
+      if (d < bd) { bd = d; at = i; bp = q; }
+    }
+    if (at < 0) return;
+    arr.splice(at + 1, 0, [round2(bp[0]), round2(bp[1])]);
+    pushUndo();
+    reselectShape(kind === "wall" ? "walls" : "fixtures", idx);
+    setStatus("Өнцөг нэмэгдлээ — цагаан цэгийг чирж байрлуулна");
+  });
   if (label && pts.length) {
     const t = new Konva.Text({
-      x: pts[0][0] + 4, y: pts[0][1] - 14 / stage.scaleX(), text: label,
-      fontSize: 11.5 / stage.scaleX(), fontStyle: "bold", fill: color, listening: false,
+      text: label, fontSize: 11.5 / stage.scaleX(), fontStyle: "bold", fill: color,
+      align: "center", listening: false,
     });
+    positionShapeLabel(t, pts);
     line._label = t;
     shapeLayer.add(t);
   }
   addDimLabels(pts, color, kind);
   return line;
+}
+
+// Centre the name label in the shape, its bottom sitting just above the centred
+// W×H/м² block — anchored to the bbox, not to whichever corner was drawn first.
+function positionShapeLabel(t, pts) {
+  const b = bbox(pts);
+  t.position({ x: b.x + b.w / 2, y: b.y + b.h / 2 });
+  t.offsetX(t.width() / 2);
+  t.offsetY(t.height() + (9.5 / stage.scaleX()) * 1.5);
 }
 
 // Always-on measurement labels (metres): per-segment length for walls; a centred
@@ -607,7 +654,7 @@ function selectShape(line, kind, idx) {
     a.on("dragmove", () => {
       arr[vi] = [round2(a.x()), round2(a.y())];
       line.points(arr.flat());
-      if (line._label) line._label.position({ x: arr[0][0] + 4, y: arr[0][1] - 16 / stage.scaleX() });
+      if (line._label) positionShapeLabel(line._label, arr);
       shapeLayer.batchDraw();
     });
     a.on("dragend", () => { pushUndo(); reselectShape(selectedNode.kind, idx); }); // refresh dim labels
@@ -1554,7 +1601,7 @@ if (planBtn) planBtn.onclick = planApply;
 });
 
 // ── keyboard shortcuts ──────────────────────────────────────────────────────
-const TOOL_KEYS = ["select", "wall", "room", "shelf", "exit", "checkout", "furniture", "camera"];
+const TOOL_KEYS = ["select", "wall", "room", "shelf", "exit", "checkout", "fridge", "furniture", "camera"];
 window.addEventListener("keydown", (e) => {
   // Typing in an input (e.g. length) must not trigger tool shortcuts.
   if (e.target && e.target.tagName === "INPUT") return;
@@ -1570,11 +1617,11 @@ window.addEventListener("keydown", (e) => {
     const i = document.getElementById("len-input");
     if (i) { showLenInput(); i.value = e.key; i.focus(); e.preventDefault(); return; }
   }
-  if (e.key >= "1" && e.key <= "8") setTool(TOOL_KEYS[+e.key - 1]);
+  if (e.key >= "1" && e.key <= "9") setTool(TOOL_KEYS[+e.key - 1]);
   else if (e.key === "Enter") finishDraft();
   else if (e.key === "Escape") { cancelDraft(); cancelRect(); cancelMarquee(); deselect(); }
   else if (e.key === "Backspace" && draft) { draft.pts.pop(); if (!draft.pts.length) cancelDraft(); else drawPreview(draft.pts[draft.pts.length - 1], false); }
-  else if (e.key === "Delete") deleteSelection();
+  else if (e.key === "Delete" || e.key === "Backspace") deleteSelection();
   else if (e.key.toLowerCase() === "g") document.getElementById("btn-snap").click();
   else if (e.key.toLowerCase() === "p") togglePointSnap();
   else if (e.key.toLowerCase() === "o") toggleOrtho();

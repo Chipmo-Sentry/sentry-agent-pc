@@ -1,7 +1,7 @@
-[project]
+﻿[project]
 name = "sentry-agent-pc"
-version = "0.7.88"
-description = "Chipmo Sentry Windows agent — ONVIF camera discovery + manual add + backend registration"
+version = "0.7.89"
+description = "Chipmo Sentry Windows agent â€” ONVIF camera discovery + manual add + backend registration"
 readme = "README.md"
 requires-python = "==3.11.*"
 license = { text = "Apache-2.0" }
@@ -22,18 +22,18 @@ dependencies = [
     # Desktop GUI (PyInstaller-friendly; bundles into ~30 MB .exe)
     "customtkinter>=5.2.2,<6.0",
     "pillow>=10.0,<12.0",
-    # Embedded live view — webview window loading the web /live page.
+    # Embedded live view â€” webview window loading the web /live page.
     # On Windows uses the system WebView2 (EdgeChromium) runtime via pythonnet.
     "pywebview>=5.0,<6.0",
-    # Offline LAN live view — decode camera RTSP directly (no internet/MediaMTX/
+    # Offline LAN live view â€” decode camera RTSP directly (no internet/MediaMTX/
     # login) and render a grid in the app. headless = no Qt/GTK GUI deps (we draw
     # frames via Pillow into tkinter), so it stays light.
     "opencv-python-headless>=4.10,<5.0",
     # System tray icon (minimize-to-tray + autostart toggle).
     "pystray>=0.19,<0.20",
-    # Edge Stage-1 inference runtime — runs the bundled YOLO OpenVINO IR on the
+    # Edge Stage-1 inference runtime â€” runs the bundled YOLO OpenVINO IR on the
     # store PC's Intel iGPU/CPU. numpy comes transitively (opencv) but the edge
-    # decoders use it directly, so pin it explicitly. ultralytics is NOT here —
+    # decoders use it directly, so pin it explicitly. ultralytics is NOT here â€”
     # it's BUILD-time only (model export) + the dev bench; the product ships lean.
     "openvino>=2024.0,<2026.0",
     "numpy>=1.26,<3.0",
@@ -95,7 +95,7 @@ module = [
 ]
 ignore_missing_imports = true
 
-# customtkinter ships no type stubs → subclassing its widgets trips
+# customtkinter ships no type stubs â†’ subclassing its widgets trips
 # disallow_subclassing_any under strict. Relax just for the GUI layer.
 [[tool.mypy.overrides]]
 module = ["sentry_agent_pc.gui.*"]
