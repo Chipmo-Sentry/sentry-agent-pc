@@ -11,6 +11,7 @@ bridge — so the agent JWT (backend calls) stays in Python, never in the page.
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import sys
 from typing import Any
@@ -73,11 +74,113 @@ def _poly_area(pts: list[list[float]]) -> float:
     return abs(s) / 2.0
 
 
+# ── wall occlusion (plan space) ──────────────────────────────────────────────
+# Walls block sight: a fixture the camera can't see past a wall must not become
+# a zone — its projection would land ON the wall in the image, so a person
+# walking in front of the wall would falsely trigger the zone.
+
+# Boundary sampling step (m) and per-edge cap for the visibility test.
+_VIS_STEP_M = 0.25
+_VIS_MAX_SAMPLES = 200
+# The sight line stops this far (m) short of the sample, so a wall the fixture
+# leans against (shelves usually line walls) doesn't occlude the fixture itself.
+_VIS_SLACK_M = 0.05
+
+
+def _wall_segments(
+    walls: list[dict[str, Any]] | None,
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    segs: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for w in walls or []:
+        pts = w.get("points") or []
+        for i in range(len(pts) - 1):
+            a, b = pts[i], pts[i + 1]
+            segs.append(((float(a[0]), float(a[1])), (float(b[0]), float(b[1]))))
+    return segs
+
+
+def _segs_cross(
+    p: tuple[float, float],
+    q: tuple[float, float],
+    a: tuple[float, float],
+    b: tuple[float, float],
+) -> bool:
+    """True iff segments p-q and a-b properly cross (shared endpoints/collinear
+    touches don't count — the slack shrink handles those cases)."""
+
+    def cross(o: tuple[float, float], u: tuple[float, float], v: tuple[float, float]) -> float:
+        return (u[0] - o[0]) * (v[1] - o[1]) - (u[1] - o[1]) * (v[0] - o[0])
+
+    d1, d2 = cross(a, b, p), cross(a, b, q)
+    d3, d4 = cross(p, q, a), cross(p, q, b)
+    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
+
+
+def _visible_part(
+    pts: list[list[float]],
+    cam_pos: tuple[float, float],
+    segs: list[tuple[tuple[float, float], tuple[float, float]]],
+    *,
+    step: float = _VIS_STEP_M,
+) -> list[list[float]]:
+    """The part of polygon `pts` the camera can see past the walls.
+
+    Densifies the boundary, sight-tests each sample, and keeps the longest
+    circular run of visible samples — an approximation of the visible region
+    that handles the common cases exactly: fully visible → the original crisp
+    polygon; fully hidden → []; half behind a partition → the visible half.
+    """
+    dense: list[list[float]] = []
+    n = len(pts)
+    for i in range(n):
+        a, b = pts[i], pts[(i + 1) % n]
+        length = math.hypot(b[0] - a[0], b[1] - a[1])
+        k = max(1, min(int(length / step), _VIS_MAX_SAMPLES))
+        for j in range(k):
+            t = j / k
+            dense.append([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])
+
+    def sees(p: list[float]) -> bool:
+        dx, dy = p[0] - cam_pos[0], p[1] - cam_pos[1]
+        dist = math.hypot(dx, dy)
+        if dist < 1e-9:
+            return True
+        s = max(0.0, (dist - _VIS_SLACK_M) / dist)
+        q = (cam_pos[0] + dx * s, cam_pos[1] + dy * s)
+        return not any(_segs_cross(cam_pos, q, a, b) for a, b in segs)
+
+    vis = [sees(p) for p in dense]
+    if all(vis):
+        return pts
+    if not any(vis):
+        return []
+    # Longest circular run of visible samples (scan the doubled ring).
+    m = len(dense)
+    best_len = best_start = run = 0
+    for idx in range(2 * m):
+        if vis[idx % m]:
+            if run == 0:
+                start = idx
+            run += 1
+            if run > best_len:
+                best_len, best_start = min(run, m), start
+        else:
+            run = 0
+    return [dense[(best_start + k) % m] for k in range(best_len)]
+
+
 def _compute_calibration(
-    pairs: list[dict[str, Any]], fixtures: list[dict[str, Any]]
+    pairs: list[dict[str, Any]],
+    fixtures: list[dict[str, Any]],
+    walls: list[dict[str, Any]] | None = None,
+    cam_pos: tuple[float, float] | None = None,
 ) -> tuple[list[list[float]], float, list[dict[str, Any]]]:
     """Fit a plan→image homography from ≥4 point pairs and project the plan
     fixtures into this camera's normalized (0-1) image space → Camera.zones.
+
+    When `walls` + `cam_pos` are given, a fixture only contributes the part the
+    camera can actually SEE past the walls (see _visible_part) — a shelf behind
+    a partition must not become a zone sitting on that partition's image.
 
     Returns (homography 3x3 as nested lists, mean reprojection error in normalized
     units, zones). Raises ValueError on degenerate input. Pure (no I/O) so the
@@ -109,6 +212,7 @@ def _compute_calibration(
         homography = -homography
     h31, h32, h33 = (float(v) for v in homography[2])
 
+    wall_segs = _wall_segments(walls)
     zones: list[dict[str, Any]] = []
     for i, fix in enumerate(fixtures):
         if fix.get("type") == "furniture":
@@ -117,6 +221,11 @@ def _compute_calibration(
         if len(raw) < 3:
             continue
         pts = [[float(x), float(y)] for x, y in raw]
+        # Walls block sight: keep only the part the camera can see (plan space).
+        if wall_segs and cam_pos is not None:
+            pts = _visible_part(pts, cam_pos, wall_segs)
+            if len(pts) < 3:
+                continue  # fully hidden behind a wall
         # Clip away the part at/behind the camera's principal plane FIRST —
         # projecting it yields wrapped coordinates no image-space clip can repair.
         pts = _clip_halfplane(pts, h31, h32, h33 - _W_EPS)
@@ -134,6 +243,19 @@ def _compute_calibration(
             }
         )
     return homography.tolist(), round(reproj_err, 5), zones
+
+
+def _plan_cam_pos(plan: dict[str, Any], camera_id: str | None) -> tuple[float, float] | None:
+    """The plan-space position of the camera being calibrated (operator-placed),
+    or None when unknown — occlusion is then skipped, as before."""
+    if not camera_id:
+        return None
+    for c in plan.get("cameras") or []:
+        if c.get("camera_id") == camera_id:
+            pos = c.get("pos")
+            if isinstance(pos, (list, tuple)) and len(pos) == 2:
+                return (float(pos[0]), float(pos[1]))
+    return None
 
 
 def _rtsp_host_port(url_or_ip: str) -> tuple[str, int]:
@@ -331,7 +453,7 @@ class FloorPlanApi:
         }
 
     def preview_calibration(
-        self, pairs: list[dict[str, Any]], plan: dict[str, Any]
+        self, pairs: list[dict[str, Any]], plan: dict[str, Any], camera_id: str | None = None
     ) -> dict[str, Any]:
         """Phase B dry-run: fit the homography + derive zones WITHOUT saving, so
         the editor can overlay the projected zones on the camera snapshot and the
@@ -341,7 +463,12 @@ class FloorPlanApi:
         try:
             if not isinstance(plan, dict):
                 raise ValueError("plan нь объект байх ёстой")
-            homography, reproj_err, zones = _compute_calibration(pairs, plan.get("fixtures") or [])
+            homography, reproj_err, zones = _compute_calibration(
+                pairs,
+                plan.get("fixtures") or [],
+                walls=plan.get("walls"),
+                cam_pos=_plan_cam_pos(plan, camera_id),
+            )
         except Exception as e:  # noqa: BLE001 — preview must degrade, not crash
             return {"ok": False, "error": str(e)[:200]}
         del homography  # preview only surfaces quality + zones; H is refit on save
@@ -364,7 +491,12 @@ class FloorPlanApi:
         if cam is None or not cam.uuid:
             raise ValueError("Камер олдсонгүй (эхлээд камераа бүртгэнэ үү)")
 
-        homography, reproj_err, zones = _compute_calibration(pairs, plan.get("fixtures") or [])
+        homography, reproj_err, zones = _compute_calibration(
+            pairs,
+            plan.get("fixtures") or [],
+            walls=plan.get("walls"),
+            cam_pos=_plan_cam_pos(plan, camera_id),
+        )
 
         # Fold the calibration into THIS plan object (passed from the editor, so
         # it matches what's drawn) and save it + the derived zones together.

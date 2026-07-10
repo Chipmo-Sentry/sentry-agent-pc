@@ -211,6 +211,55 @@ def test_horizon_straddling_fixture_no_garbage() -> None:
     assert zones == []
 
 
+# === wall occlusion ===
+
+
+def test_fixture_behind_wall_dropped() -> None:
+    # A full-width wall stands between the camera and the shelf — the camera
+    # can't see it, so it must not become a zone.
+    fixtures = [{"type": "shelf", "points": [[400, 200], [600, 200], [600, 300], [400, 300]]}]
+    walls = [{"points": [[0, 400], [1000, 400]]}]
+    _h, _e, zones = fpw._compute_calibration(
+        _SCALE_PAIRS, fixtures, walls=walls, cam_pos=(500.0, 700.0)
+    )
+    assert zones == []
+
+
+def test_fixture_touching_wall_kept() -> None:
+    # Shelves usually LINE walls: the wall coincides with the shelf's back edge.
+    # The sight-line slack must keep the shelf a zone instead of treating its
+    # own backing wall as an occluder.
+    fixtures = [{"type": "shelf", "points": [[400, 200], [600, 200], [600, 300], [400, 300]]}]
+    walls = [{"points": [[0, 200], [1000, 200]]}]  # collinear with the back edge
+    _h, _e, zones = fpw._compute_calibration(
+        _SCALE_PAIRS, fixtures, walls=walls, cam_pos=(500.0, 700.0)
+    )
+    assert len(zones) == 1
+
+
+def test_fixture_partially_behind_wall_clipped() -> None:
+    # A half-width partition hides the LEFT half of a wide shelf; only the
+    # visible right part may survive, and nothing may leak far left.
+    fixtures = [{"type": "shelf", "points": [[0, 200], [1000, 200], [1000, 300], [0, 300]]}]
+    walls = [{"points": [[0, 400], [500, 400]]}]
+    _h, _e, zones = fpw._compute_calibration(
+        _SCALE_PAIRS, fixtures, walls=walls, cam_pos=(500.0, 700.0)
+    )
+    assert len(zones) == 1
+    xs = [p[0] for p in zones[0]["points"]]
+    assert min(xs) > 0.4  # hidden left half is gone
+    assert max(xs) <= 1.0
+
+
+def test_no_cam_pos_skips_occlusion() -> None:
+    # Without a camera position (old plans / preview before placement) the wall
+    # must not change behaviour — occlusion is simply skipped.
+    fixtures = [{"type": "shelf", "points": [[400, 200], [600, 200], [600, 300], [400, 300]]}]
+    walls = [{"points": [[0, 400], [1000, 400]]}]
+    _h, _e, zones = fpw._compute_calibration(_SCALE_PAIRS, fixtures, walls=walls, cam_pos=None)
+    assert len(zones) == 1
+
+
 def test_preview_calibration_dry_run() -> None:
     # Same geometry as the identity-scale test, but through the bridge: returns
     # the derived zones + error WITHOUT touching backend/state (pure compute).

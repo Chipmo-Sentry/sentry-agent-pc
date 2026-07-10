@@ -578,10 +578,94 @@ function pointInPoly(x, y, poly) {
   return inside;
 }
 
+// ── wall occlusion ───────────────────────────────────────────────────────────
+// Walls block sight: a camera's footprint must STOP at the first wall each ray
+// hits, so the area behind a wall reads (correctly) as a blind spot.
+
+// Parametric t (>= eps) where ray o+t·d crosses segment a-b, or null.
+function raySegT(o, d, a, b, eps) {
+  const rx = b[0] - a[0], ry = b[1] - a[1];
+  const den = d[0] * ry - d[1] * rx;
+  if (Math.abs(den) < 1e-12) return null; // parallel
+  const qx = a[0] - o[0], qy = a[1] - o[1];
+  const t = (qx * ry - qy * rx) / den;
+  const u = (qx * d[1] - qy * d[0]) / -den;
+  return t >= (eps || 1e-6) && u >= 0 && u <= 1 ? t : null;
+}
+
+// Nearest wall hit along the ray, capped at tmax.
+function nearestWallT(o, d, tmax) {
+  let best = tmax;
+  PLAN.walls.forEach((w) => {
+    const pts = w.points;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const t = raySegT(o, d, pts[i], pts[i + 1], 1e-3);
+      if (t !== null && t < best) best = t;
+    }
+  });
+  return best;
+}
+
+// [tin, tout] where the ray enters/leaves the (convex) footprint, or null.
+function rayPolyInterval(o, d, poly) {
+  const ts = [];
+  for (let i = 0; i < poly.length; i++) {
+    const t = raySegT(o, d, poly[i], poly[(i + 1) % poly.length], -1e-9);
+    if (t !== null) ts.push(t);
+  }
+  if (!ts.length) return null;
+  return [Math.max(0, Math.min(...ts)), Math.max(...ts)];
+}
+
+// The footprint polygon with everything behind a wall cut away: sweep rays from
+// the camera across the footprint's angular span; each ray's visible stretch is
+// [entry, min(exit, first wall)]. Near points forward + far points backward
+// reassemble the clipped polygon. No walls → the footprint passes through as-is.
+function occludeFootprint(cam, pts) {
+  if (!PLAN.walls.length) return pts;
+  const o = cam.pos;
+  const angles = [];
+  pts.forEach((p) => {
+    const dx = p[0] - o[0], dy = p[1] - o[1];
+    if (Math.hypot(dx, dy) > 1e-9) angles.push(Math.atan2(dy, dx));
+  });
+  if (!angles.length) return pts;
+  const ref = angles[0];
+  const rel = (a) => {
+    let r = a - ref;
+    while (r <= -Math.PI) r += 2 * Math.PI;
+    while (r > Math.PI) r -= 2 * Math.PI;
+    return r;
+  };
+  const offs = angles.map(rel);
+  const amin = Math.min(...offs), amax = Math.max(...offs);
+  const near = [], far = [];
+  const N = 90;
+  for (let k = 0; k <= N; k++) {
+    const a = ref + amin + ((amax - amin) * k) / N;
+    const d = [Math.cos(a), Math.sin(a)];
+    const iv = rayPolyInterval(o, d, pts);
+    if (!iv || iv[1] <= 1e-6) continue;
+    const tw = nearestWallT(o, d, iv[1]);
+    if (tw <= iv[0] + 1e-6) continue; // wall before the footprint even starts
+    near.push([o[0] + d[0] * iv[0], o[1] + d[1] * iv[0]]);
+    far.push([o[0] + d[0] * tw, o[1] + d[1] * tw]);
+  }
+  if (far.length < 2) return []; // fully walled off
+  return near.concat(far.reverse());
+}
+
 // Compute footprints + grid coverage WITHOUT drawing (used by the readiness
 // summary too). Returns {foots, blind:[[x,y]], step, pct}.
 function coverageInfo() {
-  const foots = PLAN.cameras.map(cameraFootprint).filter(Boolean);
+  const foots = PLAN.cameras
+    .map((cam) => {
+      const f = cameraFootprint(cam);
+      if (!f) return null;
+      const clipped = occludeFootprint(cam, f.pts);
+      return clipped.length >= 3 ? { pts: clipped, exact: f.exact } : null;
+    })
+    .filter(Boolean);
   const [pw, ph] = PLAN.size;
   const step = Math.max(pw, ph) / 70; // ~70 cells across the long side
   const blind = [];
@@ -1425,7 +1509,7 @@ async function refreshCalibPreview() {
   }
   const seq = (calib.previewSeq = (calib.previewSeq || 0) + 1);
   let r = null;
-  try { r = await window.pywebview.api.preview_calibration(calib.pairs, PLAN); }
+  try { r = await window.pywebview.api.preview_calibration(calib.pairs, PLAN, calib.cam.camera_id); }
   catch (e) { r = { ok: false, error: String(e) }; }
   if (seq !== calib.previewSeq || !calib.zoneMarks) return; // stale response / closed
   calib.zoneMarks.destroyChildren();
