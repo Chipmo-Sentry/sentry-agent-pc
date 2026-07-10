@@ -43,6 +43,9 @@ _PRIME_TIMEOUT_SEC = 12.0
 # Separate bounded budget for the HTTP-snapshot sweep (~11 paths × Basic+Digest ×
 # 5s would otherwise be ~110s). Total worst-case grab ≈ _PRIME_TIMEOUT_SEC + this.
 _SNAPSHOT_BUDGET_SEC = 8.0
+# Cloud-HLS fallback: playlist fetch + first decodable segment through the
+# backend proxy. Generous because low-latency HLS still needs a segment or two.
+_CLOUD_BUDGET_SEC = 12.0
 
 
 @dataclass(slots=True)
@@ -53,7 +56,7 @@ class StillResult:
     image: Image.Image | None = None
     width: int | None = None
     height: int | None = None
-    source: str | None = None  # "rtsp" | "snapshot"
+    source: str | None = None  # "rtsp" | "snapshot" | "cloud"
     error: str | None = None
 
 
@@ -162,10 +165,36 @@ def _grab_snapshot(cam: CameraRecord, deadline: float) -> Image.Image | None:
     return None
 
 
+def _cloud_hls_url(cam: CameraRecord) -> str | None:
+    """Backend-proxied HLS URL for the camera's cloud stream, or None.
+
+    The calibration fallback for a machine that can't reach the camera's LAN at
+    all — e.g. the camera was registered from ANOTHER store PC (its RTSP
+    credentials never leave that machine), or the operator is off-site. The
+    camera is usually still streaming to the cloud through that other machine's
+    relay, so the backend can serve a frame via its authed HLS proxy."""
+    if not cam.uuid or not cam.mediamtx_path:
+        return None
+    from sentry_agent_pc.backend_client import BackendClient
+    from sentry_agent_pc.settings import get_settings
+
+    try:
+        res = BackendClient().agent_camera_stream_token(cam.uuid)
+    except Exception as e:  # noqa: BLE001 — offline backend just means no fallback
+        log.info("frame_grab.cloud_token_failed", error=str(e)[:160])
+        return None
+    hls = res.get("hls_url")
+    if not hls:
+        return None
+    return f"{get_settings().backend_url.rstrip('/')}{hls}"
+
+
 def grab_still(cam: CameraRecord, *, timeout_sec: float = _PRIME_TIMEOUT_SEC) -> StillResult:
     """Grab one still frame for `cam`. Never raises — returns ok=False on failure.
 
-    Tries each RTSP candidate (local fan-out first), then the HTTP snapshot path.
+    Tries each RTSP candidate (local fan-out first), then the HTTP snapshot path,
+    then the camera's CLOUD stream through the backend's HLS proxy (the only
+    reachable source when this machine isn't on the camera's LAN).
     The returned image is at the camera's native resolution; the editor scales it
     to fit and normalizes coordinates against the DISPLAYED size (docs/29)."""
     if not cam.rtsp_url and not cam.mediamtx_path:
@@ -205,6 +234,21 @@ def grab_still(cam: CameraRecord, *, timeout_sec: float = _PRIME_TIMEOUT_SEC) ->
         return StillResult(
             ok=True, image=snap, width=snap.width, height=snap.height, source="snapshot"
         )
+
+    # LAN missed entirely → cloud fallback: pull one frame from the camera's
+    # cloud HLS through the backend proxy (ffmpeg reads the m3u8 and follows the
+    # proxy's redirect to the relaying agent's tunnel when one is up).
+    cloud_url = _cloud_hls_url(cam)
+    if cloud_url:
+        try:
+            img = _grab_rtsp(cloud_url, time.monotonic() + _CLOUD_BUDGET_SEC)
+        except Exception as e:  # noqa: BLE001 — fallback must degrade, not crash
+            log.info("frame_grab.cloud_error", error=str(e)[:160])
+            img = None
+        if img is not None:
+            return StillResult(
+                ok=True, image=img, width=img.width, height=img.height, source="cloud"
+            )
 
     return StillResult(
         ok=False,

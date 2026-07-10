@@ -206,6 +206,15 @@ class BackendClient:
         r = self._request("GET", "/api/v1/agent/stream-config", ok_codes=(200,))
         return r.json()  # type: ignore[no-any-return]
 
+    def agent_camera_stream_token(self, camera_uuid: str) -> dict[str, Any]:
+        """GET /api/v1/agent/cameras/{uuid}/stream-token → {token, expires_in,
+        hls_url}. Authorizes the calibration still-frame CLOUD fallback when the
+        camera's LAN is unreachable from this machine."""
+        r = self._request(
+            "GET", f"/api/v1/agent/cameras/{camera_uuid}/stream-token", ok_codes=(200,)
+        )
+        return r.json()  # type: ignore[no-any-return]
+
     def agent_get_floor_plan(self) -> dict[str, Any]:
         """GET /api/v1/agent/floor-plan → the store's plan (empty plan if none)."""
         r = self._request("GET", "/api/v1/agent/floor-plan", ok_codes=(200,))

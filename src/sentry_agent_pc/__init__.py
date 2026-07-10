@@ -1,3 +1,3 @@
 """Chipmo Sentry â€” Windows discovery agent."""
 
-__version__ = "0.7.91"
+__version__ = "0.7.92"

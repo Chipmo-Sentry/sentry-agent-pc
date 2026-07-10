@@ -243,3 +243,65 @@ def test_frame_grab_candidates_prefers_local(monkeypatch) -> None:  # type: igno
     urls = frame_grab._rtsp_candidates(cam)
     assert urls[0] == "rtsp://127.0.0.1:8554/cam1"  # local fan-out first
     assert urls[-1] == cam.rtsp_url  # direct URL as fallback
+
+
+def test_cloud_hls_url_builds_absolute_url(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from sentry_agent_pc.discovery import frame_grab
+
+    cam = CameraRecord(uuid="U1", name="A", ip="1.1.1.1", rtsp_url="", mediamtx_path="cam1")
+
+    class _Client:
+        def agent_camera_stream_token(self, camera_uuid: str) -> dict[str, str]:
+            assert camera_uuid == "U1"
+            return {"token": "T", "hls_url": "/api/v1/live/cam1/hls/index.m3u8?jwt=T"}
+
+    class _S:
+        backend_url = "https://api.example.com/"
+
+    monkeypatch.setattr("sentry_agent_pc.backend_client.BackendClient", lambda: _Client())
+    monkeypatch.setattr("sentry_agent_pc.settings.get_settings", lambda: _S())
+    assert (
+        frame_grab._cloud_hls_url(cam)
+        == "https://api.example.com/api/v1/live/cam1/hls/index.m3u8?jwt=T"
+    )
+
+
+def test_cloud_hls_url_none_without_uuid_or_path() -> None:
+    from sentry_agent_pc.discovery import frame_grab
+
+    no_uuid = CameraRecord(name="A", ip="1.1.1.1", rtsp_url="rtsp://a", mediamtx_path="cam1")
+    no_path = CameraRecord(uuid="U", name="A", ip="1.1.1.1", rtsp_url="rtsp://a")
+    assert frame_grab._cloud_hls_url(no_uuid) is None
+    assert frame_grab._cloud_hls_url(no_path) is None
+
+
+def test_grab_still_falls_back_to_cloud(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """No LAN route at all (camera registered from another PC → no rtsp_url):
+    the still must come from the cloud HLS via the backend proxy."""
+    from PIL import Image
+
+    from sentry_agent_pc.discovery import frame_grab
+
+    cam = CameraRecord(uuid="U1", name="A", ip="", rtsp_url="", mediamtx_path="cam1")
+
+    class _NoHubCtrl:
+        def local_url(self, path: str | None) -> str | None:
+            return None
+
+    monkeypatch.setattr(
+        "sentry_agent_pc.streaming.controller.get_stream_controller", lambda: _NoHubCtrl()
+    )
+    monkeypatch.setattr(
+        frame_grab, "_cloud_hls_url", lambda _cam: "https://api.example.com/live/cam1.m3u8"
+    )
+    grabbed: list[str] = []
+
+    def _fake_grab(url: str, deadline: float) -> Image.Image:
+        grabbed.append(url)
+        return Image.new("RGB", (64, 48))
+
+    monkeypatch.setattr(frame_grab, "_grab_rtsp", _fake_grab)
+    res = frame_grab.grab_still(cam)
+    assert res.ok and res.source == "cloud"
+    assert res.width == 64 and res.height == 48
+    assert grabbed == ["https://api.example.com/live/cam1.m3u8"]
