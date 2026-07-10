@@ -243,3 +243,78 @@ def test_frame_grab_candidates_prefers_local(monkeypatch) -> None:  # type: igno
     urls = frame_grab._rtsp_candidates(cam)
     assert urls[0] == "rtsp://127.0.0.1:8554/cam1"  # local fan-out first
     assert urls[-1] == cam.rtsp_url  # direct URL as fallback
+
+
+def test_frame_grab_candidates_probes_hub_port(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The floor-plan editor child has NO in-process hub state — candidates must
+    still find the hub through its well-known loopback port, because a direct
+    pull is a second RTSP session that session-capped cameras refuse."""
+    import socket
+
+    from sentry_agent_pc.discovery import frame_grab
+
+    cam = CameraRecord(
+        uuid="A",
+        name="A",
+        ip="1.1.1.1",
+        rtsp_url="rtsp://admin:pw@1.1.1.1:554/s1",
+        mediamtx_path="cam1",
+    )
+
+    class _NoHubCtrl:
+        def local_url(self, path: str | None) -> str | None:
+            return None  # what the editor child sees: a controller with no hub state
+
+    monkeypatch.setattr(
+        "sentry_agent_pc.streaming.controller.get_stream_controller", lambda: _NoHubCtrl()
+    )
+
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+
+    class _S:
+        local_mediamtx_rtsp_port = port
+
+    monkeypatch.setattr("sentry_agent_pc.settings.get_settings", lambda: _S())
+    try:
+        urls = frame_grab._rtsp_candidates(cam)
+    finally:
+        srv.close()
+    assert urls[0] == f"rtsp://127.0.0.1:{port}/cam1"  # hub found via port probe
+    assert urls[-1] == cam.rtsp_url
+
+
+def test_frame_grab_candidates_direct_when_hub_down(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import socket
+
+    from sentry_agent_pc.discovery import frame_grab
+
+    cam = CameraRecord(
+        uuid="A",
+        name="A",
+        ip="1.1.1.1",
+        rtsp_url="rtsp://admin:pw@1.1.1.1:554/s1",
+        mediamtx_path="cam1",
+    )
+
+    class _NoHubCtrl:
+        def local_url(self, path: str | None) -> str | None:
+            return None
+
+    monkeypatch.setattr(
+        "sentry_agent_pc.streaming.controller.get_stream_controller", lambda: _NoHubCtrl()
+    )
+
+    # A port that was just bound and released is (near-)certainly not listening.
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    port = srv.getsockname()[1]
+    srv.close()
+
+    class _S:
+        local_mediamtx_rtsp_port = port
+
+    monkeypatch.setattr("sentry_agent_pc.settings.get_settings", lambda: _S())
+    assert frame_grab._rtsp_candidates(cam) == [cam.rtsp_url]  # direct only
