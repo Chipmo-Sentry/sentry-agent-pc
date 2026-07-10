@@ -25,11 +25,52 @@ _FLAG = "--floor-plan"
 # of polygons); >1 MB means a runaway shape list, not a real store.
 _MAX_PLAN_BYTES = 1_000_000
 
-# Phase B calibration: a fixture is turned into a zone for THIS camera only when
-# at least one projected vertex lands within this margin of the [0,1] frame —
-# i.e. the camera can actually see it. (Slightly outside is kept so a fixture half
-# off-frame still becomes a clipped zone.)
-_VISIBLE_MARGIN = 0.25
+# Phase B calibration: plan points with homogeneous w <= this lie at/behind the
+# camera's principal plane — perspectiveTransform divides by w regardless and
+# returns wrapped garbage, so the polygon is clipped against w >= _W_EPS in PLAN
+# space before projecting.
+_W_EPS = 1e-6
+# A zone whose clipped normalized-image area is below this (0.2% of the frame)
+# is an unusable sliver (typically the residue of a barely-visible fixture) —
+# dropped rather than sent to the engine.
+_MIN_ZONE_AREA = 0.002
+
+
+def _clip_halfplane(pts: list[list[float]], a: float, b: float, c: float) -> list[list[float]]:
+    """Sutherland–Hodgman single-edge clip: the part of polygon `pts` where
+    a·x + b·y + c >= 0. Handles concave polygons; [] when fully outside."""
+    out: list[list[float]] = []
+    n = len(pts)
+    for i in range(n):
+        px, py = pts[i]
+        qx, qy = pts[(i + 1) % n]
+        dp = a * px + b * py + c
+        dq = a * qx + b * qy + c
+        if dp >= 0:
+            out.append([px, py])
+        if (dp >= 0) != (dq >= 0):
+            t = dp / (dp - dq)
+            out.append([px + (qx - px) * t, py + (qy - py) * t])
+    return out
+
+
+def _clip_unit_square(pts: list[list[float]]) -> list[list[float]]:
+    """Clip a polygon to the normalized-image frame [0,1]²."""
+    for a, b, c in ((1.0, 0.0, 0.0), (-1.0, 0.0, 1.0), (0.0, 1.0, 0.0), (0.0, -1.0, 1.0)):
+        pts = _clip_halfplane(pts, a, b, c)
+        if len(pts) < 3:
+            return []
+    return pts
+
+
+def _poly_area(pts: list[list[float]]) -> float:
+    """Polygon area via the shoelace formula (absolute value)."""
+    s = 0.0
+    for i in range(len(pts)):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % len(pts)]
+        s += x1 * y2 - x2 * y1
+    return abs(s) / 2.0
 
 
 def _compute_calibration(
@@ -60,31 +101,36 @@ def _compute_calibration(
 
     reproj_err = float(np.mean(np.linalg.norm(project(plan) - img, axis=1)))
 
+    # H is defined only up to scale and findHomography may return it negated —
+    # w would then be negative for every genuinely visible point. Normalize the
+    # sign against the clicked pairs (they are in front of the camera by
+    # construction: the operator clicked them on the image).
+    if float(np.mean(plan @ homography[2, :2] + homography[2, 2])) < 0:
+        homography = -homography
+    h31, h32, h33 = (float(v) for v in homography[2])
+
     zones: list[dict[str, Any]] = []
     for i, fix in enumerate(fixtures):
         if fix.get("type") == "furniture":
             continue  # scenery (буйдан/сандал) — never a detection zone
-        pts = fix.get("points") or []
+        raw = fix.get("points") or []
+        if len(raw) < 3:
+            continue
+        pts = [[float(x), float(y)] for x, y in raw]
+        # Clip away the part at/behind the camera's principal plane FIRST —
+        # projecting it yields wrapped coordinates no image-space clip can repair.
+        pts = _clip_halfplane(pts, h31, h32, h33 - _W_EPS)
         if len(pts) < 3:
             continue
         tp = project(pts)
-        inside = (
-            (tp[:, 0] > -_VISIBLE_MARGIN)
-            & (tp[:, 0] < 1 + _VISIBLE_MARGIN)
-            & (tp[:, 1] > -_VISIBLE_MARGIN)
-            & (tp[:, 1] < 1 + _VISIBLE_MARGIN)
-        )
-        if not bool(inside.any()):
-            continue  # this fixture isn't in this camera's view
-        clipped = [
-            [round(float(min(max(x, 0.0), 1.0)), 4), round(float(min(max(y, 0.0), 1.0)), 4)]
-            for x, y in tp
-        ]
+        clipped = _clip_unit_square([[float(x), float(y)] for x, y in tp])
+        if len(clipped) < 3 or _poly_area(clipped) < _MIN_ZONE_AREA:
+            continue  # not (meaningfully) in this camera's view
         zones.append(
             {
                 "id": fix.get("id") or f"{fix.get('type', 'zone')}_{i}",
                 "type": fix.get("type"),
-                "points": clipped,
+                "points": [[round(x, 4), round(y, 4)] for x, y in clipped],
             }
         )
     return homography.tolist(), round(reproj_err, 5), zones

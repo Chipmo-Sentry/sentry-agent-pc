@@ -145,6 +145,72 @@ def test_compute_calibration_skips_furniture() -> None:
     assert [z["type"] for z in zones] == ["shelf"]
 
 
+# === zone clipping (docs/30 Phase B) ===
+
+_SCALE_PAIRS = [
+    {"plan": [0, 0], "image": [0, 0]},
+    {"plan": [1000, 0], "image": [1, 0]},
+    {"plan": [1000, 800], "image": [1, 1]},
+    {"plan": [0, 800], "image": [0, 1]},
+]
+
+
+def test_partially_visible_fixture_clipped_at_frame_edge() -> None:
+    # A shelf half off-frame must be CUT at the frame border (new vertices on
+    # x=1), not have its outside corners snapped onto the border.
+    fixtures = [{"type": "shelf", "points": [[500, 200], [1500, 200], [1500, 600], [500, 600]]}]
+    _h, _e, zones = fpw._compute_calibration(_SCALE_PAIRS, fixtures)
+    assert len(zones) == 1
+    xs = [p[0] for p in zones[0]["points"]]
+    ys = [p[1] for p in zones[0]["points"]]
+    assert max(xs) == 1.0 and abs(min(xs) - 0.5) < 1e-3
+    assert abs(min(ys) - 0.25) < 1e-3 and abs(max(ys) - 0.75) < 1e-3
+    assert abs(fpw._poly_area(zones[0]["points"]) - 0.25) < 1e-3
+
+
+def test_full_frame_fixture_kept() -> None:
+    # Every corner is OFF-frame but the fixture covers the whole view — the old
+    # any-vertex-visible gate silently dropped it; clipping keeps the full frame.
+    fixtures = [
+        {"type": "shelf", "points": [[-500, -500], [1500, -500], [1500, 1300], [-500, 1300]]}
+    ]
+    _h, _e, zones = fpw._compute_calibration(_SCALE_PAIRS, fixtures)
+    assert len(zones) == 1
+    assert abs(fpw._poly_area(zones[0]["points"]) - 1.0) < 1e-3
+
+
+def _horizon_pairs() -> list[dict[str, list[float]]]:
+    """Pairs generated from an exact projective map with a horizon inside the
+    plan: w = 1 - x/4000, so plan points at x >= 4000 are at/behind the camera."""
+
+    def proj(x: float, y: float) -> list[float]:
+        w = 1.0 - x / 4000.0
+        return [x / 1000.0 / w, y / 800.0 / w]
+
+    return [
+        {"plan": [float(x), float(y)], "image": proj(x, y)}
+        for x, y in [(0, 0), (1000, 0), (1000, 800), (0, 800)]
+    ]
+
+
+def test_behind_camera_fixture_dropped() -> None:
+    # Entirely behind the camera's principal plane (w < 0): projecting it yields
+    # wrapped garbage — the plan-space w-clip must remove it completely.
+    fixtures = [{"type": "shelf", "points": [[5000, 0], [6000, 0], [6000, 800], [5000, 800]]}]
+    _h, _e, zones = fpw._compute_calibration(_horizon_pairs(), fixtures)
+    assert zones == []
+
+
+def test_horizon_straddling_fixture_no_garbage() -> None:
+    # Straddles the horizon (w changes sign inside the polygon). Its in-front
+    # remainder projects far outside the frame here, so nothing may survive —
+    # and in particular no frame-spanning sliver may appear (the old clamping
+    # produced exactly that).
+    fixtures = [{"type": "shelf", "points": [[3000, 0], [5000, 0], [5000, 800], [3000, 800]]}]
+    _h, _e, zones = fpw._compute_calibration(_horizon_pairs(), fixtures)
+    assert zones == []
+
+
 def test_preview_calibration_dry_run() -> None:
     # Same geometry as the identity-scale test, but through the bridge: returns
     # the derived zones + error WITHOUT touching backend/state (pure compute).
