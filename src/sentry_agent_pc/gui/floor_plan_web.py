@@ -62,6 +62,8 @@ def _compute_calibration(
 
     zones: list[dict[str, Any]] = []
     for i, fix in enumerate(fixtures):
+        if fix.get("type") == "furniture":
+            continue  # scenery (буйдан/сандал) — never a detection zone
         pts = fix.get("points") or []
         if len(pts) < 3:
             continue
