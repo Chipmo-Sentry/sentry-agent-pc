@@ -57,34 +57,6 @@ class StillResult:
     error: str | None = None
 
 
-def _hub_probe_url(cam: CameraRecord) -> str | None:
-    """Loopback hub URL for the camera when the hub answers on its well-known
-    port — even when the hub is owned by ANOTHER process.
-
-    The floor-plan editor runs as a separate process (gui/floor_plan_web.py), so
-    its in-process stream controller has no hub state although the main GUI's
-    hub IS up and pulling the camera. Reading through the hub shares the relay's
-    single camera pull; going direct instead opens a SECOND session, which
-    cameras that cap concurrent RTSP clients refuse — the editor's
-    «зураг авч чадсангүй» failure mode."""
-    if not cam.mediamtx_path:
-        return None
-    import socket
-
-    from sentry_agent_pc.settings import get_settings
-
-    port = get_settings().local_mediamtx_rtsp_port
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(0.5)
-    try:
-        s.connect(("127.0.0.1", port))
-    except OSError:
-        return None
-    finally:
-        s.close()
-    return f"rtsp://127.0.0.1:{port}/{cam.mediamtx_path}"
-
-
 def _rtsp_candidates(cam: CameraRecord) -> list[str]:
     """RTSP URLs to try, local MediaMTX fan-out first (shares the push relay's
     single pull), then the stored direct URL. Empty if the camera has no URL."""
@@ -95,11 +67,6 @@ def _rtsp_candidates(cam: CameraRecord) -> list[str]:
         local = get_stream_controller().local_url(cam.mediamtx_path)
         if local:
             urls.append(local)
-    if not urls:  # no in-process hub state (e.g. the editor child) → probe the port
-        with contextlib.suppress(Exception):
-            probe = _hub_probe_url(cam)
-            if probe:
-                urls.append(probe)
     if cam.rtsp_url:
         urls.append(cam.rtsp_url)
     return urls
