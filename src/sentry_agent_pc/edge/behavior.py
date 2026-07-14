@@ -436,8 +436,9 @@ class EdgeBehavior:
         # the score actually banks through the timing gate. Latching here (before
         # the gate) meant any non-zero mindur_* silently killed the behaviour for
         # the track's whole life, since the one-shot signal could never re-fire.
-        # A fridge is an item-taking area like a shelf — same repeated-visit signal.
-        now_in_shelf = "shelf" in in_zones or "fridge" in in_zones
+        # Fridges and mannequin/display stands are item-taking areas like a
+        # shelf — the same repeated-visit signal applies.
+        now_in_shelf = "shelf" in in_zones or "fridge" in in_zones or "mannequin" in in_zones
         if now_in_shelf and not tr.in_shelf:
             tr.shelf_visits += 1
         tr.in_shelf = now_in_shelf

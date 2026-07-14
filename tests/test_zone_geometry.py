@@ -21,7 +21,7 @@ from sentry_agent_pc.gui.zone_geometry import (
 
 def test_zone_types_cover_backend_literal() -> None:
     keys = {z.key for z in ZONE_TYPES}
-    assert keys == {"exit", "shelf", "checkout", "entrance", "fridge"}
+    assert keys == {"exit", "shelf", "checkout", "entrance", "fridge", "mannequin"}
 
 
 def test_zone_label_and_color_known() -> None:

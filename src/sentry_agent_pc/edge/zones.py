@@ -13,7 +13,7 @@ from __future__ import annotations
 # type -> list of polygons; each polygon is a list of (x, y) in 0-1.
 CompiledZones = dict[str, list[list[tuple[float, float]]]]
 
-_VALID_TYPES = frozenset({"exit", "shelf", "checkout", "entrance", "fridge"})
+_VALID_TYPES = frozenset({"exit", "shelf", "checkout", "entrance", "fridge", "mannequin"})
 
 
 def compile_zones(zones: list[dict[str, object]] | None) -> CompiledZones:

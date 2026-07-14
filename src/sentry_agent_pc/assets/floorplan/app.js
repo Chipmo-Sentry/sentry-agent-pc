@@ -17,6 +17,9 @@ const FIX = {
   // Item-taking area like a shelf — the edge engine counts fridge visits into
   // the same repeated-visit behaviour (edge/behavior.py).
   fridge: { color: "#38BDF8", label: "Хөргүүр", height_m: 2.0 },
+  // Mannequin/display stand — an item-taking area like a shelf (clothes are
+  // lifted off it), so it derives zones + feeds the repeated-visit behaviour.
+  mannequin: { color: "#F472B6", label: "Маникен", height_m: 1.7 },
   // Scenery (буйдан/сандал/ширээ): drawable + shown in analytics, but NEVER
   // derived into Camera.zones (no engine meaning — see _compute_calibration).
   furniture: { color: "#A78BFA", label: "Тавилга", height_m: 0 },

@@ -25,6 +25,7 @@ ZONE_TYPES: tuple[ZoneType, ...] = (
     ZoneType("checkout", "Касс", "#E0A82E"),  # amber
     ZoneType("entrance", "Орц", "#3B82F6"),  # blue
     ZoneType("fridge", "Хөргүүр", "#38BDF8"),  # cyan — item-taking area like shelf
+    ZoneType("mannequin", "Маникен", "#F472B6"),  # pink — item-taking area like shelf
 )
 
 _BY_KEY = {z.key: z for z in ZONE_TYPES}
