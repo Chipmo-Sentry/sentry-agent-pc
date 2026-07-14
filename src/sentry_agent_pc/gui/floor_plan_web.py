@@ -87,16 +87,47 @@ _VIS_MAX_SAMPLES = 200
 _VIS_SLACK_M = 0.05
 
 
+# Default wall height (m) when the plan doesn't carry one — a full partition.
+_WALL_DEFAULT_H = 2.8
+
+
 def _wall_segments(
     walls: list[dict[str, Any]] | None,
-) -> list[tuple[tuple[float, float], tuple[float, float]]]:
-    segs: list[tuple[tuple[float, float], tuple[float, float]]] = []
+) -> list[tuple[tuple[float, float], tuple[float, float], float]]:
+    """Wall polyline → (a, b, height_m) segments. Height feeds the 3D sight
+    test (a high camera sees OVER a low partition); 2D callers ignore it."""
+    segs: list[tuple[tuple[float, float], tuple[float, float], float]] = []
     for w in walls or []:
         pts = w.get("points") or []
+        try:
+            wall_h = float(w.get("height_m") or _WALL_DEFAULT_H)
+        except (TypeError, ValueError):
+            wall_h = _WALL_DEFAULT_H
         for i in range(len(pts) - 1):
             a, b = pts[i], pts[i + 1]
-            segs.append(((float(a[0]), float(a[1])), (float(b[0]), float(b[1]))))
+            segs.append(((float(a[0]), float(a[1])), (float(b[0]), float(b[1])), wall_h))
     return segs
+
+
+def _seg_cross_t(
+    p: tuple[float, float],
+    q: tuple[float, float],
+    a: tuple[float, float],
+    b: tuple[float, float],
+) -> float | None:
+    """Fraction t∈(0,1) along p→q where it properly crosses a-b, else None
+    (shared endpoints/collinear touches don't count — the slack shrink handles
+    those cases). The fraction drives the 3D sight test: the ray from a camera
+    at height H is at H·(1−t) when it passes the wall."""
+
+    def cross(o: tuple[float, float], u: tuple[float, float], v: tuple[float, float]) -> float:
+        return (u[0] - o[0]) * (v[1] - o[1]) - (u[1] - o[1]) * (v[0] - o[0])
+
+    d1, d2 = cross(a, b, p), cross(a, b, q)
+    d3, d4 = cross(p, q, a), cross(p, q, b)
+    if ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0)):
+        return d1 / (d1 - d2)
+    return None
 
 
 def _segs_cross(
@@ -105,23 +136,17 @@ def _segs_cross(
     a: tuple[float, float],
     b: tuple[float, float],
 ) -> bool:
-    """True iff segments p-q and a-b properly cross (shared endpoints/collinear
-    touches don't count — the slack shrink handles those cases)."""
-
-    def cross(o: tuple[float, float], u: tuple[float, float], v: tuple[float, float]) -> float:
-        return (u[0] - o[0]) * (v[1] - o[1]) - (u[1] - o[1]) * (v[0] - o[0])
-
-    d1, d2 = cross(a, b, p), cross(a, b, q)
-    d3, d4 = cross(p, q, a), cross(p, q, b)
-    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
+    """True iff segments p-q and a-b properly cross."""
+    return _seg_cross_t(p, q, a, b) is not None
 
 
 def _visible_part(
     pts: list[list[float]],
     cam_pos: tuple[float, float],
-    segs: list[tuple[tuple[float, float], tuple[float, float]]],
+    segs: list[tuple[tuple[float, float], tuple[float, float], float]],
     *,
     step: float = _VIS_STEP_M,
+    cam_h: float | None = None,
 ) -> list[list[float]]:
     """The part of polygon `pts` the camera can see past the walls.
 
@@ -129,7 +154,11 @@ def _visible_part(
     circular run of visible samples — an approximation of the visible region
     that handles the common cases exactly: fully visible → the original crisp
     polygon; fully hidden → []; half behind a partition → the visible half.
-    """
+
+    With `cam_h` (metres, from the 3D pose) the test is 3D: the sight ray from
+    the camera descends to the floor sample, so it clears a wall whose top is
+    below the ray at the crossing — a ceiling camera DOES see the aisle behind
+    a 1.5 m gondola. Without `cam_h` every wall blocks fully (legacy 2D)."""
     dense: list[list[float]] = []
     n = len(pts)
     for i in range(n):
@@ -147,7 +176,13 @@ def _visible_part(
             return True
         s = max(0.0, (dist - _VIS_SLACK_M) / dist)
         q = (cam_pos[0] + dx * s, cam_pos[1] + dy * s)
-        return not any(_segs_cross(cam_pos, q, a, b) for a, b in segs)
+        for a, b, wall_h in segs:
+            t = _seg_cross_t(cam_pos, q, a, b)
+            if t is None:
+                continue
+            if cam_h is None or cam_h * (1.0 - t * s) < wall_h:
+                return False
+        return True
 
     vis = [sees(p) for p in dense]
     if all(vis):
@@ -169,11 +204,146 @@ def _visible_part(
     return [dense[(best_start + k) % m] for k in range(best_len)]
 
 
+# ── lens distortion (single k1 radial term, frame-centre model) ──────────────
+# Wide-angle store cameras bow straight shelf edges (barrel distortion); the
+# pinhole homography can't absorb that, so the residual shows up as zones that
+# fit in the centre but drift at the frame edges. One radial coefficient k1
+# around (0.5, 0.5) captures the bulk of it WITHOUT a checkerboard: undistort
+# the operator's clicked points before the fit, re-distort the projected zones
+# so they overlay the real (distorted) frame. Estimated only with ≥6 pairs and
+# kept only when it clearly beats k1=0 — 4-5 point calibrations are unchanged.
+_K1_SEARCH = 0.35  # |k1| beyond this is a fisheye, not a store camera
+_K1_MIN_GAIN = 0.10  # keep k1 only if it improves reproj err by >10%
+_RANSAC_MIN_PAIRS = 6  # with fewer pairs there is no outlier margin — use DLT
+_RANSAC_THRESHOLD = 0.02  # inlier gate, normalized-image units (~2% of frame)
+
+
+def _undistort_pts(pts: list[list[float]], k1: float) -> list[list[float]]:
+    """Observed (distorted) → pinhole coords: p' = c + (p−c)·(1 + k1·r²)."""
+    out: list[list[float]] = []
+    for x, y in pts:
+        dx, dy = x - 0.5, y - 0.5
+        s = 1.0 + k1 * (dx * dx + dy * dy)
+        out.append([0.5 + dx * s, 0.5 + dy * s])
+    return out
+
+
+def _distort_pts(pts: list[list[float]], k1: float) -> list[list[float]]:
+    """Pinhole → observed coords (fixed-point inverse of _undistort_pts)."""
+    if abs(k1) < 1e-12:
+        return [[float(x), float(y)] for x, y in pts]
+    out: list[list[float]] = []
+    for x, y in pts:
+        ux, uy = x - 0.5, y - 0.5
+        ru2 = ux * ux + uy * uy
+        rd2 = ru2
+        for _ in range(6):
+            s = 1.0 + k1 * rd2
+            if s <= 1e-6:
+                break
+            rd2 = ru2 / (s * s)
+        s = max(1.0 + k1 * rd2, 1e-6)
+        out.append([0.5 + ux / s, 0.5 + uy / s])
+    return out
+
+
+# ── full camera pose (fixture heights → 3D zones) ────────────────────────────
+# The homography only maps the FLOOR. A 1.8 m shelf's face/top lands elsewhere
+# in the image, so its floor-footprint zone misses hands reaching into it. With
+# ≥4 floor pairs, an assumed principal point (frame centre) and a searched
+# focal length, cv2.solvePnP recovers the camera pose; fixtures that carry
+# height_m are then projected as 3D boxes. Gated hard: a pose is used only when
+# its reprojection error is close to the homography's and the recovered camera
+# height is physically plausible — otherwise every fixture falls back to 2D.
+_POSE_MAX_ERR_FACTOR = 1.5  # pose err may exceed homography err by at most this
+_POSE_MAX_ERR_ABS = 0.02  # ...and must stay under 2% of the frame regardless
+_CAM_H_PLAUSIBLE = (1.2, 8.0)  # metres — ceiling cameras
+
+
+def _solve_pose(
+    plan_pts: list[list[float]], img_und: list[list[float]], aspect: float
+) -> dict[str, Any] | None:
+    """Camera pose from floor points (z=0) with a focal-length grid search.
+    Returns {rvec, tvec, K, err, cam_h, up} or None. `up` is +1/-1: the plan's
+    z direction that puts the camera ABOVE the floor (plan y grows downward on
+    screen, so the physical 'up' sign is data-dependent)."""
+    import cv2
+    import numpy as np
+
+    obj = np.array([[float(x), float(y), 0.0] for x, y in plan_pts], dtype=np.float64)
+    img = np.array(img_und, dtype=np.float64).reshape(-1, 1, 2)
+    best: dict[str, Any] | None = None
+    # f is fx normalized by image WIDTH: ~0.5 (≈90° HFOV) … 1.4 (≈40°).
+    for i in range(21):
+        f = 0.4 + i * 0.05
+        k_mtx = np.array(
+            [[f, 0.0, 0.5], [0.0, f * aspect, 0.5], [0.0, 0.0, 1.0]], dtype=np.float64
+        )
+        ok, rvec, tvec = cv2.solvePnP(obj, img, k_mtx, None, flags=cv2.SOLVEPNP_ITERATIVE)
+        if not ok:
+            continue
+        proj, _ = cv2.projectPoints(obj, rvec, tvec, k_mtx, None)
+        err = float(np.mean(np.linalg.norm(proj.reshape(-1, 2) - img.reshape(-1, 2), axis=1)))
+        if best is None or err < best["err"]:
+            rot, _ = cv2.Rodrigues(rvec)
+            cam = (-rot.T @ tvec).flatten()
+            best = {
+                "rvec": rvec,
+                "tvec": tvec,
+                "K": k_mtx,
+                "err": err,
+                "focal": f,
+                "cam_h": float(cam[2]),
+            }
+    if best is None:
+        return None
+    # The camera must sit above the floor: z sign follows the recovered height.
+    up = 1.0 if best["cam_h"] >= 0 else -1.0
+    cam_h = abs(best["cam_h"])
+    if not (_CAM_H_PLAUSIBLE[0] <= cam_h <= _CAM_H_PLAUSIBLE[1]):
+        return None
+    best["up"] = up
+    best["cam_h"] = cam_h
+    return best
+
+
+def _fixture_height(fix: dict[str, Any]) -> float:
+    """The fixture's physical height (m); 0 = flat/unknown → 2D path."""
+    try:
+        return max(0.0, float(fix.get("height_m") or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _project_fixture_3d(
+    pts: list[list[float]], height_m: float, pose: dict[str, Any]
+) -> list[list[float]] | None:
+    """Project a fixture as a 3D box (footprint + top at height_m): the convex
+    hull of all projected corners ≈ the visible solid. None when any corner is
+    at/behind the camera — the caller falls back to the safe 2D path."""
+    import cv2
+    import numpy as np
+
+    obj = np.array(
+        [[float(x), float(y), 0.0] for x, y in pts]
+        + [[float(x), float(y), pose["up"] * float(height_m)] for x, y in pts],
+        dtype=np.float64,
+    )
+    rot, _ = cv2.Rodrigues(pose["rvec"])
+    cam_space = (rot @ obj.T + pose["tvec"].reshape(3, 1)).T
+    if bool((cam_space[:, 2] <= 1e-3).any()):
+        return None
+    proj, _ = cv2.projectPoints(obj, pose["rvec"], pose["tvec"], pose["K"], None)
+    hull = cv2.convexHull(proj.reshape(-1, 2).astype(np.float32))
+    return [[float(p[0][0]), float(p[0][1])] for p in hull]
+
+
 def _compute_calibration(
     pairs: list[dict[str, Any]],
     fixtures: list[dict[str, Any]],
     walls: list[dict[str, Any]] | None = None,
     cam_pos: tuple[float, float] | None = None,
+    img_aspect: float | None = None,
 ) -> tuple[list[list[float]], float, list[dict[str, Any]]]:
     """Fit a plan→image homography from ≥4 point pairs and project the plan
     fixtures into this camera's normalized (0-1) image space → Camera.zones.
@@ -192,17 +362,62 @@ def _compute_calibration(
     if len(pairs) < 4:
         raise ValueError("Дор хаяж 4 цэг хослол хэрэгтэй")
     plan = np.array([p["plan"] for p in pairs], dtype=np.float64)
-    img = np.array([p["image"] for p in pairs], dtype=np.float64)
-    homography, _ = cv2.findHomography(plan, img, 0)  # plan → image(0-1), DLT
+    img_raw = [[float(v[0]), float(v[1])] for v in (p["image"] for p in pairs)]
+
+    # With ≥6 pairs RANSAC survives one bad click (4-5 pairs: plain DLT — every
+    # pair is needed, there is no outlier margin). RANSAC degenerating to None
+    # (tiny/collinear-ish sets) falls back to DLT rather than failing.
+    method = cv2.RANSAC if len(pairs) >= _RANSAC_MIN_PAIRS else 0
+
+    def fit(k1: float) -> tuple[Any, float]:
+        und = np.array(_undistort_pts(img_raw, k1), dtype=np.float64)
+        h_mtx, mask = cv2.findHomography(plan, und, method, _RANSAC_THRESHOLD)
+        if h_mtx is None and method != 0:
+            h_mtx, mask = cv2.findHomography(plan, und, 0)
+        if h_mtx is None:
+            return None, float("inf")
+        proj = cv2.perspectiveTransform(plan.reshape(-1, 1, 2), h_mtx).reshape(-1, 2)
+        errs = np.linalg.norm(proj - und, axis=1)
+        # Quality = the fit on the pairs the fit actually USED: a RANSAC-rejected
+        # bad click must not smear the reported error (it's excluded, not fitted).
+        if mask is not None and int(mask.sum()) >= 4:
+            errs = errs[mask.ravel().astype(bool)]
+        return h_mtx, float(np.mean(errs))
+
+    homography, reproj_err = fit(0.0)
     if homography is None:
         raise ValueError("Гомографи бодож чадсангүй — цэгүүд нэг шулуун дээр байж магадгүй")
+
+    # k1 estimation: coarse grid + local refine, adopted only on a clear win so
+    # noise never buys a phantom distortion.
+    k1 = 0.0
+    if len(pairs) >= _RANSAC_MIN_PAIRS:
+        cand = [(reproj_err, 0.0, homography)]
+        for i in range(15):
+            k = -_K1_SEARCH + i * (2 * _K1_SEARCH / 14)
+            h_k, e_k = fit(k)
+            if h_k is not None:
+                cand.append((e_k, k, h_k))
+        cand.sort(key=lambda c: c[0])
+        best_e, best_k, best_h = cand[0]
+        if abs(best_k) > 1e-9:
+            step = 2 * _K1_SEARCH / 14 / 2
+            for _ in range(4):  # bisect around the grid winner
+                for k in (best_k - step, best_k + step):
+                    if abs(k) <= _K1_SEARCH:
+                        h_k, e_k = fit(k)
+                        if h_k is not None and e_k < best_e:
+                            best_e, best_k, best_h = e_k, k, h_k
+                step /= 2
+        if best_e < reproj_err * (1.0 - _K1_MIN_GAIN):
+            k1, homography, reproj_err = best_k, best_h, best_e
+
+    img_und = _undistort_pts(img_raw, k1)
 
     def project(points: Any) -> Any:
         return cv2.perspectiveTransform(
             np.asarray(points, dtype=np.float64).reshape(-1, 1, 2), homography
         ).reshape(-1, 2)
-
-    reproj_err = float(np.mean(np.linalg.norm(project(plan) - img, axis=1)))
 
     # H is defined only up to scale and findHomography may return it negated —
     # w would then be negative for every genuinely visible point. Normalize the
@@ -212,7 +427,19 @@ def _compute_calibration(
         homography = -homography
     h31, h32, h33 = (float(v) for v in homography[2])
 
+    # Full camera pose only when a fixture actually carries a height AND the
+    # editor supplied the frame aspect; a pose that fits the clicked pairs
+    # clearly worse than the homography is discarded — 2D stays the authority.
+    pose: dict[str, Any] | None = None
+    if img_aspect and img_aspect > 0 and any(_fixture_height(f) > 0 for f in fixtures):
+        pose = _solve_pose([[float(p[0]), float(p[1])] for p in plan], img_und, float(img_aspect))
+        if pose is not None and pose["err"] > max(
+            reproj_err * _POSE_MAX_ERR_FACTOR, _POSE_MAX_ERR_ABS
+        ):
+            pose = None
+
     wall_segs = _wall_segments(walls)
+    cam_h = pose["cam_h"] if pose is not None else None
     zones: list[dict[str, Any]] = []
     for i, fix in enumerate(fixtures):
         if fix.get("type") == "furniture":
@@ -223,16 +450,24 @@ def _compute_calibration(
         pts = [[float(x), float(y)] for x, y in raw]
         # Walls block sight: keep only the part the camera can see (plan space).
         if wall_segs and cam_pos is not None:
-            pts = _visible_part(pts, cam_pos, wall_segs)
+            pts = _visible_part(pts, cam_pos, wall_segs, cam_h=cam_h)
             if len(pts) < 3:
                 continue  # fully hidden behind a wall
-        # Clip away the part at/behind the camera's principal plane FIRST —
-        # projecting it yields wrapped coordinates no image-space clip can repair.
-        pts = _clip_halfplane(pts, h31, h32, h33 - _W_EPS)
-        if len(pts) < 3:
-            continue
-        tp = project(pts)
-        clipped = _clip_unit_square([[float(x), float(y)] for x, y in tp])
+        tp: list[list[float]] | None = None
+        h_m = _fixture_height(fix)
+        if pose is not None and h_m > 0:
+            # 3D box: the zone covers the fixture's visible SOLID (face + top),
+            # not just its floor footprint. None (corner behind camera) → 2D.
+            tp = _project_fixture_3d(pts, h_m, pose)
+        if tp is None:
+            # Clip away the part at/behind the camera's principal plane FIRST —
+            # projecting it yields wrapped coords no image-space clip can repair.
+            flat = _clip_halfplane(pts, h31, h32, h33 - _W_EPS)
+            if len(flat) < 3:
+                continue
+            tp = [[float(x), float(y)] for x, y in project(flat)]
+        # Zones live in the REAL (distorted) frame the engine/overlay sees.
+        clipped = _clip_unit_square(_distort_pts(tp, k1))
         if len(clipped) < 3 or _poly_area(clipped) < _MIN_ZONE_AREA:
             continue  # not (meaningfully) in this camera's view
         zones.append(
@@ -453,7 +688,11 @@ class FloorPlanApi:
         }
 
     def preview_calibration(
-        self, pairs: list[dict[str, Any]], plan: dict[str, Any], camera_id: str | None = None
+        self,
+        pairs: list[dict[str, Any]],
+        plan: dict[str, Any],
+        camera_id: str | None = None,
+        img_aspect: float | None = None,
     ) -> dict[str, Any]:
         """Phase B dry-run: fit the homography + derive zones WITHOUT saving, so
         the editor can overlay the projected zones on the camera snapshot and the
@@ -468,6 +707,7 @@ class FloorPlanApi:
                 plan.get("fixtures") or [],
                 walls=plan.get("walls"),
                 cam_pos=_plan_cam_pos(plan, camera_id),
+                img_aspect=img_aspect,
             )
         except Exception as e:  # noqa: BLE001 — preview must degrade, not crash
             return {"ok": False, "error": str(e)[:200]}
@@ -475,7 +715,11 @@ class FloorPlanApi:
         return {"ok": True, "reproj_err": reproj_err, "zones": zones}
 
     def save_calibration(
-        self, camera_id: str, pairs: list[dict[str, Any]], plan: dict[str, Any]
+        self,
+        camera_id: str,
+        pairs: list[dict[str, Any]],
+        plan: dict[str, Any],
+        img_aspect: float | None = None,
     ) -> dict[str, Any]:
         """Phase B: fit a plan→image homography from the clicked point pairs,
         derive this camera's zones from the plan fixtures, and persist both —
@@ -496,6 +740,7 @@ class FloorPlanApi:
             plan.get("fixtures") or [],
             walls=plan.get("walls"),
             cam_pos=_plan_cam_pos(plan, camera_id),
+            img_aspect=img_aspect,
         )
 
         # Fold the calibration into THIS plan object (passed from the editor, so

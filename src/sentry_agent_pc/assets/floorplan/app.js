@@ -7,16 +7,19 @@
  * never touches JS. Homography + live dots come in Phase B / C. */
 "use strict";
 
+// height_m: physical height (m) used by the 3D calibration — the zone then
+// covers the fixture's visible solid, not just its floor footprint. 0 = flat
+// (exits are floor thresholds). The operator can override per fixture.
 const FIX = {
-  exit: { color: "#E5484D", label: "Орц/Гарц" },
-  shelf: { color: "#3DD56D", label: "Тавиур" },
-  checkout: { color: "#E0A82E", label: "Касс" },
+  exit: { color: "#E5484D", label: "Орц/Гарц", height_m: 0 },
+  shelf: { color: "#3DD56D", label: "Тавиур", height_m: 1.8 },
+  checkout: { color: "#E0A82E", label: "Касс", height_m: 1.0 },
   // Item-taking area like a shelf — the edge engine counts fridge visits into
   // the same repeated-visit behaviour (edge/behavior.py).
-  fridge: { color: "#38BDF8", label: "Хөргүүр" },
+  fridge: { color: "#38BDF8", label: "Хөргүүр", height_m: 2.0 },
   // Scenery (буйдан/сандал/ширээ): drawable + shown in analytics, but NEVER
   // derived into Camera.zones (no engine meaning — see _compute_calibration).
-  furniture: { color: "#A78BFA", label: "Тавилга" },
+  furniture: { color: "#A78BFA", label: "Тавилга", height_m: 0 },
 };
 const WALL_COLOR = "#9CA3AF";
 const CAM_COLOR = "#2563EB"; // brand royal-blue (the camera is the Sentry element)
@@ -758,6 +761,12 @@ function selectShape(line, kind, idx) {
   uiLayer.draw();
 }
 
+// Effective fixture height (m): explicit value wins, else the type default.
+function fixHeight(f) {
+  if (typeof f.height_m === "number" && isFinite(f.height_m) && f.height_m >= 0) return f.height_m;
+  return (FIX[f.type] || {}).height_m || 0;
+}
+
 // ── selected-shape dimension panel (edit width×height / wall length in m) ────
 function hideShapeSettings() {
   const el = document.getElementById("shape-settings");
@@ -774,7 +783,8 @@ function showShapeSettings(kindPlural, idx) {
       `<div class="ss-row">нэр<input id="ss-name" type="text" maxlength="64" placeholder="ж: Архины тавиур" value="${f.label ? esc(f.label) : ""}"></div>` +
       `<div class="ss-row">урт (м)<input id="ss-w" type="number" min="0.1" step="0.01" value="${fmtM(b.w)}"></div>` +
       `<div class="ss-row">өргөн (м)<input id="ss-h" type="number" min="0.1" step="0.01" value="${fmtM(b.h)}"></div>` +
-      `<div class="ss-muted">Талбай: ${fmtM(polyArea(f.points))} м² · нэр нь аналитикт харагдана</div>` +
+      `<div class="ss-row">өндөр (м)<input id="ss-z" type="number" min="0" step="0.05" value="${fmtM(fixHeight(f))}"></div>` +
+      `<div class="ss-muted">Талбай: ${fmtM(polyArea(f.points))} м² · өндөр 0 = хавтгай (зөвхөн шалны зон)</div>` +
       `<button id="ss-apply" class="primary">Тавих</button>`;
     el.classList.remove("cs-hidden");
     const apply = () => {
@@ -782,13 +792,16 @@ function showShapeSettings(kindPlural, idx) {
       const name = document.getElementById("ss-name").value.trim();
       const renamed = (name || null) !== (f.label || null);
       if (renamed) { f.label = name || null; pushUndo(); }
+      const z = parseFloat(document.getElementById("ss-z").value);
+      const heightChanged = isFinite(z) && z >= 0 && Math.abs(z - fixHeight(f)) > 0.005;
+      if (heightChanged) { f.height_m = z; pushUndo(); }
       const w = parseFloat(document.getElementById("ss-w").value);
       const h = parseFloat(document.getElementById("ss-h").value);
       if (w > 0 && h > 0 && (Math.abs(w - b.w) > 0.005 || Math.abs(h - b.h) > 0.005)) {
         resizeFixture(idx, w, h);
-      } else if (renamed) {
+      } else if (renamed || heightChanged) {
         reselectShape("fixtures", idx);
-        setStatus(name ? `Нэр «${name}» хадгалагдлаа` : "Нэр арилгалаа");
+        setStatus(heightChanged ? `Өндөр ${z} м хадгалагдлаа` : (name ? `Нэр «${name}» хадгалагдлаа` : "Нэр арилгалаа"));
       }
     };
     document.getElementById("ss-apply").onclick = apply;
@@ -1383,6 +1396,7 @@ function buildCalibStages(frame) {
     const sc = Math.min(cw / iw, ch / ih);
     const dw = iw * sc, dh = ih * sc, ox = (cw - dw) / 2, oy = (ch - dh) / 2;
     calib.imgFit = { ox, oy, dw, dh };
+    calib.aspect = ih > 0 ? iw / ih : null; // frame w/h → Python 3D pose (solvePnP intrinsics)
     imgLayer.add(new Konva.Image({ image: imageObj, x: ox, y: oy, width: dw, height: dh }));
     // Derived-zone preview UNDER the point marks: the operator sees exactly
     // where the plan fixtures land on this camera before saving.
@@ -1509,7 +1523,7 @@ async function refreshCalibPreview() {
   }
   const seq = (calib.previewSeq = (calib.previewSeq || 0) + 1);
   let r = null;
-  try { r = await window.pywebview.api.preview_calibration(calib.pairs, PLAN, calib.cam.camera_id); }
+  try { r = await window.pywebview.api.preview_calibration(calib.pairs, PLAN, calib.cam.camera_id, calib.aspect || null); }
   catch (e) { r = { ok: false, error: String(e) }; }
   if (seq !== calib.previewSeq || !calib.zoneMarks) return; // stale response / closed
   calib.zoneMarks.destroyChildren();
@@ -1550,7 +1564,7 @@ async function saveCalibration() {
   if (calib.pairs.length < 4) { setCalibStatus("Дор хаяж 4 цэг хослол хэрэгтэй"); return; }
   setCalibStatus("Хадгалж байна…");
   try {
-    const r = await window.pywebview.api.save_calibration(calib.cam.camera_id, calib.pairs, PLAN);
+    const r = await window.pywebview.api.save_calibration(calib.cam.camera_id, calib.pairs, PLAN, calib.aspect || null);
     const errPct = (r.reproj_err * 100).toFixed(1);
     const v = calibVerdict(r.reproj_err);
     setCalibStatus(`✅ ${r.zone_count} зон · алдаа ${errPct}% — ${v.word}${v.hint ? ` (${v.hint})` : ""}`);
@@ -1807,8 +1821,16 @@ function normalize(p) {
   const out = {
     version: p.version || 1,
     size: p.size && p.size.length === 2 ? p.size : DEFAULT_SIZE_M.slice(),
-    walls: (p.walls || []).map((w) => ({ points: w.points || [] })),
-    fixtures: (p.fixtures || []).map((f) => ({ id: f.id, type: f.type, label: f.label || null, points: f.points || [] })),
+    walls: (p.walls || []).map((w) => ({
+      points: w.points || [],
+      height_m: typeof w.height_m === "number" && isFinite(w.height_m) && w.height_m > 0 ? w.height_m : null,
+    })),
+    // height_m: the EFFECTIVE height (explicit or type default) so the Python
+    // 3D calibration sees it without duplicating the FIX defaults table.
+    fixtures: (p.fixtures || []).map((f) => ({
+      id: f.id, type: f.type, label: f.label || null, points: f.points || [],
+      height_m: fixHeight(f),
+    })),
     cameras: (p.cameras || []).map((c) => ({
       camera_id: c.camera_id, name: c.name, pos: c.pos || [0, 0],
       dir_deg: c.dir_deg || 0, homography: c.homography || null,

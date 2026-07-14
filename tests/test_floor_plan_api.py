@@ -340,3 +340,114 @@ def test_save_plan_rejects_oversized(monkeypatch) -> None:  # type: ignore[no-un
     else:
         raise AssertionError("save_plan must reject an oversized plan")
     assert fake.saved is None
+
+
+# ── v0.7.95: RANSAC / k1 lens distortion / 3D fixture heights ────────────────
+
+
+def _grid_pairs(nx: int = 3, ny: int = 3) -> list[dict]:
+    """A planar grid of plan(m)→image(0-1) pairs under a pure scale mapping
+    (plan 10×8 m ↔ full frame)."""
+    pairs = []
+    for i in range(nx):
+        for j in range(ny):
+            px, py = 10.0 * i / (nx - 1), 8.0 * j / (ny - 1)
+            pairs.append({"plan": [px, py], "image": [px / 10.0, py / 8.0]})
+    return pairs
+
+
+def test_ransac_survives_one_bad_click() -> None:
+    # 9 good pairs + 1 wildly wrong click: RANSAC must ignore the outlier and
+    # keep the fit tight; plain DLT would smear the error over every point.
+    pairs = _grid_pairs()
+    pairs.append({"plan": [5.0, 4.0], "image": [0.95, 0.05]})  # bad click
+    fixtures = [{"type": "shelf", "points": [[2.5, 2.0], [7.5, 2.0], [7.5, 6.0], [2.5, 6.0]]}]
+    _h, err, zones = fpw._compute_calibration(pairs, fixtures)
+    assert err < 0.01  # outlier rejected (DLT here gives ~0.03+)
+    assert len(zones) == 1
+    z = zones[0]["points"]
+    assert abs(z[0][0] - 0.25) < 0.02 and abs(z[0][1] - 0.25) < 0.02
+
+
+def test_four_point_calibration_unchanged_by_upgrades() -> None:
+    # The minimal 4-point flow must behave exactly as before: no RANSAC, no k1,
+    # no 3D — byte-identical zone maths for the common case.
+    pairs = [
+        {"plan": [0, 0], "image": [0, 0]},
+        {"plan": [1000, 0], "image": [1, 0]},
+        {"plan": [1000, 800], "image": [1, 1]},
+        {"plan": [0, 800], "image": [0, 1]},
+    ]
+    fixtures = [{"type": "shelf", "points": [[250, 200], [750, 200], [750, 600], [250, 600]]}]
+    _h, err, zones = fpw._compute_calibration(pairs, fixtures)
+    assert err < 1e-6
+    assert abs(zones[0]["points"][0][0] - 0.25) < 1e-3
+
+
+def test_k1_estimated_from_distorted_pairs() -> None:
+    # Synthesize barrel distortion (k1=0.2) over a 4×4 grid: the fit must
+    # recover most of it — reproj error far below the k1=0 fit.
+    true_k1 = 0.2
+    pairs = _grid_pairs(4, 4)
+    for p in pairs:
+        (x, y), = fpw._distort_pts([p["image"]], true_k1)
+        p["image"] = [x, y]
+    _h, err, _z = fpw._compute_calibration(pairs, [])
+    assert err < 0.004  # without k1 the residual is ~0.01+
+
+
+def test_height_zone_covers_more_than_footprint() -> None:
+    # A tall shelf seen from a 3 m camera: the 3D zone (footprint + top faces)
+    # must be a superset of the flat-footprint zone in area.
+    import numpy as np
+    import cv2
+
+    # Ground truth: camera at (5, 12, 3) looking down-forward at the 10×8 m
+    # floor (explicit right-handed look-at basis; rows = cam x/y/z in world).
+    f, aspect = 0.9, 16 / 9
+    k_mtx = np.array([[f, 0, 0.5], [0, f * aspect, 0.5], [0, 0, 1.0]])
+    rot = np.array(
+        [
+            [-1.0, 0.0, 0.0],
+            [0.0, 0.3511, -0.9363],
+            [0.0, -0.9363, -0.3511],
+        ]
+    )
+    rvec, _ = cv2.Rodrigues(rot)
+    cam_world = np.array([5.0, 12.0, 3.0])
+    tvec = (-rot @ cam_world).reshape(3, 1)
+
+    def img_of(pt3):
+        proj, _ = cv2.projectPoints(np.array([pt3], dtype=float), rvec, tvec, k_mtx, None)
+        return [float(proj[0][0][0]), float(proj[0][0][1])]
+
+    grid = [[x, y] for x in (1.0, 5.0, 9.0) for y in (1.0, 4.0, 7.0)]
+    pairs = [{"plan": g, "image": img_of([g[0], g[1], 0.0])} for g in grid]
+    foot = [[4.0, 3.0], [6.0, 3.0], [6.0, 3.6], [4.0, 3.6]]
+
+    flat = [{"type": "shelf", "points": foot, "height_m": 0}]
+    tall = [{"type": "shelf", "points": foot, "height_m": 1.8}]
+    _h1, _e1, z_flat = fpw._compute_calibration(pairs, flat, img_aspect=aspect)
+    _h2, _e2, z_tall = fpw._compute_calibration(pairs, tall, img_aspect=aspect)
+    assert len(z_flat) == 1 and len(z_tall) == 1
+    a_flat = fpw._poly_area(z_flat[0]["points"])
+    a_tall = fpw._poly_area(z_tall[0]["points"])
+    assert a_tall > a_flat * 1.3  # the visible solid is clearly bigger
+
+
+def test_high_camera_sees_over_low_wall() -> None:
+    # 2D: any wall blocks. 3D (cam_h known): a 3 m camera sees a fixture 6 m
+    # past a 1.2 m gondola — the ray clears the top.
+    segs = fpw._wall_segments([{"points": [[0, 5], [10, 5]], "height_m": 1.2}])
+    poly = [[4.0, 8.0], [6.0, 8.0], [6.0, 9.0], [4.0, 9.0]]
+    cam = (5.0, 1.0)
+    hidden_2d = fpw._visible_part(poly, cam, segs)
+    seen_3d = fpw._visible_part(poly, cam, segs, cam_h=3.0)
+    assert hidden_2d == []
+    assert len(seen_3d) >= 3  # fully visible over the low wall
+
+
+def test_full_wall_still_blocks_in_3d() -> None:
+    segs = fpw._wall_segments([{"points": [[0, 5], [10, 5]]}])  # default 2.8 m
+    poly = [[4.0, 6.0], [6.0, 6.0], [6.0, 7.0], [4.0, 7.0]]  # right behind it
+    assert fpw._visible_part(poly, (5.0, 1.0), segs, cam_h=3.0) == []
