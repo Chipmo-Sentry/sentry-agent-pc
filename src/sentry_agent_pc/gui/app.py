@@ -284,7 +284,9 @@ _WALL_RGB = (156, 163, 175)
 _CAM_RGB = (37, 99, 235)
 
 
-def render_plan_image(plan: dict[str, Any], size: tuple[int, int] = (900, 560)) -> Image.Image | None:
+def render_plan_image(
+    plan: dict[str, Any], size: tuple[int, int] = (900, 560)
+) -> Image.Image | None:
     """Render a saved floor plan (walls / fixtures / cameras) to a read-only
     schematic image for the in-app preview. Returns None if the plan is empty
     (nothing drawn), so the caller can show an empty-state hint instead.
@@ -501,7 +503,8 @@ class AgentApp(ctk.CTk):
         detail panel (rows stay clean)."""
         page = ctk.CTkFrame(parent, fg_color="transparent")
         toolbar = self._page_head(
-            page, "Камерууд",
+            page,
+            "Камерууд",
             "Мөр сонгоход баруун талд дэлгэрэнгүй нээгдэнэ · ⋯ дээр үйлдлүүд.",
         )
         # Search box filters the rendered rows live.
@@ -511,18 +514,32 @@ class AgentApp(ctk.CTk):
         self._cam_search.pack(side="left", padx=(0, 8))
         self._cam_search.bind("<KeyRelease>", lambda _e: self._apply_camera_filter())
         ctk.CTkButton(
-            toolbar, text="🔍 Scan", width=90, height=32,
-            fg_color="transparent", border_width=1, border_color=UI_BORDER,
+            toolbar,
+            text="🔍 Scan",
+            width=90,
+            height=32,
+            fg_color="transparent",
+            border_width=1,
+            border_color=UI_BORDER,
             command=self.open_scan,
         ).pack(side="left", padx=(0, 8))
         ctk.CTkButton(
-            toolbar, text="➕ Нэмэх", width=100, height=32,
-            fg_color=BRAND_PRIMARY, hover_color=BRAND_PRIMARY_HOVER,
+            toolbar,
+            text="➕ Нэмэх",
+            width=100,
+            height=32,
+            fg_color=BRAND_PRIMARY,
+            hover_color=BRAND_PRIMARY_HOVER,
             command=self.open_add,
         ).pack(side="left", padx=(0, 8))
         ctk.CTkButton(
-            toolbar, text="↻ Сэргээх", width=100, height=32,
-            fg_color="transparent", border_width=1, border_color=UI_BORDER,
+            toolbar,
+            text="↻ Сэргээх",
+            width=100,
+            height=32,
+            fg_color="transparent",
+            border_width=1,
+            border_color=UI_BORDER,
             command=self.refresh_cameras,
         ).pack(side="left")
 
@@ -538,8 +555,11 @@ class AgentApp(ctk.CTk):
         self._configure_grid(head)
         for i, (_k, text, _w, _m) in enumerate(self._COLUMNS):
             ctk.CTkLabel(
-                head, text=text, anchor="w",
-                font=ctk.CTkFont(size=11, weight="bold"), text_color=UI_MUTED_FG,
+                head,
+                text=text,
+                anchor="w",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color=UI_MUTED_FG,
             ).grid(row=0, column=i, sticky="w", padx=6)
         ctk.CTkFrame(grid_panel.body, height=1, fg_color=UI_LINE_SOFT, corner_radius=0).pack(
             fill="x", padx=12, pady=(6, 0)
@@ -577,9 +597,7 @@ class AgentApp(ctk.CTk):
         self._sys_segments: dict[str, ctk.CTkLabel] = {}
 
         def _seg(key: str, initial: str) -> None:
-            lbl = ctk.CTkLabel(
-                bar, text=initial, font=ctk.CTkFont(size=11), text_color=UI_MUTED_FG
-            )
+            lbl = ctk.CTkLabel(bar, text=initial, font=ctk.CTkFont(size=11), text_color=UI_MUTED_FG)
             lbl.pack(side="right", padx=(0, 14))
             self._sys_segments[key] = lbl
 
@@ -779,8 +797,11 @@ class AgentApp(ctk.CTk):
             self._live_events_count.set(str(len(clips)), "warn" if clips else "neutral")
         if not clips:
             ctk.CTkLabel(
-                holder, text="Одоогоор event алга.\nAI сэжигтэй үйлдэл илрүүлбэл энд гарна.",
-                text_color=UI_MUTED_FG, justify="center", font=ctk.CTkFont(size=11),
+                holder,
+                text="Одоогоор event алга.\nAI сэжигтэй үйлдэл илрүүлбэл энд гарна.",
+                text_color=UI_MUTED_FG,
+                justify="center",
+                font=ctk.CTkFont(size=11),
             ).pack(pady=30)
             self._render_live_event_detail(None)
             return
@@ -796,7 +817,11 @@ class AgentApp(ctk.CTk):
         row.pack(fill="x", pady=2)
         when = datetime.datetime.fromtimestamp(clip.started_at).strftime("%H:%M:%S")
         ctk.CTkLabel(
-            row, text=when, width=64, anchor="w", font=ctk.CTkFont(size=11),
+            row,
+            text=when,
+            width=64,
+            anchor="w",
+            font=ctk.CTkFont(size=11),
             text_color=UI_MUTED_FG,
         ).pack(side="left", padx=(8, 4), pady=7)
         StatusPill(row, f"{clip.risk_pct:.0f}%", self._risk_variant(clip.risk_pct), dot=False).pack(
@@ -804,8 +829,12 @@ class AgentApp(ctk.CTk):
         )
         labels = [_EDGE_BEHAVIOR_LABELS.get(b, b) for b in clip.behaviors]
         ctk.CTkLabel(
-            row, text=(" · ".join(labels) or "—"), anchor="w", justify="left",
-            font=ctk.CTkFont(size=11), text_color=UI_FG,
+            row,
+            text=(" · ".join(labels) or "—"),
+            anchor="w",
+            justify="left",
+            font=ctk.CTkFont(size=11),
+            text_color=UI_FG,
         ).pack(side="left", fill="x", expand=True, padx=4)
         _bind_row_click(row, lambda: self._render_live_event_detail(clip))
 
@@ -817,40 +846,59 @@ class AgentApp(ctk.CTk):
             w.destroy()
         if clip is None:
             ctk.CTkLabel(
-                holder, text="Event сонгоно уу.", text_color=UI_MUTED_FG,
+                holder,
+                text="Event сонгоно уу.",
+                text_color=UI_MUTED_FG,
                 font=ctk.CTkFont(size=11),
             ).pack(expand=True)
             return
         import datetime
 
         ctk.CTkLabel(
-            holder, text=clip.camera_id, anchor="w", font=ctk.CTkFont(size=13, weight="bold"),
+            holder,
+            text=clip.camera_id,
+            anchor="w",
+            font=ctk.CTkFont(size=13, weight="bold"),
         ).pack(anchor="w")
         top = ctk.CTkFrame(holder, fg_color="transparent")
         top.pack(fill="x", pady=(3, 2))
-        StatusPill(top, f"Эрсдэл {clip.risk_pct:.0f}%", self._risk_variant(clip.risk_pct), dot=False).pack(
-            side="left"
-        )
+        StatusPill(
+            top, f"Эрсдэл {clip.risk_pct:.0f}%", self._risk_variant(clip.risk_pct), dot=False
+        ).pack(side="left")
         ctk.CTkLabel(
-            top, text=datetime.datetime.fromtimestamp(clip.started_at).strftime("%H:%M:%S")
+            top,
+            text=datetime.datetime.fromtimestamp(clip.started_at).strftime("%H:%M:%S")
             + f" · {clip.duration:.0f}с",
-            text_color=UI_MUTED_FG, font=ctk.CTkFont(size=11),
+            text_color=UI_MUTED_FG,
+            font=ctk.CTkFont(size=11),
         ).pack(side="left", padx=8)
         labels = [_EDGE_BEHAVIOR_LABELS.get(b, b) for b in clip.behaviors]
         ctk.CTkLabel(
-            holder, text=(" · ".join(labels) or "—"), anchor="w", justify="left",
-            font=ctk.CTkFont(size=11), text_color=UI_MUTED_FG, wraplength=300,
+            holder,
+            text=(" · ".join(labels) or "—"),
+            anchor="w",
+            justify="left",
+            font=ctk.CTkFont(size=11),
+            text_color=UI_MUTED_FG,
+            wraplength=300,
         ).pack(anchor="w", pady=(2, 6))
         btns = ctk.CTkFrame(holder, fg_color="transparent")
         btns.pack(fill="x")
         ctk.CTkButton(
-            btns, text="▶ Видео", height=30,
-            fg_color=BRAND_PRIMARY, hover_color=BRAND_PRIMARY_HOVER,
+            btns,
+            text="▶ Видео",
+            height=30,
+            fg_color=BRAND_PRIMARY,
+            hover_color=BRAND_PRIMARY_HOVER,
             command=lambda p=clip.path: self._open_clip(p),
         ).pack(side="left", fill="x", expand=True, padx=(0, 4))
         ctk.CTkButton(
-            btns, text="⛶ Дэлгэрэнгүй", height=30,
-            fg_color="transparent", border_width=1, border_color=UI_BORDER,
+            btns,
+            text="⛶ Дэлгэрэнгүй",
+            height=30,
+            fg_color="transparent",
+            border_width=1,
+            border_color=UI_BORDER,
             command=lambda c=clip: self._open_clip_detail(c),
         ).pack(side="left", fill="x", expand=True, padx=(4, 0))
 
@@ -887,12 +935,18 @@ class AgentApp(ctk.CTk):
         shows its full per-fire timeline inline; «▶ Видео» opens the recording."""
         page = ctk.CTkFrame(parent, fg_color="transparent")
         toolbar = self._page_head(
-            page, "Сэжигтэй event",
+            page,
+            "Сэжигтэй event",
             "AI сэжигтэй үйлдэл илрүүлбэл [−3с…+3с] бичлэг энд орж ирнэ. Мөр сонгож шалгана.",
         )
         ctk.CTkButton(
-            toolbar, text="↻ Сэргээх", width=100, height=32,
-            fg_color="transparent", border_width=1, border_color=UI_BORDER,
+            toolbar,
+            text="↻ Сэргээх",
+            width=100,
+            height=32,
+            fg_color="transparent",
+            border_width=1,
+            border_color=UI_BORDER,
             command=self._refresh_alerts,
         ).pack(side="right")
 
@@ -917,8 +971,11 @@ class AgentApp(ctk.CTk):
             ("Төлөв", _CLIP_COL_STATUS, "w"),
         ):
             ctk.CTkLabel(
-                hdr, text=text, anchor=anchor,
-                font=ctk.CTkFont(size=11, weight="bold"), text_color=UI_MUTED_FG,
+                hdr,
+                text=text,
+                anchor=anchor,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color=UI_MUTED_FG,
                 **({"width": w} if w else {}),
             ).pack(side="left", fill=("x" if not w else None), expand=(not w), padx=8)
         ctk.CTkFrame(queue.body, height=1, fg_color=UI_LINE_SOFT, corner_radius=0).pack(
@@ -1032,30 +1089,49 @@ class AgentApp(ctk.CTk):
         beh = " · ".join(labels) or "—"
 
         ctk.CTkLabel(
-            row, text=clip.camera_id, width=_CLIP_COL_CAM, anchor="w",
+            row,
+            text=clip.camera_id,
+            width=_CLIP_COL_CAM,
+            anchor="w",
             font=ctk.CTkFont(size=12, weight="bold"),
         ).pack(side="left", padx=8, pady=8)
         ctk.CTkLabel(
-            row, text=when, width=_CLIP_COL_WHEN, anchor="w",
-            font=ctk.CTkFont(size=11), text_color=UI_MUTED_FG,
+            row,
+            text=when,
+            width=_CLIP_COL_WHEN,
+            anchor="w",
+            font=ctk.CTkFont(size=11),
+            text_color=UI_MUTED_FG,
         ).pack(side="left", padx=8)
         risk_pill = StatusPill(
             row, f"{clip.risk_pct:.0f}%", self._risk_variant(clip.risk_pct), dot=False
         )
         risk_pill.pack(side="left", padx=8)
         ctk.CTkLabel(
-            row, text=beh, anchor="w", justify="left",
-            font=ctk.CTkFont(size=11), text_color=UI_FG,
+            row,
+            text=beh,
+            anchor="w",
+            justify="left",
+            font=ctk.CTkFont(size=11),
+            text_color=UI_FG,
         ).pack(side="left", fill="x", expand=True, padx=8)
         ctk.CTkLabel(
-            row, text=f"{clip.duration:.0f}с", width=_CLIP_COL_DUR, anchor="e",
-            font=ctk.CTkFont(size=11), text_color=UI_MUTED_FG,
+            row,
+            text=f"{clip.duration:.0f}с",
+            width=_CLIP_COL_DUR,
+            anchor="e",
+            font=ctk.CTkFont(size=11),
+            text_color=UI_MUTED_FG,
         ).pack(side="left", padx=8)
         # Edge clip id — the SAME string as the frontend alert's `edge_clip_id`,
         # so staff can cross-reference a desktop clip with its cloud alert.
         ctk.CTkLabel(
-            row, text=clip.clip_id, width=_CLIP_COL_ID, anchor="w",
-            font=ctk.CTkFont(size=11, family="Consolas"), text_color=UI_MUTED_FG,
+            row,
+            text=clip.clip_id,
+            width=_CLIP_COL_ID,
+            anchor="w",
+            font=ctk.CTkFont(size=11, family="Consolas"),
+            text_color=UI_MUTED_FG,
         ).pack(side="left", padx=8)
         st_label, st_variant = self._clip_status_meta(clip.status)
         # Fixed-width holder (with an explicit height so the row stays compact —
@@ -1090,13 +1166,19 @@ class AgentApp(ctk.CTk):
             w.destroy()
         if clip is None:
             ctk.CTkLabel(
-                holder, text="Тохиолдол сонгоно уу.\n\nЗүүн талын жагсаалтаас мөр\nдээр дарж шалгана.",
-                text_color=UI_MUTED_FG, justify="center", font=ctk.CTkFont(size=12),
+                holder,
+                text="Тохиолдол сонгоно уу.\n\nЗүүн талын жагсаалтаас мөр\nдээр дарж шалгана.",
+                text_color=UI_MUTED_FG,
+                justify="center",
+                font=ctk.CTkFont(size=12),
             ).pack(expand=True, pady=40)
             return
         started = datetime.datetime.fromtimestamp(clip.started_at)
         ctk.CTkLabel(
-            holder, text=clip.camera_id, anchor="w", font=ctk.CTkFont(size=14, weight="bold"),
+            holder,
+            text=clip.camera_id,
+            anchor="w",
+            font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(anchor="w")
         head_row = ctk.CTkFrame(holder, fg_color="transparent")
         head_row.pack(fill="x", pady=(4, 2))
@@ -1104,18 +1186,26 @@ class AgentApp(ctk.CTk):
             head_row, f"Эрсдэл {clip.risk_pct:.0f}%", self._risk_variant(clip.risk_pct), dot=False
         ).pack(side="left")
         ctk.CTkLabel(
-            head_row, text=f"{clip.duration:.0f}с", text_color=UI_MUTED_FG,
+            head_row,
+            text=f"{clip.duration:.0f}с",
+            text_color=UI_MUTED_FG,
             font=ctk.CTkFont(size=11),
         ).pack(side="left", padx=8)
         st_label, st_variant = self._clip_status_meta(clip.status)
         StatusPill(head_row, st_label, st_variant, dot=True).pack(side="right")
         ctk.CTkLabel(
-            holder, text=started.strftime("%Y-%m-%d %H:%M:%S"), anchor="w",
-            font=ctk.CTkFont(size=11), text_color=UI_MUTED_FG,
+            holder,
+            text=started.strftime("%Y-%m-%d %H:%M:%S"),
+            anchor="w",
+            font=ctk.CTkFont(size=11),
+            text_color=UI_MUTED_FG,
         ).pack(anchor="w")
         ctk.CTkLabel(
-            holder, text=f"ID: {clip.clip_id}", anchor="w",
-            font=ctk.CTkFont(size=10, family="Consolas"), text_color=UI_MUTED_FG,
+            holder,
+            text=f"ID: {clip.clip_id}",
+            anchor="w",
+            font=ctk.CTkFont(size=10, family="Consolas"),
+            text_color=UI_MUTED_FG,
         ).pack(anchor="w", pady=(2, 8))
 
         from sentry_agent_pc.gui.datatable import DataTable
@@ -1135,14 +1225,23 @@ class AgentApp(ctk.CTk):
         # timeline to (time, beh, score) here; the full grid is in «⛶ Дэлгэрэнгүй».
         table.set_rows([(t, b, s) for (_d, t, b, s, _r) in rows])
         ctk.CTkLabel(
-            holder, text=note, anchor="w", justify="left",
-            font=ctk.CTkFont(size=10), text_color=UI_MUTED_FG, wraplength=320,
+            holder,
+            text=note,
+            anchor="w",
+            justify="left",
+            font=ctk.CTkFont(size=10),
+            text_color=UI_MUTED_FG,
+            wraplength=320,
         ).pack(anchor="w", pady=(0, 8))
         # Escalate — push the clip up to the cloud (org-wide alert + VLM). Full
         # width + danger accent since it's the strongest operator action.
         ctk.CTkButton(
-            holder, text="⤴ Cloud руу дээшлүүлэх", height=32,
-            fg_color=UI_DANGER, hover_color="#DC2626", text_color="#0A0A0A",
+            holder,
+            text="⤴ Cloud руу дээшлүүлэх",
+            height=32,
+            fg_color=UI_DANGER,
+            hover_color="#DC2626",
+            text_color="#0A0A0A",
             font=ctk.CTkFont(size=12, weight="bold"),
             command=lambda c=clip: self._escalate_clip(c),
         ).pack(fill="x", pady=(0, 6))
@@ -1151,27 +1250,43 @@ class AgentApp(ctk.CTk):
         ops = ctk.CTkFrame(holder, fg_color="transparent")
         ops.pack(fill="x", pady=(0, 6))
         ctk.CTkButton(
-            ops, text="✓ Батлах", height=32,
-            fg_color="transparent", border_width=1, border_color=UI_DANGER, text_color=UI_DANGER,
+            ops,
+            text="✓ Батлах",
+            height=32,
+            fg_color="transparent",
+            border_width=1,
+            border_color=UI_DANGER,
+            text_color=UI_DANGER,
             hover_color=UI_MUTED_HOVER,
             command=lambda c=clip: self._set_clip_status(c, "confirmed"),
         ).pack(side="left", fill="x", expand=True, padx=(0, 4))
         ctk.CTkButton(
-            ops, text="✕ Няцаах", height=32,
-            fg_color="transparent", border_width=1, border_color=UI_BORDER,
+            ops,
+            text="✕ Няцаах",
+            height=32,
+            fg_color="transparent",
+            border_width=1,
+            border_color=UI_BORDER,
             hover_color=UI_MUTED_HOVER,
             command=lambda c=clip: self._set_clip_status(c, "dismissed"),
         ).pack(side="left", fill="x", expand=True, padx=(4, 0))
         btns = ctk.CTkFrame(holder, fg_color="transparent")
         btns.pack(fill="x")
         ctk.CTkButton(
-            btns, text="▶ Видео", height=32,
-            fg_color=BRAND_PRIMARY, hover_color=BRAND_PRIMARY_HOVER,
+            btns,
+            text="▶ Видео",
+            height=32,
+            fg_color=BRAND_PRIMARY,
+            hover_color=BRAND_PRIMARY_HOVER,
             command=lambda p=clip.path: self._open_clip(p),
         ).pack(side="left", fill="x", expand=True, padx=(0, 4))
         ctk.CTkButton(
-            btns, text="⛶ Дэлгэрэнгүй", height=32,
-            fg_color="transparent", border_width=1, border_color=UI_BORDER,
+            btns,
+            text="⛶ Дэлгэрэнгүй",
+            height=32,
+            fg_color="transparent",
+            border_width=1,
+            border_color=UI_BORDER,
             command=lambda c=clip: self._open_clip_detail(c),
         ).pack(side="left", fill="x", expand=True, padx=(4, 0))
 
@@ -1320,7 +1435,8 @@ class AgentApp(ctk.CTk):
         single-value settings (episode FSM, detection, geometry, recording)."""
         page = ctk.CTkFrame(parent, fg_color="transparent")
         toolbar = self._page_head(
-            page, "Зан үйл",
+            page,
+            "Зан үйл",
             "AI хөдөлгүүр (YOLO + зан үйл) ЯГ доорх тохиргоогоор ажиллана.",
         )
         # Read-only truth: these values are managed globally from superadmin's «Edge
@@ -1328,8 +1444,13 @@ class AgentApp(ctk.CTk):
         # nobody hunts for a Save button that shouldn't exist.
         StatusPill(toolbar, "🔒 Зөвхөн харах", "neutral", dot=False).pack(side="right", padx=(8, 0))
         ctk.CTkButton(
-            toolbar, text="↻ Сэргээх", width=100, height=32,
-            fg_color="transparent", border_width=1, border_color=UI_BORDER,
+            toolbar,
+            text="↻ Сэргээх",
+            width=100,
+            height=32,
+            fg_color="transparent",
+            border_width=1,
+            border_color=UI_BORDER,
             command=self._refresh_behaviors,
         ).pack(side="right")
 
@@ -1484,9 +1605,7 @@ class AgentApp(ctk.CTk):
 
     # === Shared page scaffolding ===
 
-    def _page_head(
-        self, page: ctk.CTkBaseClass, title: str, subtitle: str
-    ) -> ctk.CTkFrame:
+    def _page_head(self, page: ctk.CTkBaseClass, title: str, subtitle: str) -> ctk.CTkFrame:
         """A consistent console page header: title + subtitle on the left, an
         (empty) toolbar frame returned for the caller to pack right-aligned
         actions into. Every page uses this so headers line up identically."""
@@ -1495,11 +1614,17 @@ class AgentApp(ctk.CTk):
         titles = ctk.CTkFrame(head, fg_color="transparent")
         titles.pack(side="left")
         ctk.CTkLabel(
-            titles, text=title, anchor="w", font=ctk.CTkFont(size=18, weight="bold"),
+            titles,
+            text=title,
+            anchor="w",
+            font=ctk.CTkFont(size=18, weight="bold"),
             text_color=UI_FG,
         ).pack(anchor="w")
         ctk.CTkLabel(
-            titles, text=subtitle, anchor="w", font=ctk.CTkFont(size=12),
+            titles,
+            text=subtitle,
+            anchor="w",
+            font=ctk.CTkFont(size=12),
             text_color=UI_MUTED_FG,
         ).pack(anchor="w")
         toolbar = ctk.CTkFrame(head, fg_color="transparent")
@@ -1512,13 +1637,22 @@ class AgentApp(ctk.CTk):
             page, "Тохиргоо", "Desktop console системийн тохиргоо ба холболт."
         )
         ctk.CTkButton(
-            toolbar, text="🔗 Холболт", width=110, height=32,
-            fg_color=BRAND_PRIMARY, hover_color=BRAND_PRIMARY_HOVER,
+            toolbar,
+            text="🔗 Холболт",
+            width=110,
+            height=32,
+            fg_color=BRAND_PRIMARY,
+            hover_color=BRAND_PRIMARY_HOVER,
             command=self.open_pairing,
         ).pack(side="right", padx=(8, 0))
         ctk.CTkButton(
-            toolbar, text="⬆ Шинэчлэл", width=110, height=32,
-            fg_color="transparent", border_width=1, border_color=UI_BORDER,
+            toolbar,
+            text="⬆ Шинэчлэл",
+            width=110,
+            height=32,
+            fg_color="transparent",
+            border_width=1,
+            border_color=UI_BORDER,
             command=self.open_update,
         ).pack(side="right")
 
@@ -1530,8 +1664,12 @@ class AgentApp(ctk.CTk):
         hdr.pack(fill="x", padx=14, pady=(6, 0))
         for text, w in (("Бүлэг", 150), ("Тохиргоо", 200), ("Утга", 0), ("Төлөв", 120)):
             ctk.CTkLabel(
-                hdr, text=text, anchor="w", font=ctk.CTkFont(size=11, weight="bold"),
-                text_color=UI_MUTED_FG, **({"width": w} if w else {}),
+                hdr,
+                text=text,
+                anchor="w",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color=UI_MUTED_FG,
+                **({"width": w} if w else {}),
             ).pack(side="left", fill=("x" if not w else None), expand=(not w))
         ctk.CTkFrame(panel.body, height=1, fg_color=UI_LINE_SOFT, corner_radius=0).pack(
             fill="x", padx=14, pady=(6, 0)
@@ -1555,7 +1693,8 @@ class AgentApp(ctk.CTk):
             ("AI", "Хөдөлгүүр", ai_text, ai_text, ai_variant),
             ("Урсгал", "Протокол", "RTSP", "Идэвхтэй", "good"),
             (
-                "Холболт", "Дэлгүүр",
+                "Холболт",
+                "Дэлгүүр",
                 st.store_name or "—",
                 "Холбогдсон" if st.is_paired else "Холбогдоогүй",
                 "good" if st.is_paired else "warn",
@@ -1570,12 +1709,20 @@ class AgentApp(ctk.CTk):
                 ctk.CTkFrame(rows, height=1, fg_color=UI_LINE_SOFT, corner_radius=0).pack(
                     fill="x", before=r
                 )
-            ctk.CTkLabel(r, text=group, anchor="w", width=150, text_color=UI_MUTED_FG,
-                        font=ctk.CTkFont(size=12)).pack(side="left", pady=8)
-            ctk.CTkLabel(r, text=name, anchor="w", width=200,
-                        font=ctk.CTkFont(size=12)).pack(side="left")
-            ctk.CTkLabel(r, text=value, anchor="w",
-                        font=ctk.CTkFont(size=12)).pack(side="left", fill="x", expand=True)
+            ctk.CTkLabel(
+                r,
+                text=group,
+                anchor="w",
+                width=150,
+                text_color=UI_MUTED_FG,
+                font=ctk.CTkFont(size=12),
+            ).pack(side="left", pady=8)
+            ctk.CTkLabel(r, text=name, anchor="w", width=200, font=ctk.CTkFont(size=12)).pack(
+                side="left"
+            )
+            ctk.CTkLabel(r, text=value, anchor="w", font=ctk.CTkFont(size=12)).pack(
+                side="left", fill="x", expand=True
+            )
             pill = StatusPill(r, state_text, variant, dot=True)
             pill.pack(side="right")
 
@@ -1638,7 +1785,8 @@ class AgentApp(ctk.CTk):
             query = entry.get().strip().lower()
         if query:
             cameras = [
-                c for c in cameras
+                c
+                for c in cameras
                 if query in (c.name or "").lower() or query in (c.ip or "").lower()
             ]
         if not cameras:
@@ -1649,8 +1797,11 @@ class AgentApp(ctk.CTk):
                 "'🔍 Scan' дарж автоматаар олох, эсвэл '➕ Нэмэх' дарж гараар нэмнэ үү."
             )
             ctk.CTkLabel(
-                self.list_frame, text=msg, font=ctk.CTkFont(size=13),
-                text_color=UI_MUTED_FG, justify="center",
+                self.list_frame,
+                text=msg,
+                font=ctk.CTkFont(size=13),
+                text_color=UI_MUTED_FG,
+                justify="center",
             ).pack(pady=60)
             self.set_status(f"{len(getattr(self, '_all_cameras', []))} камер бүртгэлтэй")
             return
@@ -1787,10 +1938,16 @@ class AgentApp(ctk.CTk):
         res = f"{cam.resolution[0]}×{cam.resolution[1]}" if cam.resolution else "—"
         # col 0 — name (bold), col 1 — IP.
         ctk.CTkLabel(
-            row, text=cam.name, anchor="w", font=ctk.CTkFont(size=12, weight="bold"),
+            row,
+            text=cam.name,
+            anchor="w",
+            font=ctk.CTkFont(size=12, weight="bold"),
         ).grid(row=0, column=0, sticky="w", padx=6, pady=8)
         ctk.CTkLabel(
-            row, text=cam.ip or "—", anchor="w", font=ctk.CTkFont(size=12),
+            row,
+            text=cam.ip or "—",
+            anchor="w",
+            font=ctk.CTkFont(size=12),
             text_color=UI_MUTED_FG,
         ).grid(row=0, column=1, sticky="w", padx=6, pady=8)
 
@@ -1811,7 +1968,11 @@ class AgentApp(ctk.CTk):
         # col 4 — quality (resolution + codec as a hint).
         qual = res if not cam.codec else f"{res} · {cam.codec.upper()}"
         ctk.CTkLabel(
-            row, text=qual, anchor="w", font=ctk.CTkFont(size=12), text_color=UI_MUTED_FG,
+            row,
+            text=qual,
+            anchor="w",
+            font=ctk.CTkFont(size=12),
+            text_color=UI_MUTED_FG,
         ).grid(row=0, column=4, sticky="w", padx=6, pady=8)
 
         # col 5 — push status pill (cloud topology) — updated by _tick_push_status.
@@ -1822,9 +1983,15 @@ class AgentApp(ctk.CTk):
 
         # col 6 — the ⋯ action menu (all row actions live here + the detail panel).
         menu_btn = ctk.CTkButton(
-            row, text="⋯", width=30, height=26,
-            fg_color="transparent", border_width=1, border_color=UI_BORDER,
-            hover_color=UI_MUTED_HOVER, font=ctk.CTkFont(size=15, weight="bold"),
+            row,
+            text="⋯",
+            width=30,
+            height=26,
+            fg_color="transparent",
+            border_width=1,
+            border_color=UI_BORDER,
+            hover_color=UI_MUTED_HOVER,
+            font=ctk.CTkFont(size=15, weight="bold"),
             command=lambda c=cam, r=row: self._open_camera_menu(c, r),
         )
         menu_btn.grid(row=0, column=6, sticky="e", padx=(2, 8), pady=6)
@@ -1880,12 +2047,18 @@ class AgentApp(ctk.CTk):
             w.destroy()
         if cam is None:
             ctk.CTkLabel(
-                holder, text="Камер сонгоно уу.\n\nЖагсаалтаас мөр дээр дарж\nдэлгэрэнгүйг харна.",
-                text_color=UI_MUTED_FG, justify="center", font=ctk.CTkFont(size=12),
+                holder,
+                text="Камер сонгоно уу.\n\nЖагсаалтаас мөр дээр дарж\nдэлгэрэнгүйг харна.",
+                text_color=UI_MUTED_FG,
+                justify="center",
+                font=ctk.CTkFont(size=12),
             ).pack(expand=True, pady=40)
             return
         ctk.CTkLabel(
-            holder, text=cam.name, anchor="w", font=ctk.CTkFont(size=14, weight="bold"),
+            holder,
+            text=cam.name,
+            anchor="w",
+            font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(anchor="w", pady=(0, 8))
         res = f"{cam.resolution[0]}×{cam.resolution[1]}" if cam.resolution else "—"
         is_edge = getattr(cam, "compute_tier", "") == "edge_pc"
@@ -1901,11 +2074,19 @@ class AgentApp(ctk.CTk):
             r = ctk.CTkFrame(holder, fg_color="transparent")
             r.pack(fill="x", pady=3)
             ctk.CTkLabel(
-                r, text=k, anchor="w", width=90, text_color=UI_MUTED_FG,
+                r,
+                text=k,
+                anchor="w",
+                width=90,
+                text_color=UI_MUTED_FG,
                 font=ctk.CTkFont(size=12),
             ).pack(side="left")
             ctk.CTkLabel(
-                r, text=v, anchor="w", font=ctk.CTkFont(size=12), justify="left",
+                r,
+                text=v,
+                anchor="w",
+                font=ctk.CTkFont(size=12),
+                justify="left",
                 wraplength=170,
             ).pack(side="left", fill="x", expand=True)
 
@@ -1913,24 +2094,40 @@ class AgentApp(ctk.CTk):
             fill="x", pady=10
         )
         ctk.CTkButton(
-            holder, text="✎ Засах", height=32,
-            fg_color=BRAND_PRIMARY, hover_color=BRAND_PRIMARY_HOVER,
+            holder,
+            text="✎ Засах",
+            height=32,
+            fg_color=BRAND_PRIMARY,
+            hover_color=BRAND_PRIMARY_HOVER,
             command=lambda c=cam: self._edit_camera(c),
         ).pack(fill="x", pady=2)
         ctk.CTkButton(
-            holder, text="▦ Зон тохируулах", height=32,
-            fg_color="transparent", border_width=1, border_color=UI_BORDER,
+            holder,
+            text="▦ Зон тохируулах",
+            height=32,
+            fg_color="transparent",
+            border_width=1,
+            border_color=UI_BORDER,
             command=lambda c=cam: self._edit_zones(c),
         ).pack(fill="x", pady=2)
         ctk.CTkButton(
-            holder, text="↻ Дахин холбох", height=32,
-            fg_color="transparent", border_width=1, border_color=UI_BORDER,
+            holder,
+            text="↻ Дахин холбох",
+            height=32,
+            fg_color="transparent",
+            border_width=1,
+            border_color=UI_BORDER,
             command=lambda c=cam: self._reconnect_camera(c),
         ).pack(fill="x", pady=2)
         ctk.CTkButton(
-            holder, text="🗑 Устгах", height=32,
-            fg_color="transparent", border_width=1, border_color=UI_DANGER,
-            text_color=UI_DANGER, hover_color=UI_MUTED_HOVER,
+            holder,
+            text="🗑 Устгах",
+            height=32,
+            fg_color="transparent",
+            border_width=1,
+            border_color=UI_DANGER,
+            text_color=UI_DANGER,
+            hover_color=UI_MUTED_HOVER,
             command=lambda c=cam: self._delete_camera(c),
         ).pack(fill="x", pady=2)
 
@@ -2135,17 +2332,27 @@ class AgentApp(ctk.CTk):
         editor window (unchanged behaviour)."""
         page = ctk.CTkFrame(parent, fg_color="transparent")
         toolbar = self._page_head(
-            page, "Plan зураг",
+            page,
+            "Plan зураг",
             "Дэлгүүрийн план ба камерын хамрах талбай. «✏ Засах» дэлгэрэнгүй засварлагч нээнэ.",
         )
         ctk.CTkButton(
-            toolbar, text="✏ Засах", width=100, height=32,
-            fg_color=BRAND_PRIMARY, hover_color=BRAND_PRIMARY_HOVER,
+            toolbar,
+            text="✏ Засах",
+            width=100,
+            height=32,
+            fg_color=BRAND_PRIMARY,
+            hover_color=BRAND_PRIMARY_HOVER,
             command=self.open_floor_plan,
         ).pack(side="right", padx=(8, 0))
         ctk.CTkButton(
-            toolbar, text="↻ Сэргээх", width=100, height=32,
-            fg_color="transparent", border_width=1, border_color=UI_BORDER,
+            toolbar,
+            text="↻ Сэргээх",
+            width=100,
+            height=32,
+            fg_color="transparent",
+            border_width=1,
+            border_color=UI_BORDER,
             command=self._refresh_plan_preview,
         ).pack(side="right")
 
@@ -2157,7 +2364,10 @@ class AgentApp(ctk.CTk):
         holder = ctk.CTkFrame(canvas_panel.body, fg_color="#070A0E", corner_radius=8)
         holder.pack(fill="both", expand=True)
         self._plan_preview = ctk.CTkLabel(
-            holder, text="Ачаалж байна…", text_color=UI_MUTED_FG, font=ctk.CTkFont(size=14),
+            holder,
+            text="Ачаалж байна…",
+            text_color=UI_MUTED_FG,
+            font=ctk.CTkFont(size=14),
         )
         self._plan_preview.pack(fill="both", expand=True, padx=10, pady=10)
         self._plan_img: Any = None
@@ -2193,7 +2403,10 @@ class AgentApp(ctk.CTk):
         )
         done = sum(1 for _, ok in steps if ok)
         ctk.CTkLabel(
-            holder, text="Setup progress", anchor="w", font=ctk.CTkFont(size=13, weight="bold"),
+            holder,
+            text="Setup progress",
+            anchor="w",
+            font=ctk.CTkFont(size=13, weight="bold"),
         ).pack(anchor="w")
         bar = ctk.CTkProgressBar(holder, height=8)
         bar.pack(fill="x", pady=(8, 6))
@@ -2202,19 +2415,30 @@ class AgentApp(ctk.CTk):
             r = ctk.CTkFrame(holder, fg_color="transparent")
             r.pack(fill="x", pady=2)
             ctk.CTkLabel(
-                r, text="✓" if ok else "•", width=18,
-                text_color=UI_SUCCESS if ok else UI_MUTED_FG, font=ctk.CTkFont(size=13, weight="bold"),
+                r,
+                text="✓" if ok else "•",
+                width=18,
+                text_color=UI_SUCCESS if ok else UI_MUTED_FG,
+                font=ctk.CTkFont(size=13, weight="bold"),
             ).pack(side="left")
             ctk.CTkLabel(
-                r, text=text, anchor="w", font=ctk.CTkFont(size=12),
-                text_color=UI_FG if ok else UI_MUTED_FG, wraplength=250, justify="left",
+                r,
+                text=text,
+                anchor="w",
+                font=ctk.CTkFont(size=12),
+                text_color=UI_FG if ok else UI_MUTED_FG,
+                wraplength=250,
+                justify="left",
             ).pack(side="left", fill="x", expand=True)
 
         ctk.CTkFrame(holder, height=1, fg_color=UI_LINE_SOFT, corner_radius=0).pack(
             fill="x", pady=12
         )
         ctk.CTkLabel(
-            holder, text="Coverage", anchor="w", font=ctk.CTkFont(size=13, weight="bold"),
+            holder,
+            text="Coverage",
+            anchor="w",
+            font=ctk.CTkFont(size=13, weight="bold"),
         ).pack(anchor="w", pady=(0, 6))
         for label, count, variant in (
             ("Камер", n_cam, "good" if n_cam else "warn"),

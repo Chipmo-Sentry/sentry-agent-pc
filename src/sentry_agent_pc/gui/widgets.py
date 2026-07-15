@@ -139,9 +139,7 @@ class StatusPill(ctk.CTkFrame):
     ) -> None:
         super().__init__(master, corner_radius=11, fg_color=PILL_VARIANTS["neutral"][1])
         self._show_dot = dot
-        self._dot = (
-            ctk.CTkLabel(self, text="●", font=ctk.CTkFont(size=9)) if dot else None
-        )
+        self._dot = ctk.CTkLabel(self, text="●", font=ctk.CTkFont(size=9)) if dot else None
         if self._dot is not None:
             self._dot.pack(side="left", padx=(9, 0))
         self._lbl = ctk.CTkLabel(self, text=text, font=ctk.CTkFont(size=11, weight="bold"))
@@ -209,15 +207,23 @@ def metric_chip(
 
     Returns (box, value_label, hint_label) so the caller can update the value and
     hint live. Packs nothing — the caller places `box`."""
-    box = ctk.CTkFrame(parent, fg_color=UI_SURFACE, corner_radius=11, border_width=1, border_color=UI_BORDER)
-    ctk.CTkLabel(box, text=label, font=ctk.CTkFont(size=11), text_color=UI_MUTED_FG, anchor="w").pack(
-        anchor="w", padx=12, pady=(9, 0)
+    box = ctk.CTkFrame(
+        parent, fg_color=UI_SURFACE, corner_radius=11, border_width=1, border_color=UI_BORDER
     )
+    ctk.CTkLabel(
+        box, text=label, font=ctk.CTkFont(size=11), text_color=UI_MUTED_FG, anchor="w"
+    ).pack(anchor="w", padx=12, pady=(9, 0))
     vlbl = ctk.CTkLabel(
-        box, text=value, font=ctk.CTkFont(size=18, weight="bold"), text_color=value_color, anchor="w"
+        box,
+        text=value,
+        font=ctk.CTkFont(size=18, weight="bold"),
+        text_color=value_color,
+        anchor="w",
     )
     vlbl.pack(anchor="w", padx=12, pady=(2, 0))
-    hlbl = ctk.CTkLabel(box, text=hint, font=ctk.CTkFont(size=11), text_color=UI_MUTED_FG, anchor="w")
+    hlbl = ctk.CTkLabel(
+        box, text=hint, font=ctk.CTkFont(size=11), text_color=UI_MUTED_FG, anchor="w"
+    )
     hlbl.pack(anchor="w", padx=12, pady=(1, 9))
     return box, vlbl, hlbl
 

@@ -390,7 +390,7 @@ def test_k1_estimated_from_distorted_pairs() -> None:
     true_k1 = 0.2
     pairs = _grid_pairs(4, 4)
     for p in pairs:
-        (x, y), = fpw._distort_pts([p["image"]], true_k1)
+        ((x, y),) = fpw._distort_pts([p["image"]], true_k1)
         p["image"] = [x, y]
     _h, err, _z = fpw._compute_calibration(pairs, [])
     assert err < 0.004  # without k1 the residual is ~0.01+
@@ -399,8 +399,8 @@ def test_k1_estimated_from_distorted_pairs() -> None:
 def test_height_zone_covers_more_than_footprint() -> None:
     # A tall shelf seen from a 3 m camera: the 3D zone (footprint + top faces)
     # must be a superset of the flat-footprint zone in area.
-    import numpy as np
     import cv2
+    import numpy as np
 
     # Ground truth: camera at (5, 12, 3) looking down-forward at the 10×8 m
     # floor (explicit right-handed look-at basis; rows = cam x/y/z in world).

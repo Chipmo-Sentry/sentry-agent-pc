@@ -276,9 +276,7 @@ def _solve_pose(
     # f is fx normalized by image WIDTH: ~0.5 (≈90° HFOV) … 1.4 (≈40°).
     for i in range(21):
         f = 0.4 + i * 0.05
-        k_mtx = np.array(
-            [[f, 0.0, 0.5], [0.0, f * aspect, 0.5], [0.0, 0.0, 1.0]], dtype=np.float64
-        )
+        k_mtx = np.array([[f, 0.0, 0.5], [0.0, f * aspect, 0.5], [0.0, 0.0, 1.0]], dtype=np.float64)
         ok, rvec, tvec = cv2.solvePnP(obj, img, k_mtx, None, flags=cv2.SOLVEPNP_ITERATIVE)
         if not ok:
             continue
