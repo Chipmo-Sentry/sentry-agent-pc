@@ -342,7 +342,7 @@ def _compute_calibration(
     walls: list[dict[str, Any]] | None = None,
     cam_pos: tuple[float, float] | None = None,
     img_aspect: float | None = None,
-) -> tuple[list[list[float]], float, list[dict[str, Any]]]:
+) -> tuple[list[list[float]], float, list[dict[str, Any]], float]:
     """Fit a plan→image homography from ≥4 point pairs and project the plan
     fixtures into this camera's normalized (0-1) image space → Camera.zones.
 
@@ -479,7 +479,10 @@ def _compute_calibration(
                 "points": [[round(x, 4), round(y, 4)] for x, y in clipped],
             }
         )
-    return homography.tolist(), round(reproj_err, 5), zones
+    # k1 rides along: H is fitted against k1-undistorted image coords, so any
+    # consumer projecting RAW observed points through H (dashboard coverage,
+    # cloud footfall) must know it — it is persisted into the plan camera.
+    return homography.tolist(), round(reproj_err, 5), zones, round(float(k1), 5)
 
 
 def _plan_cam_pos(plan: dict[str, Any], camera_id: str | None) -> tuple[float, float] | None:
@@ -704,7 +707,7 @@ class FloorPlanApi:
         try:
             if not isinstance(plan, dict):
                 raise ValueError("plan нь объект байх ёстой")
-            homography, reproj_err, zones = _compute_calibration(
+            homography, reproj_err, zones, cal_k1 = _compute_calibration(
                 pairs,
                 plan.get("fixtures") or [],
                 walls=plan.get("walls"),
@@ -737,7 +740,7 @@ class FloorPlanApi:
         if cam is None or not cam.uuid:
             raise ValueError("Камер олдсонгүй (эхлээд камераа бүртгэнэ үү)")
 
-        homography, reproj_err, zones = _compute_calibration(
+        homography, reproj_err, zones, cal_k1 = _compute_calibration(
             pairs,
             plan.get("fixtures") or [],
             walls=plan.get("walls"),
@@ -754,6 +757,7 @@ class FloorPlanApi:
             cams.append(entry)
         entry["homography"] = homography
         entry["reproj_err"] = reproj_err
+        entry["k1"] = cal_k1
         entry["calib_points"] = pairs
 
         if len(json.dumps(plan, separators=(",", ":")).encode("utf-8")) > _MAX_PLAN_BYTES:

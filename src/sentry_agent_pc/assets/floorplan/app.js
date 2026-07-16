@@ -561,7 +561,15 @@ function cameraFootprint(cam) {
   if (cam.homography) {
     const inv = invert3x3(cam.homography);
     if (inv) {
-      const quad = [[0, 0], [1, 0], [1, 1], [0, 1]].map((c) => applyH(inv, c));
+      // v0.7.95+: H is fitted against k1-UNDISTORTED image coords — undistort
+      // the raw frame corners first or the footprint lands short/warped.
+      const k1 = Number(cam.k1) || 0;
+      const und = (p) => {
+        const dx = p[0] - 0.5, dy = p[1] - 0.5;
+        const s = 1 + k1 * (dx * dx + dy * dy);
+        return [0.5 + dx * s, 0.5 + dy * s];
+      };
+      const quad = [[0, 0], [1, 0], [1, 1], [0, 1]].map((c) => applyH(inv, und(c)));
       if (quad.every(Boolean)) return { pts: quad, exact: true };
     }
   }
