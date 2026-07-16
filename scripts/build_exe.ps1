@@ -77,8 +77,20 @@ if (-not (Test-Path $ffExe)) {
     }
     Copy-Item $ffSrc.FullName $ffExe -Force
     Write-Host "==> ffmpeg bundled at $ffExe" -ForegroundColor Green
+    # ffprobe ships in the SAME archive — the pusher's B-frame probe (v0.7.98)
+    # needs it next to ffmpeg, or every '-c copy' camera with B-frames keeps
+    # crashing the cloud HLS muxer. Same fatality rule as ffmpeg.
+    $fpSrc = Get-ChildItem -Path $ffTmp -Recurse -Filter "ffprobe.exe" | Select-Object -First 1
+    if (-not $fpSrc) {
+        Write-Error "ffprobe.exe not found in the downloaded archive - the B-frame probe cannot ship without it."
+    }
+    Copy-Item $fpSrc.FullName (Join-Path $mtxBinDir "ffprobe.exe") -Force
+    Write-Host "==> ffprobe bundled" -ForegroundColor Green
 } else {
     Write-Host "==> ffmpeg already present at $ffExe" -ForegroundColor Cyan
+    if (-not (Test-Path (Join-Path $mtxBinDir "ffprobe.exe"))) {
+        Write-Error "ffprobe.exe missing next to cached ffmpeg.exe - delete the bin dir to re-download both."
+    }
 }
 
 # --- Bundle cloudflared (OPTIONAL) ------------------------------------------

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -108,7 +109,14 @@ def _probe_has_bframes(ffmpeg: str, lan_rtsp: str) -> bool | None:
     keeps its codec-based default. One bounded probe per relay start."""
     probe = Path(ffmpeg).with_name(Path(ffmpeg).name.replace("ffmpeg", "ffprobe"))
     if not probe.exists():
-        return None
+        # Older bundles shipped ffmpeg without ffprobe — try the system PATH
+        # before giving up, and LOG the miss (a silent None here shipped a
+        # release where the probe never ran and .26 stayed broken).
+        which = shutil.which("ffprobe")
+        if which is None:
+            log.warning("pusher.ffprobe_missing", ffmpeg=ffmpeg)
+            return None
+        probe = Path(which)
     try:
         out = subprocess.run(
             [
