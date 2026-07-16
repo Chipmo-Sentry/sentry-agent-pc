@@ -18,7 +18,8 @@ import subprocess
 import threading
 import time
 import urllib.parse
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 from sentry_agent_pc.logging_setup import get_logger
 from sentry_agent_pc.redact import scrub_credentials
@@ -66,11 +67,16 @@ class PushTarget:
     mediamtx_path: str  # destination path on the cloud MediaMTX
     lan_rtsp: str  # source RTSP on the store LAN (creds embedded)
     codec: str | None = None  # source codec; "hevc"/"h265" → transcode to H.264
+    # Set by the relay's startup probe: an H.264 camera that emits B-frames
+    # (e.g. Skyworth 192.168.3.26) crashes the cloud HLS muxer («too many
+    # reordered frames»), so its relay must re-encode even though `-c copy`
+    # would otherwise do. zerolatency x264 emits no B-frames.
+    force_transcode: bool = False
 
     @property
     def needs_transcode(self) -> bool:
         # Browsers can't play H.265 over WebRTC/HLS → re-encode to H.264.
-        return (self.codec or "").lower() in ("hevc", "h265")
+        return self.force_transcode or (self.codec or "").lower() in ("hevc", "h265")
 
 
 @dataclass
@@ -94,6 +100,41 @@ def build_push_url(base: str, path: str, user: str | None, password: str | None)
             cred += ":" + urllib.parse.quote(password, safe="")
         base = f"{scheme}://{cred}@{rest}"
     return f"{base}/{path}"
+
+
+def _probe_has_bframes(ffmpeg: str, lan_rtsp: str) -> bool | None:
+    """True/False when ffprobe (next to the bundled ffmpeg) can read the source
+    stream's `has_b_frames`, None when probing is impossible — the relay then
+    keeps its codec-based default. One bounded probe per relay start."""
+    probe = Path(ffmpeg).with_name(Path(ffmpeg).name.replace("ffmpeg", "ffprobe"))
+    if not probe.exists():
+        return None
+    try:
+        out = subprocess.run(
+            [
+                str(probe),
+                "-v",
+                "error",
+                "-rtsp_transport",
+                "tcp",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=has_b_frames",
+                "-of",
+                "csv=p=0",
+                "-i",
+                lan_rtsp,
+            ],
+            capture_output=True,
+            timeout=15,
+            check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        val = out.stdout.decode("ascii", errors="ignore").strip()
+        return int(val) > 0 if val.isdigit() else None
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
 
 
 def build_relay_cmd(ffmpeg: str, target: PushTarget, dest: str) -> list[str]:
@@ -245,7 +286,13 @@ class StreamPusher:
         dest = build_push_url(
             self.push_base, st.target.mediamtx_path, self.publish_user, self.publish_pass
         )
-        cmd = build_relay_cmd(resolve_ffmpeg_exe(get_settings().ffmpeg_path), st.target, dest)
+        ffmpeg = resolve_ffmpeg_exe(get_settings().ffmpeg_path)
+        # B-frame probe: only worth it when we would otherwise `-c copy` — a
+        # copied stream with B-frames kills the cloud HLS muxer for this camera.
+        if not st.target.needs_transcode and _probe_has_bframes(ffmpeg, st.target.lan_rtsp):
+            st.target = replace(st.target, force_transcode=True)
+            log.info("pusher.bframes_transcode", path=st.target.mediamtx_path)
+        cmd = build_relay_cmd(ffmpeg, st.target, dest)
         try:
             self._relay_loop(st, cmd)
         finally:

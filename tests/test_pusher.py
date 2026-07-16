@@ -241,3 +241,12 @@ def test_stop_locked_kills_hung_ffmpeg() -> None:
     assert state.stop.is_set()
     assert proc.killed is True
     assert pusher.status() == []
+
+
+def test_force_transcode_overrides_copy() -> None:
+    # An H.264 camera whose probe found B-frames must re-encode: `-c copy`
+    # would crash the cloud HLS muxer («too many reordered frames»).
+    t = PushTarget(mediamtx_path="cam", lan_rtsp="rtsp://x", codec="h264", force_transcode=True)
+    cmd = build_relay_cmd("ffmpeg", t, "rtsp://dest/cam")
+    assert "libx264" in cmd
+    assert "copy" not in cmd
