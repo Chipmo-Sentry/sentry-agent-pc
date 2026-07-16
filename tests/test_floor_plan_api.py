@@ -237,6 +237,19 @@ def test_fixture_touching_wall_kept() -> None:
     assert len(zones) == 1
 
 
+def test_gate_on_wall_survives_occlusion() -> None:
+    # An entrance IS an opening in the wall — the plan draws the wall straight
+    # through the doorway, so the occlusion sweep would otherwise always
+    # swallow the gate zone. Gates must skip wall occlusion entirely.
+    fixtures = [{"type": "exit", "points": [[400, 380], [600, 380], [600, 430], [400, 430]]}]
+    walls = [{"points": [[0, 400], [1000, 400]]}]  # runs straight through the door
+    _h, _e, zones = fpw._compute_calibration(
+        _SCALE_PAIRS, fixtures, walls=walls, cam_pos=(500.0, 700.0)
+    )
+    assert len(zones) == 1
+    assert zones[0]["type"] == "exit"
+
+
 def test_fixture_partially_behind_wall_clipped() -> None:
     # A half-width partition hides the LEFT half of a wide shelf; only the
     # visible right part may survive, and nothing may leak far left.

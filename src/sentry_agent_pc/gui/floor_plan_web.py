@@ -447,7 +447,11 @@ def _compute_calibration(
             continue
         pts = [[float(x), float(y)] for x, y in raw]
         # Walls block sight: keep only the part the camera can see (plan space).
-        if wall_segs and cam_pos is not None:
+        # EXCEPT gates: entrance/exit zones sit ON the wall (a door IS an opening
+        # in the wall the plan draws straight through), so the occlusion sweep
+        # would always swallow them — the camera obviously sees its doorway.
+        gate = fix.get("type") in ("entrance", "exit")
+        if wall_segs and cam_pos is not None and not gate:
             pts = _visible_part(pts, cam_pos, wall_segs, cam_h=cam_h)
             if len(pts) < 3:
                 continue  # fully hidden behind a wall
