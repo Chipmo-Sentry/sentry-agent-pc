@@ -20,9 +20,17 @@ const FIX = {
   // Mannequin/display stand — an item-taking area like a shelf (clothes are
   // lifted off it), so it derives zones + feeds the repeated-visit behaviour.
   mannequin: { color: "#F472B6", label: "Маникен", height_m: 1.7 },
-  // Scenery (буйдан/сандал/ширээ): drawable + shown in analytics, but NEVER
+  // Scenery (ширээ г.м. бусад): drawable + shown in analytics, but NEVER
   // derived into Camera.zones (no engine meaning — see _compute_calibration).
   furniture: { color: "#A78BFA", label: "Тавилга", height_m: 0 },
+  // Specific scenery types (owner request 07-21): same no-zone rule as
+  // furniture, but named + real heights so the 3D plan view reads correctly.
+  sofa: { color: "#FB923C", label: "Буйдан", height_m: 0.8 },
+  chair: { color: "#84CC16", label: "Сандал", height_m: 0.9 },
+  // Interior doorway (дотор орц/гарц): a hole in an INTERIOR wall — exempt
+  // from the occlusion sweep like entrance/exit gates, but NOT a visit gate
+  // (the backend only counts entrance/exit crossings as visitors).
+  door: { color: "#2DD4BF", label: "Дотор хаалга", height_m: 0 },
 };
 const WALL_COLOR = "#9CA3AF";
 const CAM_COLOR = "#2563EB"; // brand royal-blue (the camera is the Sentry element)
