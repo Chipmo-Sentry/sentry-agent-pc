@@ -339,18 +339,22 @@ function setPlanSize(w, h) {
 
 function makeLine(pts, color, closed, kind, idx, label) {
   const flat = pts.flat();
+  // Architectural look (owner reference 07-22, colours unchanged): WALLS draw
+  // at their REAL thickness (0.12 m in plan units — scales with zoom like a
+  // blueprint), square-capped/mitred so corners read as masonry. Fixtures keep
+  // the crisp counter-scaled outline.
+  const isWall = kind === "wall";
   const line = new Konva.Line({
     points: flat,
     stroke: color,
-    // Counter-scaled so the outline stays a crisp ~1.6 px on screen at any zoom
-    // (was 2 plan-units → thick on a large store plan). Rebuilt on every
-    // zoom/fit via redrawShapes(), so it tracks the scale.
-    strokeWidth: 1.6 / stage.scaleX(),
+    strokeWidth: isWall ? 0.12 : 1.6 / stage.scaleX(),
+    lineCap: isWall ? "butt" : "round",
+    lineJoin: isWall ? "miter" : "round",
     closed: closed,
     fill: closed ? color + "22" : undefined,
     draggable: false,
     name: `${kind}:${idx}`,
-    hitStrokeWidth: 12 / stage.scaleX(),
+    hitStrokeWidth: Math.max(isWall ? 0.12 : 0, 12 / stage.scaleX()),
   });
   line.on("mousedown", (e) => {
     if (tool === "select") {
