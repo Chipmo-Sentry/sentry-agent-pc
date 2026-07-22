@@ -232,20 +232,63 @@
       body.position.set(px, mountH, py);
       body.rotation.y = -((cam.dir_deg || 0) * Math.PI) / 180;
       scene.add(body);
-      const reach = Math.min(6, span * 0.3);
-      const cone = new THREE.Mesh(
-        new THREE.ConeGeometry(reach * 0.45, reach, 24, 1, true), coneMat,
-      );
-      const dir = ((cam.dir_deg || 0) * Math.PI) / 180;
-      const tilt = (55 * Math.PI) / 180;
-      const axis = new THREE.Vector3(
-        Math.cos(dir) * Math.cos(tilt), -Math.sin(tilt), Math.sin(dir) * Math.cos(tilt),
-      ).normalize();
-      cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), axis);
-      cone.position.set(
-        px + axis.x * (reach / 2), mountH + axis.y * (reach / 2), py + axis.z * (reach / 2),
-      );
-      scene.add(cone);
+      // Calibrated camera → its REAL ground footprint (H⁻¹ + k1, same math as
+      // the editor's 2D coverage overlay) painted onto the floor, with faint
+      // sight lines from the lens to the far corners. Uncalibrated → the
+      // cosmetic view cone as before.
+      let fp = null;
+      try {
+        if (cam.homography && typeof cameraFootprint === "function") fp = cameraFootprint(cam);
+      } catch (e) { fp = null; }
+      if (fp && fp.exact) {
+        const MAXR = 25; // horizon-adjacent corners project absurdly far
+        const pts = fp.pts.map(([fx, fy]) => {
+          const dx = fx - px, dy = fy - py;
+          const d = Math.hypot(dx, dy);
+          return d > MAXR ? [px + (dx / d) * MAXR, py + (dy / d) * MAXR] : [fx, fy];
+        });
+        const shape = new THREE.Shape(pts.map(([fx, fy]) => new THREE.Vector2(fx, -fy)));
+        const patch = new THREE.Mesh(
+          new THREE.ShapeGeometry(shape),
+          new THREE.MeshBasicMaterial({
+            color: 0x2563eb, transparent: true, opacity: 0.16, depthWrite: false,
+          }),
+        );
+        patch.rotation.x = -Math.PI / 2;
+        patch.position.y = 0.03;
+        scene.add(patch);
+        const loop = new THREE.LineLoop(
+          new THREE.BufferGeometry().setFromPoints(
+            pts.map(([fx, fy]) => new THREE.Vector3(fx, 0.04, fy)),
+          ),
+          new THREE.LineBasicMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.6 }),
+        );
+        scene.add(loop);
+        for (const [fx, fy] of pts) {
+          scene.add(new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints([
+              new THREE.Vector3(px, mountH, py),
+              new THREE.Vector3(fx, 0.04, fy),
+            ]),
+            new THREE.LineBasicMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.22 }),
+          ));
+        }
+      } else {
+        const reach = Math.min(6, span * 0.3);
+        const cone = new THREE.Mesh(
+          new THREE.ConeGeometry(reach * 0.45, reach, 24, 1, true), coneMat,
+        );
+        const dir = ((cam.dir_deg || 0) * Math.PI) / 180;
+        const tilt = (55 * Math.PI) / 180;
+        const axis = new THREE.Vector3(
+          Math.cos(dir) * Math.cos(tilt), -Math.sin(tilt), Math.sin(dir) * Math.cos(tilt),
+        ).normalize();
+        cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), axis);
+        cone.position.set(
+          px + axis.x * (reach / 2), mountH + axis.y * (reach / 2), py + axis.z * (reach / 2),
+        );
+        scene.add(cone);
+      }
 
       // Height label sprite («3.1 м») over a calibrated camera.
       if (calibrated) {
