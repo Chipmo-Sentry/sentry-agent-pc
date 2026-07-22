@@ -122,7 +122,10 @@
     grid.position.set(cx, 0.01, cz);
     scene.add(grid);
 
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0xd4d4d4, roughness: 0.85 });
+    // Translucent walls — the interior stays visible from any angle.
+    const wallMat = new THREE.MeshStandardMaterial({
+      color: 0xd4d4d4, roughness: 0.85, transparent: true, opacity: 0.45, depthWrite: false,
+    });
     const glassMat = new THREE.MeshStandardMaterial({
       color: 0x93c5fd, transparent: true, opacity: 0.25, roughness: 0.1,
     });
