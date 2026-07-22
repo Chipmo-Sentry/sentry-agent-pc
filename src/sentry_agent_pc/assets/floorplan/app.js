@@ -31,6 +31,10 @@ const FIX = {
   // from the occlusion sweep like entrance/exit gates, but NOT a visit gate
   // (the backend only counts entrance/exit crossings as visitors).
   door: { color: "#2DD4BF", label: "Дотор хаалга", height_m: 0 },
+  // Exterior door that is NOT a customer entrance (арын/ажилтны хаалга):
+  // same no-zone/no-visit rules as `door`; in 3D both cut an opening
+  // through the wall they sit on (нэвт харагдана).
+  exterior_door: { color: "#A8A29E", label: "Гадна хаалга", height_m: 0 },
 };
 const WALL_COLOR = "#9CA3AF";
 const CAM_COLOR = "#2563EB"; // brand royal-blue (the camera is the Sentry element)
