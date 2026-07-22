@@ -342,7 +342,7 @@ def _compute_calibration(
     walls: list[dict[str, Any]] | None = None,
     cam_pos: tuple[float, float] | None = None,
     img_aspect: float | None = None,
-) -> tuple[list[list[float]], float, list[dict[str, Any]], float]:
+) -> tuple[list[list[float]], float, list[dict[str, Any]], float, float | None]:
     """Fit a plan→image homography from ≥4 point pairs and project the plan
     fixtures into this camera's normalized (0-1) image space → Camera.zones.
 
@@ -482,7 +482,10 @@ def _compute_calibration(
     # k1 rides along: H is fitted against k1-undistorted image coords, so any
     # consumer projecting RAW observed points through H (dashboard coverage,
     # cloud footfall) must know it — it is persisted into the plan camera.
-    return homography.tolist(), round(reproj_err, 5), zones, round(float(k1), 5)
+    # cam_h: the solvePnP mount height (m) when the pose was solved AND sane —
+    # persisted so the 3D plan views hang the camera at its MEASURED height.
+    cam_h = round(float(pose["cam_h"]), 2) if pose is not None else None
+    return homography.tolist(), round(reproj_err, 5), zones, round(float(k1), 5), cam_h
 
 
 def _plan_cam_pos(plan: dict[str, Any], camera_id: str | None) -> tuple[float, float] | None:
@@ -707,7 +710,7 @@ class FloorPlanApi:
         try:
             if not isinstance(plan, dict):
                 raise ValueError("plan нь объект байх ёстой")
-            homography, reproj_err, zones, cal_k1 = _compute_calibration(
+            homography, reproj_err, zones, cal_k1, cal_cam_h = _compute_calibration(
                 pairs,
                 plan.get("fixtures") or [],
                 walls=plan.get("walls"),
@@ -717,7 +720,7 @@ class FloorPlanApi:
         except Exception as e:  # noqa: BLE001 — preview must degrade, not crash
             return {"ok": False, "error": str(e)[:200]}
         del homography  # preview only surfaces quality + zones; H is refit on save
-        return {"ok": True, "reproj_err": reproj_err, "zones": zones}
+        return {"ok": True, "reproj_err": reproj_err, "zones": zones, "cam_h_m": cal_cam_h}
 
     def save_calibration(
         self,
@@ -740,7 +743,7 @@ class FloorPlanApi:
         if cam is None or not cam.uuid:
             raise ValueError("Камер олдсонгүй (эхлээд камераа бүртгэнэ үү)")
 
-        homography, reproj_err, zones, cal_k1 = _compute_calibration(
+        homography, reproj_err, zones, cal_k1, cal_cam_h = _compute_calibration(
             pairs,
             plan.get("fixtures") or [],
             walls=plan.get("walls"),
@@ -759,6 +762,9 @@ class FloorPlanApi:
         entry["reproj_err"] = reproj_err
         entry["k1"] = cal_k1
         entry["calib_points"] = pairs
+        # solvePnP mount height (m) — the 3D plan views (editor + dashboard)
+        # hang the camera at its measured height; None = pose not solved.
+        entry["cam_h_m"] = cal_cam_h
 
         if len(json.dumps(plan, separators=(",", ":")).encode("utf-8")) > _MAX_PLAN_BYTES:
             raise ValueError("План хэт том байна")
@@ -770,7 +776,13 @@ class FloorPlanApi:
         log.info(
             "floor_plan.calibrated", camera_id=camera_id, reproj_err=reproj_err, zones=len(zones)
         )
-        return {"ok": True, "reproj_err": reproj_err, "zone_count": len(zones)}
+        return {
+            "ok": True,
+            "reproj_err": reproj_err,
+            "zone_count": len(zones),
+            # Surfaced so the calibration UI can show «Камерын өндөр: 3.1 м».
+            "cam_h_m": cal_cam_h,
+        }
 
     def camera_status(self, camera_id: str) -> dict[str, Any]:
         """A fast online/offline check (TCP connect to the camera's RTSP port) for

@@ -96,7 +96,7 @@ def test_compute_calibration_identity_scale() -> None:
         {"plan": [0, 800], "image": [0, 1]},
     ]
     fixtures = [{"type": "shelf", "points": [[250, 200], [750, 200], [750, 600], [250, 600]]}]
-    homography, err, zones, _k1x = fpw._compute_calibration(pairs, fixtures)
+    homography, err, zones, _k1x, _ch = fpw._compute_calibration(pairs, fixtures)
     assert len(homography) == 3 and len(homography[0]) == 3
     assert err < 1e-6
     assert len(zones) == 1
@@ -116,7 +116,7 @@ def test_compute_calibration_skips_out_of_view_fixture() -> None:
         {"plan": [0, 800], "image": [0, 1]},
     ]
     fixtures = [{"type": "shelf", "points": [[5000, 5000], [5200, 5000], [5200, 5200]]}]
-    _h, _e, zones, _k1 = fpw._compute_calibration(pairs, fixtures)
+    _h, _e, zones, _k1, _ch = fpw._compute_calibration(pairs, fixtures)
     assert zones == []
 
 
@@ -141,7 +141,7 @@ def test_compute_calibration_skips_furniture() -> None:
         {"type": "furniture", "points": [[250, 200], [750, 200], [750, 600], [250, 600]]},
         {"type": "shelf", "points": [[250, 200], [750, 200], [750, 600], [250, 600]]},
     ]
-    _h, _e, zones, _k1 = fpw._compute_calibration(pairs, fixtures)
+    _h, _e, zones, _k1, _ch = fpw._compute_calibration(pairs, fixtures)
     assert [z["type"] for z in zones] == ["shelf"]
 
 
@@ -159,7 +159,7 @@ def test_partially_visible_fixture_clipped_at_frame_edge() -> None:
     # A shelf half off-frame must be CUT at the frame border (new vertices on
     # x=1), not have its outside corners snapped onto the border.
     fixtures = [{"type": "shelf", "points": [[500, 200], [1500, 200], [1500, 600], [500, 600]]}]
-    _h, _e, zones, _k1 = fpw._compute_calibration(_SCALE_PAIRS, fixtures)
+    _h, _e, zones, _k1, _ch = fpw._compute_calibration(_SCALE_PAIRS, fixtures)
     assert len(zones) == 1
     xs = [p[0] for p in zones[0]["points"]]
     ys = [p[1] for p in zones[0]["points"]]
@@ -174,7 +174,7 @@ def test_full_frame_fixture_kept() -> None:
     fixtures = [
         {"type": "shelf", "points": [[-500, -500], [1500, -500], [1500, 1300], [-500, 1300]]}
     ]
-    _h, _e, zones, _k1 = fpw._compute_calibration(_SCALE_PAIRS, fixtures)
+    _h, _e, zones, _k1, _ch = fpw._compute_calibration(_SCALE_PAIRS, fixtures)
     assert len(zones) == 1
     assert abs(fpw._poly_area(zones[0]["points"]) - 1.0) < 1e-3
 
@@ -197,7 +197,7 @@ def test_behind_camera_fixture_dropped() -> None:
     # Entirely behind the camera's principal plane (w < 0): projecting it yields
     # wrapped garbage — the plan-space w-clip must remove it completely.
     fixtures = [{"type": "shelf", "points": [[5000, 0], [6000, 0], [6000, 800], [5000, 800]]}]
-    _h, _e, zones, _k1 = fpw._compute_calibration(_horizon_pairs(), fixtures)
+    _h, _e, zones, _k1, _ch = fpw._compute_calibration(_horizon_pairs(), fixtures)
     assert zones == []
 
 
@@ -207,7 +207,7 @@ def test_horizon_straddling_fixture_no_garbage() -> None:
     # and in particular no frame-spanning sliver may appear (the old clamping
     # produced exactly that).
     fixtures = [{"type": "shelf", "points": [[3000, 0], [5000, 0], [5000, 800], [3000, 800]]}]
-    _h, _e, zones, _k1 = fpw._compute_calibration(_horizon_pairs(), fixtures)
+    _h, _e, zones, _k1, _ch = fpw._compute_calibration(_horizon_pairs(), fixtures)
     assert zones == []
 
 
@@ -219,7 +219,7 @@ def test_fixture_behind_wall_dropped() -> None:
     # can't see it, so it must not become a zone.
     fixtures = [{"type": "shelf", "points": [[400, 200], [600, 200], [600, 300], [400, 300]]}]
     walls = [{"points": [[0, 400], [1000, 400]]}]
-    _h, _e, zones, _k1 = fpw._compute_calibration(
+    _h, _e, zones, _k1, _ch = fpw._compute_calibration(
         _SCALE_PAIRS, fixtures, walls=walls, cam_pos=(500.0, 700.0)
     )
     assert zones == []
@@ -231,7 +231,7 @@ def test_fixture_touching_wall_kept() -> None:
     # own backing wall as an occluder.
     fixtures = [{"type": "shelf", "points": [[400, 200], [600, 200], [600, 300], [400, 300]]}]
     walls = [{"points": [[0, 200], [1000, 200]]}]  # collinear with the back edge
-    _h, _e, zones, _k1 = fpw._compute_calibration(
+    _h, _e, zones, _k1, _ch = fpw._compute_calibration(
         _SCALE_PAIRS, fixtures, walls=walls, cam_pos=(500.0, 700.0)
     )
     assert len(zones) == 1
@@ -243,7 +243,7 @@ def test_gate_on_wall_survives_occlusion() -> None:
     # swallow the gate zone. Gates must skip wall occlusion entirely.
     fixtures = [{"type": "exit", "points": [[400, 380], [600, 380], [600, 430], [400, 430]]}]
     walls = [{"points": [[0, 400], [1000, 400]]}]  # runs straight through the door
-    _h, _e, zones, _k1 = fpw._compute_calibration(
+    _h, _e, zones, _k1, _ch = fpw._compute_calibration(
         _SCALE_PAIRS, fixtures, walls=walls, cam_pos=(500.0, 700.0)
     )
     assert len(zones) == 1
@@ -255,7 +255,7 @@ def test_fixture_partially_behind_wall_clipped() -> None:
     # visible right part may survive, and nothing may leak far left.
     fixtures = [{"type": "shelf", "points": [[0, 200], [1000, 200], [1000, 300], [0, 300]]}]
     walls = [{"points": [[0, 400], [500, 400]]}]
-    _h, _e, zones, _k1 = fpw._compute_calibration(
+    _h, _e, zones, _k1, _ch = fpw._compute_calibration(
         _SCALE_PAIRS, fixtures, walls=walls, cam_pos=(500.0, 700.0)
     )
     assert len(zones) == 1
@@ -269,7 +269,7 @@ def test_no_cam_pos_skips_occlusion() -> None:
     # must not change behaviour — occlusion is simply skipped.
     fixtures = [{"type": "shelf", "points": [[400, 200], [600, 200], [600, 300], [400, 300]]}]
     walls = [{"points": [[0, 400], [1000, 400]]}]
-    _h, _e, zones, _k1 = fpw._compute_calibration(_SCALE_PAIRS, fixtures, walls=walls, cam_pos=None)
+    _h, _e, zones, _k1, _ch = fpw._compute_calibration(_SCALE_PAIRS, fixtures, walls=walls, cam_pos=None)
     assert len(zones) == 1
 
 
@@ -375,7 +375,7 @@ def test_ransac_survives_one_bad_click() -> None:
     pairs = _grid_pairs()
     pairs.append({"plan": [5.0, 4.0], "image": [0.95, 0.05]})  # bad click
     fixtures = [{"type": "shelf", "points": [[2.5, 2.0], [7.5, 2.0], [7.5, 6.0], [2.5, 6.0]]}]
-    _h, err, zones, _k1x = fpw._compute_calibration(pairs, fixtures)
+    _h, err, zones, _k1x, _ch = fpw._compute_calibration(pairs, fixtures)
     assert err < 0.01  # outlier rejected (DLT here gives ~0.03+)
     assert len(zones) == 1
     z = zones[0]["points"]
@@ -392,7 +392,7 @@ def test_four_point_calibration_unchanged_by_upgrades() -> None:
         {"plan": [0, 800], "image": [0, 1]},
     ]
     fixtures = [{"type": "shelf", "points": [[250, 200], [750, 200], [750, 600], [250, 600]]}]
-    _h, err, zones, _k1x = fpw._compute_calibration(pairs, fixtures)
+    _h, err, zones, _k1x, _ch = fpw._compute_calibration(pairs, fixtures)
     assert err < 1e-6
     assert abs(zones[0]["points"][0][0] - 0.25) < 1e-3
 
@@ -405,7 +405,7 @@ def test_k1_estimated_from_distorted_pairs() -> None:
     for p in pairs:
         ((x, y),) = fpw._distort_pts([p["image"]], true_k1)
         p["image"] = [x, y]
-    _h, err, _z, _k1x = fpw._compute_calibration(pairs, [])
+    _h, err, _z, _k1x, _ch = fpw._compute_calibration(pairs, [])
     assert err < 0.004  # without k1 the residual is ~0.01+
 
 
@@ -440,8 +440,8 @@ def test_height_zone_covers_more_than_footprint() -> None:
 
     flat = [{"type": "shelf", "points": foot, "height_m": 0}]
     tall = [{"type": "shelf", "points": foot, "height_m": 1.8}]
-    _h1, _e1, z_flat, _k1x = fpw._compute_calibration(pairs, flat, img_aspect=aspect)
-    _h2, _e2, z_tall, _k1x = fpw._compute_calibration(pairs, tall, img_aspect=aspect)
+    _h1, _e1, z_flat, _k1x, _ch1 = fpw._compute_calibration(pairs, flat, img_aspect=aspect)
+    _h2, _e2, z_tall, _k1x, _ch2 = fpw._compute_calibration(pairs, tall, img_aspect=aspect)
     assert len(z_flat) == 1 and len(z_tall) == 1
     a_flat = fpw._poly_area(z_flat[0]["points"])
     a_tall = fpw._poly_area(z_tall[0]["points"])

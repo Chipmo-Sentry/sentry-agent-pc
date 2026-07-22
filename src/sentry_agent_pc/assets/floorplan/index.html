@@ -183,6 +183,7 @@
         <button data-tool="chair" class="tool" title="Сандал — аналитик/3D-д харагдана, зон үүсгэхгүй">🪑 Сандал</button>
         <button data-tool="door" class="tool" title="Дотор орц/гарц — ханан доторх нүх: хараа хаахгүй, зочин ТООЛОХГҮЙ (гадна орц/гарцаас ялгаатай)">🚪 Дотор хаалга</button>
         <button data-tool="camera" class="tool">📷 Камер</button>
+        <button type="button" class="tool" onclick="toggle3D()" title="Зурсан планаа орон зайд урьдчилан харах — калибровктой камер хэмжигдсэн өндөртөө ногооноор харагдана">🧊 3D харах</button>
         <span class="sep"></span>
         <button id="btn-example">📐 Жишээ загвар</button>
         <button id="btn-new">🆕 Шинээр эхлэх</button>
@@ -288,5 +289,7 @@ F багтаах (зурсан хэсэгт) · Ctrl+Z/Y · Ctrl+S</div>
     </div>
 
     <script src="app.js"></script>
+    <script src="vendor/three-bundle.min.js"></script>
+    <script src="app3d.js"></script>
   </body>
 </html>

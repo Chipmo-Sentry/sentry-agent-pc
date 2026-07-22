@@ -1,6 +1,6 @@
 [project]
 name = "sentry-agent-pc"
-version = "0.7.101"
+version = "0.7.102"
 description = "Chipmo Sentry Windows agent â€” ONVIF camera discovery + manual add + backend registration"
 readme = "README.md"
 requires-python = "==3.11.*"

@@ -1586,11 +1586,16 @@ async function saveCalibration() {
     const r = await window.pywebview.api.save_calibration(calib.cam.camera_id, calib.pairs, PLAN, calib.aspect || null);
     const errPct = (r.reproj_err * 100).toFixed(1);
     const v = calibVerdict(r.reproj_err);
-    setCalibStatus(`✅ ${r.zone_count} зон · алдаа ${errPct}% — ${v.word}${v.hint ? ` (${v.hint})` : ""}`);
-    setStatus(`Калибровк: ${r.zone_count} зон, чанар ${v.word}`);
+    // solvePnP mount height (3D calibration): show it + stash it on the plan
+    // camera so the 🧊 3D preview hangs the camera at its measured height
+    // immediately (the save already persisted it server-side).
+    const hTxt = r.cam_h_m ? ` · камер ${Number(r.cam_h_m).toFixed(1)} м өндөрт` : "";
+    setCalibStatus(`✅ ${r.zone_count} зон · алдаа ${errPct}% — ${v.word}${v.hint ? ` (${v.hint})` : ""}${hTxt}`);
+    setStatus(`Калибровк: ${r.zone_count} зон, чанар ${v.word}${hTxt}`);
     // Mark calibrated so the camera badge + settings panel update.
     calib.cam._calibrated = true;
     calib.cam.reproj_err = r.reproj_err;
+    calib.cam.cam_h_m = r.cam_h_m != null ? r.cam_h_m : calib.cam.cam_h_m;
     // save_calibration persisted the whole PLAN we passed (the overlay blocks
     // canvas edits meanwhile), so the unsaved-changes flag stands down too.
     setDirty(false);
