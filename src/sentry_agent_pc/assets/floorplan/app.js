@@ -764,20 +764,46 @@ function selectShape(line, kind, idx) {
       x: pt[0], y: pt[1], radius: 5 / stage.scaleX(), fill: "#fff", stroke: "#000",
       strokeWidth: 1, draggable: true,
     });
+    a.on("dragstart", () => { a._orig = [arr[vi][0], arr[vi][1]]; });
     a.on("dragmove", () => {
       arr[vi] = [round2(a.x()), round2(a.y())];
       line.points(arr.flat());
       if (line._label) positionShapeLabel(line._label, arr);
       shapeLayer.batchDraw();
     });
-    a.on("dragend", () => { pushUndo(); reselectShape(selectedNode.kind, idx); }); // refresh dim labels
+    a.on("dragend", () => {
+      // A vertex pull that makes the fixture overlap a neighbour snaps back.
+      if (selectedNode.kind === "fixtures" && fixtureOverlaps(arr, idx) && a._orig) {
+        arr[vi] = a._orig;
+        setStatus(OVERLAP_MSG);
+        reselectShape(selectedNode.kind, idx);
+        return;
+      }
+      pushUndo();
+      reselectShape(selectedNode.kind, idx); // refresh dim labels
+    });
     vertexAnchors.push(a);
     uiLayer.add(a);
   });
-  // Moving the whole shape bakes the offset back into the points.
+  // Moving the whole shape bakes the offset back into the points — with the
+  // edge magnet pulling it flush to a neighbour, and the overlap guard
+  // bouncing it back to where it started if it would land ON one.
   line.on("dragend", () => {
     const ox = line.x(), oy = line.y();
-    arr.forEach((p) => { p[0] = round2(p[0] + ox); p[1] = round2(p[1] + oy); });
+    let moved = arr.map((p) => [p[0] + ox, p[1] + oy]);
+    if (kind === "fixture") {
+      const [mdx, mdy] = magnetShift(moved, idx);
+      moved = moved.map(([px, py]) => [round2(px + mdx), round2(py + mdy)]);
+      if (fixtureOverlaps(moved, idx)) {
+        line.position({ x: 0, y: 0 });
+        setStatus(OVERLAP_MSG);
+        reselectShape("fixtures", idx);
+        return;
+      }
+    } else {
+      moved = moved.map(([px, py]) => [round2(px), round2(py)]);
+    }
+    moved.forEach((p, i) => { arr[i][0] = p[0]; arr[i][1] = p[1]; });
     line.points(arr.flat());
     line.position({ x: 0, y: 0 });
     pushUndo();
@@ -785,6 +811,114 @@ function selectShape(line, kind, idx) {
   });
   showShapeSettings(selectedNode.kind, idx);
   uiLayer.draw();
+}
+
+// ── fixture overlap guard + edge magnet (owner request 07-22) ───────────────
+// Fixtures must not OVERLAP each other (давхарлагдахгүй) — but touching edges
+// are explicitly fine: shelves are meant to butt up flush, which is what the
+// edge magnet below produces. So the test looks for shared INTERIOR only:
+// a vertex strictly inside the other polygon, or edges properly crossing.
+const _OVL_EPS = 0.02; // 2 cm — collinear touches never count as overlap
+
+function _pointStrictlyIn(px, py, poly) {
+  let odd = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+    // Near an edge → treat as touching, not inside.
+    const vx = xj - xi, vy = yj - yi;
+    const L2 = vx * vx + vy * vy;
+    const t = L2 ? Math.max(0, Math.min(1, ((px - xi) * vx + (py - yi) * vy) / L2)) : 0;
+    if (Math.hypot(px - (xi + vx * t), py - (yi + vy * t)) < _OVL_EPS) return false;
+    if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) odd = !odd;
+  }
+  return odd;
+}
+
+function _segsProperCross(a1, a2, b1, b2) {
+  const dx = a2[0] - a1[0], dy = a2[1] - a1[1];
+  const rx = b2[0] - b1[0], ry = b2[1] - b1[1];
+  const den = dx * ry - dy * rx;
+  if (Math.abs(den) < 1e-12) return false; // parallel/collinear touch is fine
+  const t = ((b1[0] - a1[0]) * ry - (b1[1] - a1[1]) * rx) / den;
+  const u = ((b1[0] - a1[0]) * dy - (b1[1] - a1[1]) * dx) / den;
+  return t > 0.001 && t < 0.999 && u > 0.001 && u < 0.999;
+}
+
+// True when `points` shares interior with any OTHER fixture (skipIdx = the
+// fixture being edited, -1 for a brand-new one).
+function fixtureOverlaps(points, skipIdx) {
+  for (let i = 0; i < PLAN.fixtures.length; i++) {
+    if (i === skipIdx) continue;
+    const other = PLAN.fixtures[i].points;
+    if (!other || other.length < 3) continue;
+    for (const [px, py] of points) if (_pointStrictlyIn(px, py, other)) return true;
+    for (const [px, py] of other) if (_pointStrictlyIn(px, py, points)) return true;
+    for (let a = 0; a < points.length; a++) {
+      for (let b = 0; b < other.length; b++) {
+        if (
+          _segsProperCross(
+            points[a], points[(a + 1) % points.length],
+            other[b], other[(b + 1) % other.length],
+          )
+        ) return true;
+      }
+    }
+  }
+  return false;
+}
+const OVERLAP_MSG = "⚠ Дүрс давхарлаж болохгүй — зэрэгцүүлж (ирмэг нийлүүлж) тавина уу";
+
+// Edge magnet: snap a new/resized rect's edges onto nearby fixture edges so
+// adjacent shapes join flush (нийлж буй ирмэгүүд соронзлогдоно). Same screen
+// threshold as the corner snap. Returns [x1, y1, x2, y2] adjusted.
+function magnetRect(x1, y1, x2, y2, skipIdx) {
+  if (!pointSnapOn) return [x1, y1, x2, y2];
+  const thr = 12 / (stage.scaleX() || 1);
+  const xs = [], ys = [];
+  PLAN.fixtures.forEach((f, i) => {
+    if (i === skipIdx || !f.points) return;
+    const b = bbox(f.points);
+    xs.push(b.x, b.x + b.w);
+    ys.push(b.y, b.y + b.h);
+  });
+  const pull = (v, cands) => {
+    let best = v, bd = thr;
+    for (const c of cands) {
+      const d = Math.abs(c - v);
+      if (d < bd) { bd = d; best = c; }
+    }
+    return best;
+  };
+  return [pull(x1, xs), pull(y1, ys), pull(x2, xs), pull(y2, ys)];
+}
+
+// Whole-shape drag magnet: the best small translation that lands ANY of the
+// shape's bbox edges on a neighbour's edge (both axes independent).
+function magnetShift(points, skipIdx) {
+  if (!pointSnapOn) return [0, 0];
+  const thr = 12 / (stage.scaleX() || 1);
+  const b = bbox(points);
+  const xs = [], ys = [];
+  PLAN.fixtures.forEach((f, i) => {
+    if (i === skipIdx || !f.points) return;
+    const ob = bbox(f.points);
+    xs.push(ob.x, ob.x + ob.w);
+    ys.push(ob.y, ob.y + ob.h);
+  });
+  const bestDelta = (edges, cands) => {
+    let best = 0, bd = thr;
+    for (const e of edges) {
+      for (const c of cands) {
+        const d = c - e;
+        if (Math.abs(d) < bd) { bd = Math.abs(d); best = d; }
+      }
+    }
+    return best;
+  };
+  return [
+    bestDelta([b.x, b.x + b.w], xs),
+    bestDelta([b.y, b.y + b.h], ys),
+  ];
 }
 
 // Effective fixture height (m): explicit value wins, else the type default.
@@ -891,7 +1025,13 @@ function resizeFixture(idx, w, h) {
   const f = PLAN.fixtures[idx];
   const b = bbox(f.points);
   const x1 = round2(b.x), y1 = round2(b.y), x2 = round2(b.x + w), y2 = round2(b.y + h);
-  f.points = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
+  const pts = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
+  if (fixtureOverlaps(pts, idx)) {
+    setStatus(OVERLAP_MSG);
+    reselectShape("fixtures", idx);
+    return;
+  }
+  f.points = pts;
   pushUndo();
   reselectShape("fixtures", idx);
   setStatus(`Хэмжээ ${fmtM(w)} × ${fmtM(h)} м`);
@@ -998,9 +1138,13 @@ function rectDims() {
 }
 // Drop a fixture rectangle of an EXACT size (metres), top-left at the click.
 function placeRectExact(raw, w, h) {
-  const x1 = round2(raw[0]), y1 = round2(raw[1]);
-  const x2 = round2(x1 + w), y2 = round2(y1 + h);
-  PLAN.fixtures.push({ type: tool, points: [[x1, y1], [x2, y1], [x2, y2], [x1, y2]] });
+  // Magnet only TRANSLATES here (exact W×H must survive), then overlap-guard.
+  const x1r = round2(raw[0]), y1r = round2(raw[1]);
+  const pts0 = [[x1r, y1r], [x1r + w, y1r], [x1r + w, y1r + h], [x1r, y1r + h]];
+  const [dx, dy] = magnetShift(pts0, -1);
+  const pts = pts0.map(([px, py]) => [round2(px + dx), round2(py + dy)]);
+  if (fixtureOverlaps(pts, -1)) { setStatus(OVERLAP_MSG); return; }
+  PLAN.fixtures.push({ type: tool, points: pts });
   pushUndo();
   render();
   setStatus(`▦ ${fmtM(w)} × ${fmtM(h)} м нэмэгдлээ`);
@@ -1119,8 +1263,12 @@ function finishRect() {
     PLAN.walls.push({ points: [[x1, y1], [x2, y1], [x2, y2], [x1, y2], [x1, y1]] });
     setStatus(`▭ Хана-дөрвөлжин ${fmtM(w)} × ${fmtM(h)} м нэмэгдлээ`);
   } else {
-    PLAN.fixtures.push({ type: t, points: [[x1, y1], [x2, y1], [x2, y2], [x1, y2]] });
-    setStatus(`▦ ${fmtM(w)} × ${fmtM(h)} м нэмэгдлээ`);
+    // Edge magnet first (нийлүүлэх), then the overlap guard (давхарлахгүй).
+    const [mx1, my1, mx2, my2] = magnetRect(x1, y1, x2, y2, -1).map(round2);
+    const pts = [[mx1, my1], [mx2, my1], [mx2, my2], [mx1, my2]];
+    if (fixtureOverlaps(pts, -1)) { setStatus(OVERLAP_MSG); render(); return; }
+    PLAN.fixtures.push({ type: t, points: pts });
+    setStatus(`▦ ${fmtM(mx2 - mx1)} × ${fmtM(my2 - my1)} м нэмэгдлээ`);
   }
   pushUndo();
   render();
