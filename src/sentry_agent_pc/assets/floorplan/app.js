@@ -35,6 +35,9 @@ const FIX = {
   // same no-zone/no-visit rules as `door`; in 3D both cut an opening
   // through the wall they sit on (нэвт харагдана).
   exterior_door: { color: "#A8A29E", label: "Гадна хаалга", height_m: 0 },
+  // Window: a glazed wall opening — no zones/visits; in 3D the wall opens
+  // from sill (0.9 m) to lintel with a translucent glass pane.
+  window: { color: "#93C5FD", label: "Цонх", height_m: 0 },
 };
 const WALL_COLOR = "#9CA3AF";
 const CAM_COLOR = "#2563EB"; // brand royal-blue (the camera is the Sentry element)
@@ -803,6 +806,10 @@ function showShapeSettings(kindPlural, idx) {
     const b = bbox(f.points);
     el.innerHTML =
       `<h2>▦ ${(FIX[f.type] || {}).label || f.type}</h2>` +
+      // Type switcher (owner request 07-22): an existing fixture converts in
+      // place — e.g. an орц/гарц that is actually an interior doorway becomes
+      // «Дотор хаалга» without deleting + redrawing (and stops counting visits).
+      `<div class="ss-row">төрөл<select id="ss-type">${Object.keys(FIX).map((k) => `<option value="${k}"${k === f.type ? " selected" : ""}>${FIX[k].label}</option>`).join("")}</select></div>` +
       `<div class="ss-row">нэр<input id="ss-name" type="text" maxlength="64" placeholder="ж: Архины тавиур" value="${f.label ? esc(f.label) : ""}"></div>` +
       `<div class="ss-row">урт (м)<input id="ss-w" type="number" min="0.1" step="0.01" value="${fmtM(b.w)}"></div>` +
       `<div class="ss-row">өргөн (м)<input id="ss-h" type="number" min="0.1" step="0.01" value="${fmtM(b.h)}"></div>` +
@@ -811,7 +818,16 @@ function showShapeSettings(kindPlural, idx) {
       `<button id="ss-apply" class="primary">Тавих</button>`;
     el.classList.remove("cs-hidden");
     const apply = () => {
-      // Name first (cheap, no geometry), then dimensions if they changed.
+      // Type first: converting resets any explicit height so the NEW type's
+      // default applies (a shelf's 1.8 must not ride onto a doorway).
+      const newType = document.getElementById("ss-type").value;
+      const retyped = newType !== f.type && FIX[newType];
+      if (retyped) {
+        f.type = newType;
+        delete f.height_m;
+        pushUndo();
+      }
+      // Name next (cheap, no geometry), then dimensions if they changed.
       const name = document.getElementById("ss-name").value.trim();
       const renamed = (name || null) !== (f.label || null);
       if (renamed) { f.label = name || null; pushUndo(); }
@@ -822,9 +838,17 @@ function showShapeSettings(kindPlural, idx) {
       const h = parseFloat(document.getElementById("ss-h").value);
       if (w > 0 && h > 0 && (Math.abs(w - b.w) > 0.005 || Math.abs(h - b.h) > 0.005)) {
         resizeFixture(idx, w, h);
-      } else if (renamed || heightChanged) {
+      } else if (retyped || renamed || heightChanged) {
         reselectShape("fixtures", idx);
-        setStatus(heightChanged ? `Өндөр ${z} м хадгалагдлаа` : (name ? `Нэр «${name}» хадгалагдлаа` : "Нэр арилгалаа"));
+        setStatus(
+          retyped
+            ? `Төрөл «${(FIX[f.type] || {}).label || f.type}» боллоо`
+            : heightChanged
+              ? `Өндөр ${z} м хадгалагдлаа`
+              : name
+                ? `Нэр «${name}» хадгалагдлаа`
+                : "Нэр арилгалаа",
+        );
       }
     };
     document.getElementById("ss-apply").onclick = apply;

@@ -19,6 +19,7 @@
   // харагдана) — doorway open to DOOR_OPENING_H, lintel above.
   const DOOR_TYPES = { door: 1, exterior_door: 1, exit: 1, entrance: 1 };
   const DOOR_OPENING_H = 2.05;
+  const WINDOW_SILL_H = 0.9; // window: sill below, glass pane in the opening
 
   function segSpansInPoly(x1, y1, x2, y2, poly) {
     function inside(px, py) {
@@ -122,15 +123,23 @@
     scene.add(grid);
 
     const wallMat = new THREE.MeshStandardMaterial({ color: 0xd4d4d4, roughness: 0.85 });
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: 0x93c5fd, transparent: true, opacity: 0.25, roughness: 0.1,
+    });
     const doorPolys = PLAN.fixtures
       .filter((f) => DOOR_TYPES[f.type] && f.points && f.points.length >= 3)
       .map((f) => f.points);
-    function addWallPiece(x1, y1, x2, y2, a, b, h, yBase) {
+    const windowPolys = PLAN.fixtures
+      .filter((f) => f.type === "window" && f.points && f.points.length >= 3)
+      .map((f) => f.points);
+    function addWallPiece(x1, y1, x2, y2, a, b, h, yBase, mat) {
       const len = Math.hypot(x2 - x1, y2 - y1) * (b - a);
       if (len < 0.01 || h <= 0.01) return;
       const mx = x1 + (x2 - x1) * ((a + b) / 2);
       const my = y1 + (y2 - y1) * ((a + b) / 2);
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(len, h, WALL_THICKNESS), wallMat);
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(len, h, WALL_THICKNESS), mat || wallMat,
+      );
       mesh.position.set(mx, yBase + h / 2, my);
       mesh.rotation.y = -Math.atan2(y2 - y1, x2 - x1);
       scene.add(mesh);
@@ -143,13 +152,31 @@
         const [x1, y1] = pts[i];
         const [x2, y2] = pts[i + 1];
         if (Math.hypot(x2 - x1, y2 - y1) < 1e-6) continue;
-        let spans = [];
-        for (const p of doorPolys) spans = spans.concat(segSpansInPoly(x1, y1, x2, y2, p));
-        const doorSpans = mergeSpans(spans);
+        let ds = [];
+        for (const p of doorPolys) ds = ds.concat(segSpansInPoly(x1, y1, x2, y2, p));
+        const doorSpans = mergeSpans(ds);
+        let wsRaw = [];
+        for (const p of windowPolys) wsRaw = wsRaw.concat(segSpansInPoly(x1, y1, x2, y2, p));
+        // Doors win where a window overlaps one.
+        const winSpans = mergeSpans(wsRaw).filter(([a, b]) => {
+          const mid = (a + b) / 2;
+          return !doorSpans.some(([da, db]) => mid >= da && mid <= db);
+        });
+        const openings = doorSpans
+          .map(([a, b]) => [a, b, "door"])
+          .concat(winSpans.map(([a, b]) => [a, b, "window"]))
+          .sort((p, q) => p[0] - q[0]);
         let cursor = 0;
-        for (const [a, b] of doorSpans) {
+        for (const [a, b, kind] of openings) {
           addWallPiece(x1, y1, x2, y2, cursor, a, h, 0);
-          if (h > DOOR_OPENING_H) addWallPiece(x1, y1, x2, y2, a, b, h - DOOR_OPENING_H, DOOR_OPENING_H);
+          if (kind === "door") {
+            if (h > DOOR_OPENING_H) addWallPiece(x1, y1, x2, y2, a, b, h - DOOR_OPENING_H, DOOR_OPENING_H);
+          } else {
+            addWallPiece(x1, y1, x2, y2, a, b, Math.min(WINDOW_SILL_H, h), 0);
+            const top = Math.min(DOOR_OPENING_H, h);
+            if (top > WINDOW_SILL_H) addWallPiece(x1, y1, x2, y2, a, b, top - WINDOW_SILL_H, WINDOW_SILL_H, glassMat);
+            if (h > DOOR_OPENING_H) addWallPiece(x1, y1, x2, y2, a, b, h - DOOR_OPENING_H, DOOR_OPENING_H);
+          }
           cursor = b;
         }
         addWallPiece(x1, y1, x2, y2, cursor, 1, h, 0);

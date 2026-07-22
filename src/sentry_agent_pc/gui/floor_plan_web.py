@@ -440,8 +440,8 @@ def _compute_calibration(
     cam_h = pose["cam_h"] if pose is not None else None
     zones: list[dict[str, Any]] = []
     for i, fix in enumerate(fixtures):
-        if fix.get("type") in ("furniture", "sofa", "chair", "door", "exterior_door"):
-            continue  # scenery + doorways — never a detection zone
+        if fix.get("type") in ("furniture", "sofa", "chair", "door", "exterior_door", "window"):
+            continue  # scenery + doorways/windows — never a detection zone
         raw = fix.get("points") or []
         if len(raw) < 3:
             continue
