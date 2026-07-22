@@ -249,16 +249,7 @@
 
       // Height label sprite («3.1 м») over a calibrated camera.
       if (calibrated) {
-        const cv = document.createElement("canvas");
-        cv.width = 128; cv.height = 48;
-        const g = cv.getContext("2d");
-        g.font = "bold 26px sans-serif";
-        g.fillStyle = "#22c55e";
-        g.textAlign = "center";
-        g.fillText(Number(cam.cam_h_m).toFixed(1) + " м", 64, 32);
-        const tex = new THREE.CanvasTexture(cv);
-        const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
-        spr.scale.set(1.6, 0.6, 1);
+        const spr = makeTextSprite(Number(cam.cam_h_m).toFixed(1) + " м", "#22c55e");
         spr.position.set(px, mountH + 0.5, py);
         scene.add(spr);
       }
@@ -282,13 +273,33 @@
     ro.observe(host);
     raf = requestAnimationFrame(render);
 
-    return () => {
-      cancelAnimationFrame(raf);
-      ro.disconnect();
-      controls.dispose();
-      renderer.dispose();
-      host.removeChild(renderer.domElement);
+    return {
+      scene, camera, renderer, controls,
+      dispose() {
+        cancelAnimationFrame(raf);
+        ro.disconnect();
+        controls.dispose();
+        renderer.dispose();
+        if (renderer.domElement.parentNode === host) host.removeChild(renderer.domElement);
+      },
     };
+  }
+
+  // Text sprite («3.1 м», pair numbers) — canvas-textured, always camera-facing.
+  function makeTextSprite(text, color, scale) {
+    const { THREE } = ThreeBundle;
+    const cv = document.createElement("canvas");
+    cv.width = 128; cv.height = 48;
+    const g = cv.getContext("2d");
+    g.font = "bold 28px sans-serif";
+    g.fillStyle = color;
+    g.textAlign = "center";
+    g.fillText(text, 64, 34);
+    const spr = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(cv), transparent: true }),
+    );
+    spr.scale.set(1.6 * (scale || 1), 0.6 * (scale || 1), 1);
+    return spr;
   }
 
   window.toggle3D = function toggle3D() {
@@ -321,10 +332,107 @@
     overlay.appendChild(bar);
     overlay.appendChild(host);
     document.body.appendChild(overlay);
-    cleanup = build(host);
+    const handle = build(host);
+    cleanup = () => handle.dispose();
   };
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && overlay) window.toggle3D();
   });
+
+  // ── Calibrate IN 3D (owner request 07-22) ─────────────────────────────────
+  // The calibration overlay's plan pane can switch to this interactive 3D
+  // scene: rotate the store to roughly the camera's own viewpoint, then CLICK
+  // the matching spot — the ray is dropped onto the floor plane and the (x, y)
+  // becomes the plan half of the pair. Pair marks render as numbered spheres;
+  // once the dry-run pose solves, a green ghost camera hangs at the MEASURED
+  // height so the operator validates the calibration in space as they go.
+  window.Calib3D = {
+    _h: null,
+    _marks: [],
+    _cand: null,
+    isOpen() { return !!this._h; },
+    open(host, onPick) {
+      this.close();
+      const { THREE } = ThreeBundle;
+      const h = (this._h = build(host));
+      // Click = pick (with a drag tolerance so orbiting never drops points).
+      let down = null;
+      const el = h.renderer.domElement;
+      el.addEventListener("pointerdown", (e) => { down = [e.clientX, e.clientY]; });
+      el.addEventListener("pointerup", (e) => {
+        if (!down) return;
+        const moved = Math.hypot(e.clientX - down[0], e.clientY - down[1]);
+        down = null;
+        if (moved > 5) return; // that was an orbit/pan drag
+        const r = el.getBoundingClientRect();
+        const ndc = new THREE.Vector2(
+          ((e.clientX - r.left) / r.width) * 2 - 1,
+          -(((e.clientY - r.top) / r.height) * 2 - 1),
+        );
+        const ray = new THREE.Raycaster();
+        ray.setFromCamera(ndc, h.camera);
+        const hit = new THREE.Vector3();
+        if (ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), hit)) {
+          onPick(hit.x, hit.z);
+        }
+      });
+      return h;
+    },
+    // Mirror the 2D pair marks: numbered spheres on the floor.
+    setMarks(pairs, colors) {
+      if (!this._h) return;
+      const { THREE } = ThreeBundle;
+      for (const m of this._marks) this._h.scene.remove(m);
+      this._marks = [];
+      pairs.forEach((pr, i) => {
+        const color = colors[i % colors.length];
+        const s = new THREE.Mesh(
+          new THREE.SphereGeometry(0.14, 16, 12),
+          new THREE.MeshBasicMaterial({ color }),
+        );
+        s.position.set(pr.plan[0], 0.14, pr.plan[1]);
+        this._h.scene.add(s);
+        this._marks.push(s);
+        const label = makeTextSprite(String(i + 1), color, 0.8);
+        label.position.set(pr.plan[0], 0.75, pr.plan[1]);
+        this._h.scene.add(label);
+        this._marks.push(label);
+      });
+    },
+    // Green ghost camera at the dry-run solved height — «3D-ээр calibrate».
+    setCandidate(camId, hM) {
+      if (!this._h) return;
+      const { THREE } = ThreeBundle;
+      if (this._cand) {
+        for (const o of this._cand) this._h.scene.remove(o);
+        this._cand = null;
+      }
+      if (hM == null || !(hM > 0)) return;
+      const cam = PLAN.cameras.find((c) => c.camera_id === camId);
+      if (!cam) return;
+      const body = new THREE.Mesh(
+        new THREE.BoxGeometry(0.4, 0.26, 0.26),
+        new THREE.MeshBasicMaterial({ color: 0x22c55e, transparent: true, opacity: 0.9 }),
+      );
+      body.position.set(cam.pos[0], hM, cam.pos[1]);
+      const pole = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.02, 0.02, hM, 8),
+        new THREE.MeshBasicMaterial({ color: 0x22c55e, transparent: true, opacity: 0.35 }),
+      );
+      pole.position.set(cam.pos[0], hM / 2, cam.pos[1]);
+      const label = makeTextSprite(hM.toFixed(1) + " м", "#22c55e");
+      label.position.set(cam.pos[0], hM + 0.5, cam.pos[1]);
+      this._h.scene.add(body);
+      this._h.scene.add(pole);
+      this._h.scene.add(label);
+      this._cand = [body, pole, label];
+    },
+    close() {
+      if (this._h) this._h.dispose();
+      this._h = null;
+      this._marks = [];
+      this._cand = null;
+    },
+  };
 })();

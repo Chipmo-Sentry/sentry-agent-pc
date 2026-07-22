@@ -1663,16 +1663,50 @@ function buildCalibStages(frame) {
     redrawCalibMarks(); // point marks re-derive their size from the new scale
   });
   calib.plan.on("mousedown", () => {
-    if (!calib.pendingImg) { setCalibStatus("Эхлээд камерын зураг дээр цэг дар ←"); return; }
     const p = calib.plan.getRelativePointerPosition();
-    // 2 dp = 1 cm — anchor points at 0.1 m (1 dp) were coarse enough to inflate
-    // the homography's reprojection error on small stores.
-    calib.pairs.push({ image: calib.pendingImg, plan: [round2(p.x), round2(p.y)] });
-    calib.pendingImg = null;
-    redrawCalibMarks();
-    refreshCalibPreview();
+    calibPlanPick(p.x, p.y);
   });
   setCalibStatus("1) Камерын зураг дээр танигдах цэг дар → 2) планы таарах цэгийг дар. ≥4 хослол.");
+  setCalibMode(false); // always reopen in 2D; 3D is a per-session choice
+}
+
+// One plan-side pick — shared by the 2D Konva pane AND the 3D floor raycast
+// (калибровкийг 3D-ээр хийх, owner request 07-22).
+function calibPlanPick(px, py) {
+  if (!calib.pendingImg) { setCalibStatus("Эхлээд камерын зураг дээр цэг дар ←"); return; }
+  // 2 dp = 1 cm — anchor points at 0.1 m (1 dp) were coarse enough to inflate
+  // the homography's reprojection error on small stores.
+  calib.pairs.push({ image: calib.pendingImg, plan: [round2(px), round2(py)] });
+  calib.pendingImg = null;
+  redrawCalibMarks();
+  refreshCalibPreview();
+}
+
+// Switch the calibration plan pane between the 2D Konva map and the
+// interactive 3D scene. Pair state is shared — marks mirror across both.
+function setCalibMode(three) {
+  calib.mode3d = !!three;
+  const p2 = document.getElementById("calib-plan");
+  const p3 = document.getElementById("calib-plan3d");
+  const b2 = document.getElementById("calib-mode-2d");
+  const b3 = document.getElementById("calib-mode-3d");
+  const hint = document.getElementById("calib-plan-hint");
+  if (!p2 || !p3 || !window.Calib3D) return;
+  b2.classList.toggle("active", !three);
+  b3.classList.toggle("active", !!three);
+  if (three) {
+    p2.style.display = "none";
+    p3.style.display = "";
+    if (hint) hint.textContent = "② 3D: чирэх=эргүүлэх · товших=цэг тавих · камерын өнцгөөс харж дарвал амархан";
+    window.Calib3D.open(p3, (x, y) => calibPlanPick(x, y));
+    window.Calib3D.setMarks(calib.pairs, CALIB_COLORS);
+    refreshCalibPreview(); // repush the candidate ghost into the fresh scene
+  } else {
+    window.Calib3D.close();
+    p3.style.display = "none";
+    p2.style.display = "";
+    if (hint) hint.textContent = "② Планы таарах цэгийг дар · Ctrl+дугуй томруулах · дугуй гүйлгэх";
+  }
 }
 
 function _mark(group, x, y, n, scaleInv) {
@@ -1696,6 +1730,8 @@ function redrawCalibMarks() {
     calib.pairs.forEach((pr, i) => _mark(calib.planMarks, pr.plan[0], pr.plan[1], i + 1, inv));
     calib.planMarks.getLayer().batchDraw();
   }
+  // Mirror the pair marks into the 3D pane when it's active.
+  if (window.Calib3D && window.Calib3D.isOpen()) window.Calib3D.setMarks(calib.pairs, CALIB_COLORS);
 }
 
 function undoCalibPoint() {
@@ -1742,11 +1778,18 @@ async function refreshCalibPreview() {
     }));
   });
   calib.zoneMarks.getLayer().batchDraw();
+  // 3D pane: hang the CANDIDATE camera at the dry-run solved height (green
+  // ghost) — the operator watches the calibration take physical shape live.
+  if (window.Calib3D && window.Calib3D.isOpen()) {
+    window.Calib3D.setCandidate(calib.cam.camera_id, r.cam_h_m != null ? Number(r.cam_h_m) : null);
+  }
   const v = calibVerdict(r.reproj_err);
   const zn = (r.zones || []).length;
+  const hTxt = r.cam_h_m ? ` · камер ${Number(r.cam_h_m).toFixed(1)} м өндөрт` : "";
   setCalibStatus(
     `${n} цэг · алдаа ${(r.reproj_err * 100).toFixed(1)}% — ${v.word}` +
     (zn ? ` · ${zn} зон зураг дээр буув — байрлал таарч байвал Хадгал` : " · энэ камерт харагдах зон алга") +
+    hTxt +
     (v.hint ? ` (${v.hint})` : ""),
   );
 }
@@ -1755,6 +1798,8 @@ function closeCalibration() {
   document.getElementById("calib").classList.add("calib-hidden");
   if (calib.img) { calib.img.destroy(); calib.img = null; }
   if (calib.plan) { calib.plan.destroy(); calib.plan = null; }
+  if (window.Calib3D) window.Calib3D.close();
+  calib.mode3d = false;
   calib.pairs = []; calib.pendingImg = null;
   calib.zoneMarks = null; calib.previewSeq = (calib.previewSeq || 0) + 1; // drop in-flight previews
 }
@@ -1909,6 +1954,8 @@ function toggleCoverage() {
 document.getElementById("calib-save").onclick = saveCalibration;
 document.getElementById("calib-cancel").onclick = closeCalibration;
 document.getElementById("calib-undo").onclick = undoCalibPoint;
+document.getElementById("calib-mode-2d").onclick = () => setCalibMode(false);
+document.getElementById("calib-mode-3d").onclick = () => setCalibMode(true);
 // Length input: Enter drops the next wall vertex at the typed distance.
 document.getElementById("len-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") {

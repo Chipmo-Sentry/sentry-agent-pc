@@ -109,6 +109,11 @@
       }
       .calib-head .spacer { flex: 1; }
       #calib-status { color: var(--muted); font-size: 12px; }
+      .calib-mode {
+        background: #262626; color: #a3a3a3; border: 1px solid #404040;
+        border-radius: 5px; padding: 2px 9px; font-size: 11px; cursor: pointer;
+      }
+      .calib-mode.active { background: #2563eb; color: #fff; border-color: #2563eb; }
       .calib-body { flex: 1; display: flex; min-height: 0; }
       .calib-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
       .calib-pane + .calib-pane { border-left: 1px solid var(--border); }
@@ -284,8 +289,15 @@ F багтаах (зурсан хэсэгт) · Ctrl+Z/Y · Ctrl+S</div>
           <div id="calib-cam" class="calib-canvas"></div>
         </div>
         <div class="calib-pane">
-          <div class="calib-label">② Планы таарах цэгийг дар · Ctrl+дугуй томруулах · дугуй гүйлгэх</div>
+          <div class="calib-label">
+            <span id="calib-plan-hint">② Планы таарах цэгийг дар · Ctrl+дугуй томруулах · дугуй гүйлгэх</span>
+            <span style="float:right">
+              <button id="calib-mode-2d" class="calib-mode active">2D</button>
+              <button id="calib-mode-3d" class="calib-mode" title="Дэлгүүрээ эргүүлж камерын өнцгөөс хараад шалан дээр цэгээ дарна — тооцоолсон камерын өндөр ногооноор шууд харагдана">🧊 3D</button>
+            </span>
+          </div>
           <div id="calib-plan" class="calib-canvas"></div>
+          <div id="calib-plan3d" class="calib-canvas" style="display:none"></div>
         </div>
       </div>
     </div>
