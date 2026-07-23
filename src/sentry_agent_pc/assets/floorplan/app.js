@@ -848,10 +848,17 @@ function selectShape(line, kind, idx) {
       const [mdx, mdy] = magnetShift(moved, idx);
       moved = moved.map(([px, py]) => [round2(px + mdx), round2(py + mdy)]);
       if (fixtureOverlaps(moved, idx)) {
-        line.position({ x: 0, y: 0 });
-        setStatus(OVERLAP_MSG);
-        reselectShape("fixtures", idx);
-        return;
+        // Dropped ON a neighbour → auto-separate so the edges just touch.
+        const solved = resolveOverlap(moved, idx);
+        if (solved) {
+          moved = solved;
+          setStatus("Давхардлыг автоматаар зайлуулж ирмэгээр нийлүүлэв");
+        } else {
+          line.position({ x: 0, y: 0 });
+          setStatus(OVERLAP_MSG);
+          reselectShape("fixtures", idx);
+          return;
+        }
       }
     } else {
       moved = moved.map(([px, py]) => [round2(px), round2(py)]);
@@ -920,6 +927,41 @@ function fixtureOverlaps(points, skipIdx) {
   return false;
 }
 const OVERLAP_MSG = "⚠ Дүрс давхарлаж болохгүй — зэрэгцүүлж (ирмэг нийлүүлж) тавина уу";
+
+// Auto-separate (owner request 07-22): a shape DROPPED overlapping a
+// neighbour is pushed out along the shallower axis until the edges just
+// touch — «автоматаар давхардалгүйгээр өнцөг нь нийлдэг». Returns resolved
+// points, or null when 8 pushes couldn't untangle it (caller bounces back).
+function resolveOverlap(points, skipIdx) {
+  let pts = points.map((p) => [p[0], p[1]]);
+  for (let iter = 0; iter < 8; iter++) {
+    if (!fixtureOverlaps(pts, skipIdx)) {
+      return pts.map(([x, y]) => [round2(x), round2(y)]);
+    }
+    const b = bbox(pts);
+    let push = null;
+    for (let i = 0; i < PLAN.fixtures.length; i++) {
+      if (i === skipIdx) continue;
+      const o = PLAN.fixtures[i].points;
+      if (!o || o.length < 3) continue;
+      const ob = bbox(o);
+      const ix = Math.min(b.x + b.w, ob.x + ob.w) - Math.max(b.x, ob.x);
+      const iy = Math.min(b.y + b.h, ob.y + ob.h) - Math.max(b.y, ob.y);
+      if (ix <= 0.001 || iy <= 0.001) continue;
+      // Push along the SHALLOWER axis, away from the neighbour's centre.
+      const cand =
+        ix <= iy
+          ? [b.x + b.w / 2 < ob.x + ob.w / 2 ? -ix : ix, 0, ix]
+          : [0, b.y + b.h / 2 < ob.y + ob.h / 2 ? -iy : iy, iy];
+      if (push === null || cand[2] < push[2]) push = cand;
+    }
+    if (!push) break; // polygon overlap without bbox overlap — exotic shape
+    pts = pts.map(([x, y]) => [x + push[0], y + push[1]]);
+  }
+  return fixtureOverlaps(pts, skipIdx)
+    ? null
+    : pts.map(([x, y]) => [round2(x), round2(y)]);
+}
 
 // Edge magnet: snap a new/resized rect's edges onto nearby fixture edges so
 // adjacent shapes join flush (нийлж буй ирмэгүүд соронзлогдоно). Same screen
@@ -1195,8 +1237,12 @@ function placeRectExact(raw, w, h) {
   const x1r = round2(raw[0]), y1r = round2(raw[1]);
   const pts0 = [[x1r, y1r], [x1r + w, y1r], [x1r + w, y1r + h], [x1r, y1r + h]];
   const [dx, dy] = magnetShift(pts0, -1);
-  const pts = pts0.map(([px, py]) => [round2(px + dx), round2(py + dy)]);
-  if (fixtureOverlaps(pts, -1)) { setStatus(OVERLAP_MSG); return; }
+  let pts = pts0.map(([px, py]) => [round2(px + dx), round2(py + dy)]);
+  if (fixtureOverlaps(pts, -1)) {
+    const solved = resolveOverlap(pts, -1);
+    if (!solved) { setStatus(OVERLAP_MSG); return; }
+    pts = solved;
+  }
   PLAN.fixtures.push({ type: tool, points: pts });
   pushUndo();
   render();
@@ -1316,10 +1362,14 @@ function finishRect() {
     PLAN.walls.push({ points: [[x1, y1], [x2, y1], [x2, y2], [x1, y2], [x1, y1]] });
     setStatus(`▭ Хана-дөрвөлжин ${fmtM(w)} × ${fmtM(h)} м нэмэгдлээ`);
   } else {
-    // Edge magnet first (нийлүүлэх), then the overlap guard (давхарлахгүй).
+    // Edge magnet first (нийлүүлэх), then auto-separate any residual overlap.
     const [mx1, my1, mx2, my2] = magnetRect(x1, y1, x2, y2, -1).map(round2);
-    const pts = [[mx1, my1], [mx2, my1], [mx2, my2], [mx1, my2]];
-    if (fixtureOverlaps(pts, -1)) { setStatus(OVERLAP_MSG); render(); return; }
+    let pts = [[mx1, my1], [mx2, my1], [mx2, my2], [mx1, my2]];
+    if (fixtureOverlaps(pts, -1)) {
+      const solved = resolveOverlap(pts, -1);
+      if (!solved) { setStatus(OVERLAP_MSG); render(); return; }
+      pts = solved;
+    }
     PLAN.fixtures.push({ type: t, points: pts });
     setStatus(`▦ ${fmtM(mx2 - mx1)} × ${fmtM(my2 - my1)} м нэмэгдлээ`);
   }
