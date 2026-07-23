@@ -73,7 +73,8 @@
     if (Math.abs(den) < 1e-12) return null;
     const qx = a[0] - o[0], qy = a[1] - o[1];
     const t = (qx * ry - qy * rx) / den;
-    const u = (qx * d[1] - qy * d[0]) / -den;
+    // /den, NOT /-den — the flipped sign made half the walls pass-through.
+    const u = (qx * d[1] - qy * d[0]) / den;
     return t >= eps && u >= 0 && u <= 1 ? t : null;
   }
   function nearestWallT(o, d, tmax, walls, eps) {
@@ -115,20 +116,36 @@
     const offs = angles.map(rel);
     const amin = Math.min.apply(null, offs);
     const amax = Math.max.apply(null, offs);
+    // Interior origin (a wide lens sees all around its base): the single
+    // boundary crossing is the EXIT — near starts at the camera itself, and
+    // the sweep covers the full circle. Treating the exit as the entry made
+    // every ray degenerate → empty clip → raw wall-leaking patch fallback.
+    let insideOrigin = false;
+    {
+      let odd = false;
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1];
+        if (yi > o[1] !== yj > o[1] && o[0] < ((xj - xi) * (o[1] - yi)) / (yj - yi) + xi) odd = !odd;
+      }
+      insideOrigin = odd;
+    }
     const near = [], far = [];
     const N = 90;
+    const sweepMin = insideOrigin ? -Math.PI : amin;
+    const sweepMax = insideOrigin ? Math.PI : amax;
     for (let k = 0; k <= N; k++) {
-      const a = ref + amin + ((amax - amin) * k) / N;
+      const a = ref + sweepMin + ((sweepMax - sweepMin) * k) / N;
       const d = [Math.cos(a), Math.sin(a)];
       const iv = rayPolyInterval(o, d, pts);
       if (!iv || iv[1] <= 1e-6) continue;
+      const nearT = insideOrigin ? 0 : iv[0];
       const tw = nearestWallT(o, d, iv[1], walls, eps);
-      if (tw <= iv[0] + 1e-6) continue;
-      near.push([o[0] + d[0] * iv[0], o[1] + d[1] * iv[0]]);
+      if (tw <= nearT + 1e-6) continue;
+      near.push([o[0] + d[0] * nearT, o[1] + d[1] * nearT]);
       far.push([o[0] + d[0] * tw, o[1] + d[1] * tw]);
     }
     if (far.length < 2) return [];
-    return near.concat(far.reverse());
+    return insideOrigin ? far : near.concat(far.reverse());
   }
 
   function fpArea(pts) {
