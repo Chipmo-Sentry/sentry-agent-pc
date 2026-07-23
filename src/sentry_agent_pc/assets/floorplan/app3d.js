@@ -206,6 +206,12 @@
     controls.target.set(cx, 0, cz);
     controls.maxPolarAngle = Math.PI / 2 - 0.02;
     controls.enableDamping = true;
+    // Shift + left-drag pans (owner request 07-23) — release Shift to orbit.
+    const onKey = (e) => {
+      controls.mouseButtons.LEFT = e.shiftKey ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKey);
 
     scene.add(new THREE.AmbientLight(0xffffff, 0.55));
     const sun = new THREE.DirectionalLight(0xffffff, 1.1);
@@ -431,6 +437,8 @@
       dispose() {
         cancelAnimationFrame(raf);
         ro.disconnect();
+        window.removeEventListener("keydown", onKey);
+        window.removeEventListener("keyup", onKey);
         controls.dispose();
         renderer.dispose();
         if (renderer.domElement.parentNode === host) host.removeChild(renderer.domElement);
@@ -471,7 +479,7 @@
       "display:flex;align-items:center;gap:12px;padding:8px 12px;color:#d4d4d4;font:13px sans-serif;";
     bar.innerHTML =
       "<b>3D урьдчилан харах</b>" +
-      "<span style='color:#737373'>Чирэх — эргүүлэх · Гүйлгэх — томруулах · Баруун чирэх — зөөх · " +
+      "<span style='color:#737373'>Чирэх — эргүүлэх · Shift+чирэх — зөөх · Гүйлгэх — томруулах · " +
       "Ногоон камер = калибровкоор хэмжигдсэн өндөртөө</span>";
     const close = document.createElement("button");
     close.textContent = "✕ Хаах (Esc)";
