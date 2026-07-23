@@ -66,6 +66,72 @@
     return out;
   }
 
+  // ── footprint wall occlusion (хана нэвтэлдэггүй) ─────────────────────────
+  function raySegT(o, d, a, b, eps) {
+    const rx = b[0] - a[0], ry = b[1] - a[1];
+    const den = d[0] * ry - d[1] * rx;
+    if (Math.abs(den) < 1e-12) return null;
+    const qx = a[0] - o[0], qy = a[1] - o[1];
+    const t = (qx * ry - qy * rx) / den;
+    const u = (qx * d[1] - qy * d[0]) / -den;
+    return t >= eps && u >= 0 && u <= 1 ? t : null;
+  }
+  function nearestWallT(o, d, tmax, walls) {
+    let best = tmax;
+    for (const w of walls) {
+      const pts = w.points;
+      for (let i = 0; i < pts.length - 1; i++) {
+        // 0.5 m — the camera's own mounting wall must not swallow the patch.
+        const t = raySegT(o, d, pts[i], pts[i + 1], 0.5);
+        if (t !== null && t < best) best = t;
+      }
+    }
+    return best;
+  }
+  function rayPolyInterval(o, d, poly) {
+    const ts = [];
+    for (let i = 0; i < poly.length; i++) {
+      const t = raySegT(o, d, poly[i], poly[(i + 1) % poly.length], -1e-9);
+      if (t !== null) ts.push(t);
+    }
+    if (!ts.length) return null;
+    return [Math.max(0, Math.min.apply(null, ts)), Math.max.apply(null, ts)];
+  }
+  function occludeFootprint(pos, pts, walls) {
+    if (!walls.length) return pts;
+    const o = pos;
+    const angles = [];
+    for (const p of pts) {
+      const dx = p[0] - o[0], dy = p[1] - o[1];
+      if (Math.hypot(dx, dy) > 1e-9) angles.push(Math.atan2(dy, dx));
+    }
+    if (!angles.length) return pts;
+    const ref = angles[0];
+    const rel = (a) => {
+      let r = a - ref;
+      while (r <= -Math.PI) r += 2 * Math.PI;
+      while (r > Math.PI) r -= 2 * Math.PI;
+      return r;
+    };
+    const offs = angles.map(rel);
+    const amin = Math.min.apply(null, offs);
+    const amax = Math.max.apply(null, offs);
+    const near = [], far = [];
+    const N = 90;
+    for (let k = 0; k <= N; k++) {
+      const a = ref + amin + ((amax - amin) * k) / N;
+      const d = [Math.cos(a), Math.sin(a)];
+      const iv = rayPolyInterval(o, d, pts);
+      if (!iv || iv[1] <= 1e-6) continue;
+      const tw = nearestWallT(o, d, iv[1], walls);
+      if (tw <= iv[0] + 1e-6) continue;
+      near.push([o[0] + d[0] * iv[0], o[1] + d[1] * iv[0]]);
+      far.push([o[0] + d[0] * tw, o[1] + d[1] * tw]);
+    }
+    if (far.length < 2) return [];
+    return near.concat(far.reverse());
+  }
+
   let overlay = null;
   let cleanup = null;
 
@@ -242,11 +308,14 @@
       } catch (e) { fp = null; }
       if (fp && fp.exact) {
         const MAXR = 25; // horizon-adjacent corners project absurdly far
-        const pts = fp.pts.map(([fx, fy]) => {
+        let pts = fp.pts.map(([fx, fy]) => {
           const dx = fx - px, dy = fy - py;
           const d = Math.hypot(dx, dy);
           return d > MAXR ? [px + (dx / d) * MAXR, py + (dy / d) * MAXR] : [fx, fy];
         });
+        // Walls cut the patch (хана нэвтэлдэггүй) — sight stops at the first wall.
+        const clipped = occludeFootprint([px, py], pts, PLAN.walls);
+        if (clipped.length >= 3) pts = clipped;
         const shape = new THREE.Shape(pts.map(([fx, fy]) => new THREE.Vector2(fx, -fy)));
         const patch = new THREE.Mesh(
           new THREE.ShapeGeometry(shape),
@@ -264,7 +333,10 @@
           new THREE.LineBasicMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.6 }),
         );
         scene.add(loop);
-        for (const [fx, fy] of pts) {
+        // A handful of sight lines — the clipped outline can be ~180 points.
+        const step = Math.max(1, Math.floor(pts.length / 6));
+        for (let si = 0; si < pts.length; si += step) {
+          const [fx, fy] = pts[si];
           scene.add(new THREE.Line(
             new THREE.BufferGeometry().setFromPoints([
               new THREE.Vector3(px, mountH, py),
