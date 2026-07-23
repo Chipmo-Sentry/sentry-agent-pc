@@ -76,13 +76,12 @@
     const u = (qx * d[1] - qy * d[0]) / -den;
     return t >= eps && u >= 0 && u <= 1 ? t : null;
   }
-  function nearestWallT(o, d, tmax, walls) {
+  function nearestWallT(o, d, tmax, walls, eps) {
     let best = tmax;
     for (const w of walls) {
       const pts = w.points;
       for (let i = 0; i < pts.length - 1; i++) {
-        // 0.5 m — the camera's own mounting wall must not swallow the patch.
-        const t = raySegT(o, d, pts[i], pts[i + 1], 0.5);
+        const t = raySegT(o, d, pts[i], pts[i + 1], eps);
         if (t !== null && t < best) best = t;
       }
     }
@@ -97,7 +96,7 @@
     if (!ts.length) return null;
     return [Math.max(0, Math.min.apply(null, ts)), Math.max.apply(null, ts)];
   }
-  function occludeFootprint(pos, pts, walls) {
+  function occludeFootprint(pos, pts, walls, eps) {
     if (!walls.length) return pts;
     const o = pos;
     const angles = [];
@@ -123,13 +122,32 @@
       const d = [Math.cos(a), Math.sin(a)];
       const iv = rayPolyInterval(o, d, pts);
       if (!iv || iv[1] <= 1e-6) continue;
-      const tw = nearestWallT(o, d, iv[1], walls);
+      const tw = nearestWallT(o, d, iv[1], walls, eps);
       if (tw <= iv[0] + 1e-6) continue;
       near.push([o[0] + d[0] * iv[0], o[1] + d[1] * iv[0]]);
       far.push([o[0] + d[0] * tw, o[1] + d[1] * tw]);
     }
     if (far.length < 2) return [];
     return near.concat(far.reverse());
+  }
+
+  function fpArea(pts) {
+    let s = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      s += a[0] * b[1] - b[0] * a[1];
+    }
+    return Math.abs(s) / 2;
+  }
+
+  // Adaptive: strict 5 cm first (mounting wall CANNOT leak the patch outside);
+  // lenient 0.5 m only when strict swallowed nearly everything (camera drawn
+  // slightly on the wrong side of its wall).
+  function clipFootprint(pos, pts, walls) {
+    const strict = occludeFootprint(pos, pts, walls, 0.05);
+    if (fpArea(strict) >= fpArea(pts) * 0.2 && strict.length >= 3) return strict;
+    const lenient = occludeFootprint(pos, pts, walls, 0.5);
+    return fpArea(lenient) > fpArea(strict) ? lenient : strict;
   }
 
   let overlay = null;
@@ -314,7 +332,7 @@
           return d > MAXR ? [px + (dx / d) * MAXR, py + (dy / d) * MAXR] : [fx, fy];
         });
         // Walls cut the patch (хана нэвтэлдэггүй) — sight stops at the first wall.
-        const clipped = occludeFootprint([px, py], pts, PLAN.walls);
+        const clipped = clipFootprint([px, py], pts, PLAN.walls);
         if (clipped.length >= 3) pts = clipped;
         const shape = new THREE.Shape(pts.map(([fx, fy]) => new THREE.Vector2(fx, -fy)));
         const patch = new THREE.Mesh(
