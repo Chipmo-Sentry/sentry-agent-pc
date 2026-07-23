@@ -766,7 +766,10 @@ function selectShape(line, kind, idx) {
   arr.forEach((pt, vi) => {
     const a = new Konva.Circle({
       x: pt[0], y: pt[1], radius: 5 / stage.scaleX(), fill: "#fff", stroke: "#000",
-      strokeWidth: 1, draggable: true,
+      // Counter-scaled: a bare 1 here is 1 PLAN METRE of black stroke — at
+      // close zoom the anchors ballooned into giant black blobs whose hit
+      // areas also blocked placing anything nearby.
+      strokeWidth: 1 / stage.scaleX(), draggable: true,
     });
     a.on("dragstart", () => { a._orig = [arr[vi][0], arr[vi][1]]; });
     a.on("dragmove", () => {
@@ -800,7 +803,8 @@ function selectShape(line, kind, idx) {
     const h = new Konva.Rect({
       x: mid[0], y: mid[1], width: sz, height: sz,
       offsetX: sz / 2, offsetY: sz / 2, rotation: 45,
-      fill: "#fafafa", stroke: "#000", strokeWidth: 1, draggable: true,
+      // Same counter-scaling as the vertex anchors (1 = 1 m otherwise).
+      fill: "#fafafa", stroke: "#000", strokeWidth: 1 / stage.scaleX(), draggable: true,
     });
     h.on("dragstart", () => {
       h._o1 = arr[ei].slice();
@@ -984,7 +988,13 @@ function magnetRect(x1, y1, x2, y2, skipIdx) {
     }
     return best;
   };
-  return [pull(x1, xs), pull(y1, ys), pull(x2, xs), pull(y2, ys)];
+  // A THIN shape must survive the magnet: if pulling both edges of an axis
+  // collapses it (< 10 cm), keep that axis as drawn.
+  let nx1 = pull(x1, xs), nx2 = pull(x2, xs);
+  if (nx2 - nx1 < 0.1) { nx1 = x1; nx2 = x2; }
+  let ny1 = pull(y1, ys), ny2 = pull(y2, ys);
+  if (ny2 - ny1 < 0.1) { ny1 = y1; ny2 = y2; }
+  return [nx1, ny1, nx2, ny2];
 }
 
 // Whole-shape drag magnet: the best small translation that lands ANY of the
