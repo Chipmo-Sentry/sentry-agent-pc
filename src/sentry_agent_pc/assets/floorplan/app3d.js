@@ -329,9 +329,16 @@
     for (const cam of PLAN.cameras) {
       const [px, py] = cam.pos;
       // Calibrated cameras (solvePnP) hang at their MEASURED height, in green —
-      // the whole point of "3D калибровк": байрлал нь үнэн эсэхийг нүдээр шалгана.
+      // capped at the plan's tallest wall (камер таазнаас дээш хөвөхгүй).
+      let wallMax = WALL_DEFAULT_H;
+      for (const w of PLAN.walls) {
+        const wh = Number(w.height_m);
+        if (isFinite(wh) && wh > wallMax) wallMax = wh;
+      }
       const calibrated = cam.cam_h_m != null && Number(cam.cam_h_m) > 0;
-      const mountH = calibrated ? Number(cam.cam_h_m) : WALL_DEFAULT_H - 0.2;
+      const mountH = calibrated
+        ? Math.min(Number(cam.cam_h_m), wallMax)
+        : WALL_DEFAULT_H - 0.2;
       const body = new THREE.Mesh(
         new THREE.BoxGeometry(0.35, 0.22, 0.22),
         calibrated ? camMatCal : camMat,
@@ -586,6 +593,13 @@
       if (hM == null || !(hM > 0)) return;
       const cam = PLAN.cameras.find((c) => c.camera_id === camId);
       if (!cam) return;
+      // Ghost too obeys the ceiling: cap at the plan's tallest wall.
+      let wallMax = 2.8;
+      for (const w of PLAN.walls) {
+        const wh = Number(w.height_m);
+        if (isFinite(wh) && wh > wallMax) wallMax = wh;
+      }
+      hM = Math.min(hM, wallMax);
       const body = new THREE.Mesh(
         new THREE.BoxGeometry(0.4, 0.26, 0.26),
         new THREE.MeshBasicMaterial({ color: 0x22c55e, transparent: true, opacity: 0.9 }),

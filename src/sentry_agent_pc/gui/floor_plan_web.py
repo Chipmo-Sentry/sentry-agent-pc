@@ -518,7 +518,19 @@ def _compute_calibration(
     # cloud footfall) must know it — it is persisted into the plan camera.
     # cam_h: the solvePnP mount height (m) when the pose was solved AND sane —
     # persisted so the 3D plan views hang the camera at its MEASURED height.
-    cam_h = round(float(pose["cam_h"]), 2) if pose is not None else None
+    # A camera cannot hang above the ceiling: the reported mount height is
+    # capped at the plan's tallest wall (default 2.8 m when no walls carry a
+    # height). The pose itself stays as solved — only the persisted/displayed
+    # height is clamped.
+    cam_h: float | None = None
+    if pose is not None:
+        wall_max = _WALL_DEFAULT_H
+        for w in walls or []:
+            try:
+                wall_max = max(wall_max, float(w.get("height_m") or 0))
+            except (TypeError, ValueError):
+                continue
+        cam_h = round(min(float(pose["cam_h"]), wall_max), 2)
     return homography.tolist(), round(reproj_err, 5), zones, round(float(k1), 5), cam_h
 
 
