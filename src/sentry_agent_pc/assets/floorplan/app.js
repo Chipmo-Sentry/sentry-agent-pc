@@ -789,6 +789,55 @@ function selectShape(line, kind, idx) {
     vertexAnchors.push(a);
     uiLayer.add(a);
   });
+  // Edge handles (owner request 07-22): a square grip at each side's midpoint
+  // — dragging PULLS that side along its normal (both endpoints move together),
+  // so a rectangle stretches from any side, not just its corners.
+  const edgeCount = kind === "wall" ? arr.length - 1 : arr.length;
+  for (let ei = 0; ei < edgeCount; ei++) {
+    const ej = (ei + 1) % arr.length;
+    const mid = [(arr[ei][0] + arr[ej][0]) / 2, (arr[ei][1] + arr[ej][1]) / 2];
+    const sz = 8 / stage.scaleX();
+    const h = new Konva.Rect({
+      x: mid[0], y: mid[1], width: sz, height: sz,
+      offsetX: sz / 2, offsetY: sz / 2, rotation: 45,
+      fill: "#fafafa", stroke: "#000", strokeWidth: 1, draggable: true,
+    });
+    h.on("dragstart", () => {
+      h._o1 = arr[ei].slice();
+      h._o2 = arr[ej].slice();
+      h._mid0 = mid.slice();
+      const ex = h._o2[0] - h._o1[0], ey = h._o2[1] - h._o1[1];
+      const L = Math.hypot(ex, ey) || 1;
+      h._nrm = [-ey / L, ex / L]; // edge normal — the only travel direction
+    });
+    h.on("dragmove", () => {
+      if (!h._nrm) return;
+      const proj = (h.x() - h._mid0[0]) * h._nrm[0] + (h.y() - h._mid0[1]) * h._nrm[1];
+      const ox = h._nrm[0] * proj, oy = h._nrm[1] * proj;
+      arr[ei] = [round2(h._o1[0] + ox), round2(h._o1[1] + oy)];
+      arr[ej] = [round2(h._o2[0] + ox), round2(h._o2[1] + oy)];
+      // The grip itself slides ONLY along the normal (no sideways wander).
+      h.position({ x: h._mid0[0] + ox, y: h._mid0[1] + oy });
+      line.points(arr.flat());
+      if (line._label) positionShapeLabel(line._label, arr);
+      shapeLayer.batchDraw();
+    });
+    h.on("dragend", () => {
+      const tooSmall = selectedNode.kind === "fixtures" && polyArea(arr) < 0.04;
+      const overlaps = selectedNode.kind === "fixtures" && fixtureOverlaps(arr, idx);
+      if ((tooSmall || overlaps) && h._o1 && h._o2) {
+        arr[ei] = h._o1;
+        arr[ej] = h._o2;
+        setStatus(tooSmall ? "Хэт жижиг — буцаалаа" : OVERLAP_MSG);
+        reselectShape(selectedNode.kind, idx);
+        return;
+      }
+      pushUndo();
+      reselectShape(selectedNode.kind, idx);
+    });
+    vertexAnchors.push(h);
+    uiLayer.add(h);
+  }
   // Moving the whole shape bakes the offset back into the points — with the
   // edge magnet pulling it flush to a neighbour, and the overlap guard
   // bouncing it back to where it started if it would land ON one.
