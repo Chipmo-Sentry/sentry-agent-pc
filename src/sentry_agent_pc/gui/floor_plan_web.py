@@ -261,38 +261,55 @@ _CAM_H_PLAUSIBLE = (1.2, 8.0)  # metres — ceiling cameras
 
 
 def _solve_pose(
-    plan_pts: list[list[float]], img_und: list[list[float]], aspect: float
+    plan_pts: list[list[float]],
+    img_und: list[list[float]],
+    aspect: float,
+    heights: list[float] | None = None,
 ) -> dict[str, Any] | None:
-    """Camera pose from floor points (z=0) with a focal-length grid search.
-    Returns {rvec, tvec, K, err, cam_h, up} or None. `up` is +1/-1: the plan's
-    z direction that puts the camera ABOVE the floor (plan y grows downward on
-    screen, so the physical 'up' sign is data-dependent)."""
+    """Camera pose from plan points with a focal-length grid search.
+    Points default to the floor (z=0); `heights` marks ELEVATED pairs (a point
+    clicked on a wall / shelf top in the 3D calibration pane) — vertical spread
+    conditions the height/tilt estimate far better than floor-only points. The
+    plan's physical up-sign is data-dependent, so with elevated points BOTH z
+    sign conventions are tried and the better fit wins.
+    Returns {rvec, tvec, K, err, cam_h, up} or None."""
     import cv2
     import numpy as np
 
-    obj = np.array([[float(x), float(y), 0.0] for x, y in plan_pts], dtype=np.float64)
+    hs = heights if heights is not None else [0.0] * len(plan_pts)
     img = np.array(img_und, dtype=np.float64).reshape(-1, 1, 2)
     best: dict[str, Any] | None = None
-    # f is fx normalized by image WIDTH: ~0.5 (≈90° HFOV) … 1.4 (≈40°).
-    for i in range(21):
-        f = 0.4 + i * 0.05
-        k_mtx = np.array([[f, 0.0, 0.5], [0.0, f * aspect, 0.5], [0.0, 0.0, 1.0]], dtype=np.float64)
-        ok, rvec, tvec = cv2.solvePnP(obj, img, k_mtx, None, flags=cv2.SOLVEPNP_ITERATIVE)
-        if not ok:
-            continue
-        proj, _ = cv2.projectPoints(obj, rvec, tvec, k_mtx, None)
-        err = float(np.mean(np.linalg.norm(proj.reshape(-1, 2) - img.reshape(-1, 2), axis=1)))
-        if best is None or err < best["err"]:
-            rot, _ = cv2.Rodrigues(rvec)
-            cam = (-rot.T @ tvec).flatten()
-            best = {
-                "rvec": rvec,
-                "tvec": tvec,
-                "K": k_mtx,
-                "err": err,
-                "focal": f,
-                "cam_h": float(cam[2]),
-            }
+    signs = (1.0, -1.0) if any(h > 1e-6 for h in hs) else (1.0,)
+    for sign in signs:
+        obj = np.array(
+            [[float(x), float(y), sign * float(h)] for (x, y), h in zip(plan_pts, hs, strict=False)],
+            dtype=np.float64,
+        )
+        # f is fx normalized by image WIDTH: ~0.5 (≈90° HFOV) … 1.4 (≈40°).
+        for i in range(21):
+            f = 0.4 + i * 0.05
+            k_mtx = np.array(
+                [[f, 0.0, 0.5], [0.0, f * aspect, 0.5], [0.0, 0.0, 1.0]], dtype=np.float64
+            )
+            ok, rvec, tvec = cv2.solvePnP(obj, img, k_mtx, None, flags=cv2.SOLVEPNP_ITERATIVE)
+            if not ok:
+                continue
+            proj, _ = cv2.projectPoints(obj, rvec, tvec, k_mtx, None)
+            err = float(np.mean(np.linalg.norm(proj.reshape(-1, 2) - img.reshape(-1, 2), axis=1)))
+            if best is None or err < best["err"]:
+                rot, _ = cv2.Rodrigues(rvec)
+                cam = (-rot.T @ tvec).flatten()
+                best = {
+                    "rvec": rvec,
+                    "tvec": tvec,
+                    "K": k_mtx,
+                    "err": err,
+                    "focal": f,
+                    # Raw signed z — the existing up-detection below resolves
+                    # the plan's physical up direction from it, and the sign
+                    # convention used for elevated obj points matches it.
+                    "cam_h": float(cam[2]),
+                }
     if best is None:
         return None
     # The camera must sit above the floor: z sign follows the recovered height.
@@ -359,8 +376,22 @@ def _compute_calibration(
 
     if len(pairs) < 4:
         raise ValueError("Дор хаяж 4 цэг хослол хэрэгтэй")
-    plan = np.array([p["plan"] for p in pairs], dtype=np.float64)
-    img_raw = [[float(v[0]), float(v[1])] for v in (p["image"] for p in pairs)]
+    # Elevated pairs (h > 0: clicked on a wall / shelf top in the 3D pane) are
+    # EXCLUDED from the homography — H lives on the floor plane — but feed the
+    # solvePnP pose below, where vertical spread is pure gain.
+    heights = [max(0.0, float(p.get("h") or 0.0)) for p in pairs]
+    floor_idx = [i for i, h in enumerate(heights) if h < 0.05]
+    if len(floor_idx) < 4:
+        raise ValueError(
+            "Шалны түвшний (өндөргүй) дор хаяж 4 цэг хэрэгтэй — "
+            "ханан/тавиурын цэгүүд нэмэлт сайжруулалт"
+        )
+    plan = np.array([pairs[i]["plan"] for i in floor_idx], dtype=np.float64)
+    img_raw = [
+        [float(pairs[i]["image"][0]), float(pairs[i]["image"][1])] for i in floor_idx
+    ]
+    plan_all = [[float(p["plan"][0]), float(p["plan"][1])] for p in pairs]
+    img_raw_all = [[float(p["image"][0]), float(p["image"][1])] for p in pairs]
 
     # With ≥6 pairs RANSAC survives one bad click (4-5 pairs: plain DLT — every
     # pair is needed, there is no outlier margin). RANSAC degenerating to None
@@ -410,7 +441,6 @@ def _compute_calibration(
         if best_e < reproj_err * (1.0 - _K1_MIN_GAIN):
             k1, homography, reproj_err = best_k, best_h, best_e
 
-    img_und = _undistort_pts(img_raw, k1)
 
     def project(points: Any) -> Any:
         return cv2.perspectiveTransform(
@@ -428,9 +458,13 @@ def _compute_calibration(
     # Full camera pose only when a fixture actually carries a height AND the
     # editor supplied the frame aspect; a pose that fits the clicked pairs
     # clearly worse than the homography is discarded — 2D stays the authority.
+    # The pose uses ALL pairs including elevated ones (wall/shelf-top clicks
+    # from the 3D pane) — vertical spread sharpens the height/tilt estimate.
     pose: dict[str, Any] | None = None
     if img_aspect and img_aspect > 0 and any(_fixture_height(f) > 0 for f in fixtures):
-        pose = _solve_pose([[float(p[0]), float(p[1])] for p in plan], img_und, float(img_aspect))
+        pose = _solve_pose(
+            plan_all, _undistort_pts(img_raw_all, k1), float(img_aspect), heights=heights
+        )
         if pose is not None and pose["err"] > max(
             reproj_err * _POSE_MAX_ERR_FACTOR, _POSE_MAX_ERR_ABS
         ):

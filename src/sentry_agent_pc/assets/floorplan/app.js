@@ -1731,13 +1731,17 @@ function buildCalibStages(frame) {
   setCalibMode(false); // always reopen in 2D; 3D is a per-session choice
 }
 
-// One plan-side pick — shared by the 2D Konva pane AND the 3D floor raycast
-// (калибровкийг 3D-ээр хийх, owner request 07-22).
-function calibPlanPick(px, py) {
+// One plan-side pick — shared by the 2D Konva pane AND the 3D raycast
+// (калибровкийг 3D-ээр хийх). `hM` > 0 = the point was clicked on a WALL or a
+// fixture TOP in 3D (owner request 07-23): excluded from the floor-plane
+// homography server-side, but it sharpens the solvePnP height/tilt estimate.
+function calibPlanPick(px, py, hM) {
   if (!calib.pendingImg) { setCalibStatus("Эхлээд камерын зураг дээр цэг дар ←"); return; }
   // 2 dp = 1 cm — anchor points at 0.1 m (1 dp) were coarse enough to inflate
   // the homography's reprojection error on small stores.
-  calib.pairs.push({ image: calib.pendingImg, plan: [round2(px), round2(py)] });
+  const pair = { image: calib.pendingImg, plan: [round2(px), round2(py)] };
+  if (hM && hM > 0.05) pair.h = round2(hM);
+  calib.pairs.push(pair);
   calib.pendingImg = null;
   redrawCalibMarks();
   refreshCalibPreview();
@@ -1758,8 +1762,8 @@ function setCalibMode(three) {
   if (three) {
     p2.style.display = "none";
     p3.style.display = "";
-    if (hint) hint.textContent = "② 3D: чирэх=эргүүлэх · товших=цэг тавих · камерын өнцгөөс харж дарвал амархан";
-    window.Calib3D.open(p3, (x, y) => calibPlanPick(x, y));
+    if (hint) hint.textContent = "② 3D: чирэх=эргүүлэх · товших=цэг тавих (шал, ХАНА, тавиурын ДЭЭР ч болно) · шалны ≥4 цэг заавал";
+    window.Calib3D.open(p3, (x, y, hM) => calibPlanPick(x, y, hM));
     window.Calib3D.setMarks(calib.pairs, CALIB_COLORS);
     refreshCalibPreview(); // repush the candidate ghost into the fresh scene
   } else {

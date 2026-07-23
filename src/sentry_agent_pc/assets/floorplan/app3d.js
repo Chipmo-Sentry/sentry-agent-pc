@@ -315,6 +315,7 @@
       );
       body.position.set(px, mountH, py);
       body.rotation.y = -((cam.dir_deg || 0) * Math.PI) / 180;
+      body.userData.noPick = true; // calibration clicks fall through to surfaces
       scene.add(body);
       // Calibrated camera → its REAL ground footprint (H⁻¹ + k1, same math as
       // the editor's 2D coverage overlay) painted onto the floor, with faint
@@ -343,6 +344,7 @@
         );
         patch.rotation.x = -Math.PI / 2;
         patch.position.y = 0.03;
+        patch.userData.noPick = true;
         scene.add(patch);
         const loop = new THREE.LineLoop(
           new THREE.BufferGeometry().setFromPoints(
@@ -377,6 +379,7 @@
         cone.position.set(
           px + axis.x * (reach / 2), mountH + axis.y * (reach / 2), py + axis.z * (reach / 2),
         );
+        cone.userData.noPick = true;
         scene.add(cone);
       }
 
@@ -505,14 +508,25 @@
         );
         const ray = new THREE.Raycaster();
         ray.setFromCamera(ndc, h.camera);
+        // Pick REAL surfaces first (walls, shelf tops — elevated calibration
+        // points, owner request 07-23); pair marks/ghost/sprites are noPick.
+        const hits = ray
+          .intersectObjects(h.scene.children, true)
+          .filter((it) => it.object.isMesh && !it.object.userData.noPick);
+        if (hits.length) {
+          const p = hits[0].point;
+          onPick(p.x, p.z, Math.max(0, p.y));
+          return;
+        }
         const hit = new THREE.Vector3();
         if (ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), hit)) {
-          onPick(hit.x, hit.z);
+          onPick(hit.x, hit.z, 0);
         }
       });
       return h;
     },
-    // Mirror the 2D pair marks: numbered spheres on the floor.
+    // Mirror the 2D pair marks: numbered spheres at their picked HEIGHT (an
+    // elevated wall/shelf-top point floats where it was clicked).
     setMarks(pairs, colors) {
       if (!this._h) return;
       const { THREE } = ThreeBundle;
@@ -520,15 +534,18 @@
       this._marks = [];
       pairs.forEach((pr, i) => {
         const color = colors[i % colors.length];
+        const hM = Number(pr.h) || 0;
         const s = new THREE.Mesh(
           new THREE.SphereGeometry(0.14, 16, 12),
           new THREE.MeshBasicMaterial({ color }),
         );
-        s.position.set(pr.plan[0], 0.14, pr.plan[1]);
+        s.position.set(pr.plan[0], hM + 0.14, pr.plan[1]);
+        s.userData.noPick = true;
         this._h.scene.add(s);
         this._marks.push(s);
         const label = makeTextSprite(String(i + 1), color, 0.8);
-        label.position.set(pr.plan[0], 0.75, pr.plan[1]);
+        label.position.set(pr.plan[0], hM + 0.75, pr.plan[1]);
+        label.userData.noPick = true;
         this._h.scene.add(label);
         this._marks.push(label);
       });
@@ -556,6 +573,9 @@
       pole.position.set(cam.pos[0], hM / 2, cam.pos[1]);
       const label = makeTextSprite(hM.toFixed(1) + " м", "#22c55e");
       label.position.set(cam.pos[0], hM + 0.5, cam.pos[1]);
+      body.userData.noPick = true;
+      pole.userData.noPick = true;
+      label.userData.noPick = true;
       this._h.scene.add(body);
       this._h.scene.add(pole);
       this._h.scene.add(label);

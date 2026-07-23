@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+
 from sentry_agent_pc.gui import floor_plan_web as fpw
 from sentry_agent_pc.gui.floor_plan_web import FloorPlanApi, maybe_run_floor_plan_from_argv
 from sentry_agent_pc.state import AgentState, CameraRecord
@@ -464,3 +466,30 @@ def test_full_wall_still_blocks_in_3d() -> None:
     segs = fpw._wall_segments([{"points": [[0, 5], [10, 5]]}])  # default 2.8 m
     poly = [[4.0, 6.0], [6.0, 6.0], [6.0, 7.0], [4.0, 7.0]]  # right behind it
     assert fpw._visible_part(poly, (5.0, 1.0), segs, cam_h=3.0) == []
+
+
+def test_elevated_pairs_excluded_from_homography() -> None:
+    """h>0 pairs (wall/shelf-top clicks from the 3D pane) must not disturb the
+    floor-plane H: 4 clean floor pairs + 1 elevated pair with a nonsense image
+    position still yields the same H quality as the floor pairs alone."""
+    pairs = [
+        {"plan": [0, 0], "image": [0.1, 0.9]},
+        {"plan": [10, 0], "image": [0.9, 0.9]},
+        {"plan": [10, 10], "image": [0.8, 0.2]},
+        {"plan": [0, 10], "image": [0.2, 0.2]},
+        # Elevated: image point wildly off any floor mapping — must be ignored by H.
+        {"plan": [5, 5], "image": [0.99, 0.01], "h": 1.8},
+    ]
+    _h, err, _z, _k1, _ch = fpw._compute_calibration(pairs, [])
+    assert err < 0.01  # the junk elevated pair did not smear the floor fit
+
+
+def test_too_few_floor_pairs_raises() -> None:
+    pairs = [
+        {"plan": [0, 0], "image": [0.1, 0.9]},
+        {"plan": [10, 0], "image": [0.9, 0.9]},
+        {"plan": [10, 10], "image": [0.8, 0.2]},
+        {"plan": [0, 10], "image": [0.2, 0.2], "h": 1.5},  # only 3 floor pairs
+    ]
+    with pytest.raises(ValueError):
+        fpw._compute_calibration(pairs, [])
