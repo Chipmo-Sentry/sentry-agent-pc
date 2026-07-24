@@ -571,25 +571,47 @@ function invert3x3(m) {
 function applyH(m, p) {
   const x = p[0], y = p[1];
   const w = m[2][0] * x + m[2][1] * y + m[2][2];
-  if (Math.abs(w) < 1e-9) return null;
+  // w <= 0 = at/behind the horizon: that image point has NO ground image —
+  // dividing anyway wraps to garbage coordinates (H is sign-normalized
+  // server-side so genuinely visible points have w > 0).
+  if (w < 1e-9) return null;
   return [(m[0][0] * x + m[0][1] * y + m[0][2]) / w, (m[1][0] * x + m[1][1] * y + m[1][2]) / w];
 }
-// The plan polygon a camera covers: the exact homography quad if calibrated,
-// else a rough wedge from its facing. Returns {pts, exact} or null.
+// The plan polygon a camera covers: the exact homography footprint if
+// calibrated, else a rough wedge from its facing. Returns {pts, exact}.
 function cameraFootprint(cam) {
   if (cam.homography) {
     const inv = invert3x3(cam.homography);
     if (inv) {
       // v0.7.95+: H is fitted against k1-UNDISTORTED image coords — undistort
-      // the raw frame corners first or the footprint lands short/warped.
+      // the raw frame points first or the footprint lands short/warped.
       const k1 = Number(cam.k1) || 0;
       const und = (p) => {
         const dx = p[0] - 0.5, dy = p[1] - 0.5;
         const s = 1 + k1 * (dx * dx + dy * dy);
         return [0.5 + dx * s, 0.5 + dy * s];
       };
-      const quad = [[0, 0], [1, 0], [1, 1], [0, 1]].map((c) => applyH(inv, und(c)));
-      if (quad.every(Boolean)) return { pts: quad, exact: true };
+      // Sample the WHOLE image border (not just 4 corners): a tilted-up
+      // camera's top corners cross the horizon and drop out (null), while
+      // the surviving samples still outline the visible ground patch —
+      // corner-only sampling collapsed such cameras back to the wedge.
+      const border = [];
+      const NB = 8;
+      for (let i = 0; i < NB; i++) border.push([i / NB, 0]);
+      for (let i = 0; i < NB; i++) border.push([1, i / NB]);
+      for (let i = 0; i < NB; i++) border.push([1 - i / NB, 1]);
+      for (let i = 0; i < NB; i++) border.push([0, 1 - i / NB]);
+      const [ccx, ccy] = cam.pos;
+      const MAXR = 25; // horizon-adjacent samples project absurdly far
+      const fpts = [];
+      for (const c of border) {
+        const p = applyH(inv, und(c));
+        if (!p) continue;
+        const dx = p[0] - ccx, dy = p[1] - ccy;
+        const d = Math.hypot(dx, dy);
+        fpts.push(d > MAXR ? [ccx + (dx / d) * MAXR, ccy + (dy / d) * MAXR] : p);
+      }
+      if (fpts.length >= 3 && polyArea(fpts) > 0.5) return { pts: fpts, exact: true };
     }
   }
   const [cx, cy] = cam.pos;
@@ -1882,10 +1904,14 @@ async function saveCalibration() {
     const hTxt = r.cam_h_m ? ` · камер ${Number(r.cam_h_m).toFixed(1)} м өндөрт` : "";
     setCalibStatus(`✅ ${r.zone_count} зон · алдаа ${errPct}% — ${v.word}${v.hint ? ` (${v.hint})` : ""}${hTxt}`);
     setStatus(`Калибровк: ${r.zone_count} зон, чанар ${v.word}${hTxt}`);
-    // Mark calibrated so the camera badge + settings panel update.
+    // Mark calibrated so the camera badge + settings panel update. The saved
+    // homography/k1 come BACK from Python (the bridge passed PLAN by copy) so
+    // coverage + the 3D footprint work without reopening the editor.
     calib.cam._calibrated = true;
     calib.cam.reproj_err = r.reproj_err;
     calib.cam.cam_h_m = r.cam_h_m != null ? r.cam_h_m : calib.cam.cam_h_m;
+    if (r.homography) calib.cam.homography = r.homography;
+    if (r.k1 != null) calib.cam.k1 = r.k1;
     // save_calibration persisted the whole PLAN we passed (the overlay blocks
     // canvas edits meanwhile), so the unsaved-changes flag stands down too.
     setDirty(false);

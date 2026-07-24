@@ -834,6 +834,12 @@ class FloorPlanApi:
             "zone_count": len(zones),
             # Surfaced so the calibration UI can show «Камерын өндөр: 3.1 м».
             "cam_h_m": cal_cam_h,
+            # The editor's PLAN is a serialized COPY over the pywebview bridge —
+            # Python's plan mutations don't reach it. Returned so JS updates its
+            # camera in place and the 3D footprint/coverage go live immediately
+            # (was: cone/wedge until the editor was reopened).
+            "homography": homography,
+            "k1": cal_k1,
         }
 
     def camera_status(self, camera_id: str) -> dict[str, Any]:
