@@ -63,9 +63,18 @@ if (-not (Test-Path $ffExe)) {
     # so builds are reproducible — every release ships the exact same ffmpeg.
     # To bump: pick a newer filename from https://www.gyan.dev/ffmpeg/builds/
     # (the "packages/ffmpeg-<ver>-essentials_build.zip" link) and update below.
-    $ffUrl = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.0.1-essentials_build.zip"
+    $ffUrl = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip"
     Write-Host "==> Downloading ffmpeg (essentials) ..." -ForegroundColor Cyan
-    Invoke-WebRequest -Uri $ffUrl -OutFile $ffZip -UseBasicParsing
+    try {
+        Invoke-WebRequest -Uri $ffUrl -OutFile $ffZip -UseBasicParsing
+    } catch {
+        # gyan.dev deletes old versioned packages when a new ffmpeg ships, so a
+        # stale pin 404s and kills every release build (happened with 8.0.1).
+        # Fall back to the rolling release build — losing reproducibility for
+        # one build beats a dead pipeline. Bump the pin above to restore it.
+        Write-Warning "pinned ffmpeg download failed ($_) - falling back to rolling release-essentials"
+        Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $ffZip -UseBasicParsing
+    }
     $ffTmp = Join-Path $env:TEMP "ffmpeg_extract"
     Remove-Item -Recurse -Force $ffTmp -ErrorAction SilentlyContinue
     Expand-Archive -Path $ffZip -DestinationPath $ffTmp -Force
