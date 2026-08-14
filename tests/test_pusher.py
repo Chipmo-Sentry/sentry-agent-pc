@@ -250,3 +250,43 @@ def test_force_transcode_overrides_copy() -> None:
     cmd = build_relay_cmd("ffmpeg", t, "rtsp://dest/cam")
     assert "libx264" in cmd
     assert "copy" not in cmd
+
+
+def test_probe_stream_corrupt_detects_decoder_errors(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # A camera emitting broken slices (Skyworth .26) prints decode errors on
+    # ffprobe's stderr → the relay must force a re-encode, because the copied
+    # stream's POC jumps crash the cloud HLS muxer even with pts==dts.
+    from sentry_agent_pc.streaming import pusher as p
+
+    ffmpeg = tmp_path / "ffmpeg.exe"
+    ffmpeg.write_bytes(b"")
+    (tmp_path / "ffprobe.exe").write_bytes(b"")
+
+    def fake_run(cmd, **kw):  # type: ignore[no-untyped-def]
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=b"I\nP\nP\n", stderr=b"[h264 @ 0x1] error while decoding MB 47 50\n"
+        )
+
+    monkeypatch.setattr(p.subprocess, "run", fake_run)
+    assert p._probe_stream_corrupt(str(ffmpeg), "rtsp://cam") is True
+
+
+def test_probe_stream_corrupt_clean_and_failed_probe(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from sentry_agent_pc.streaming import pusher as p
+
+    ffmpeg = tmp_path / "ffmpeg.exe"
+    ffmpeg.write_bytes(b"")
+    (tmp_path / "ffprobe.exe").write_bytes(b"")
+
+    def clean_run(cmd, **kw):  # type: ignore[no-untyped-def]
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"I\nP\nP\n", stderr=b"")
+
+    monkeypatch.setattr(p.subprocess, "run", clean_run)
+    assert p._probe_stream_corrupt(str(ffmpeg), "rtsp://cam") is False
+
+    def boom_run(cmd, **kw):  # type: ignore[no-untyped-def]
+        raise subprocess.TimeoutExpired(cmd, 25)
+
+    monkeypatch.setattr(p.subprocess, "run", boom_run)
+    # Unprobeable → keep the cheap copy default, never block the relay.
+    assert p._probe_stream_corrupt(str(ffmpeg), "rtsp://cam") is False

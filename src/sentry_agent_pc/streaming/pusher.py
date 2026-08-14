@@ -145,6 +145,54 @@ def _probe_has_bframes(ffmpeg: str, lan_rtsp: str) -> bool | None:
         return None
 
 
+# Bitstream-corruption markers ffprobe/ffmpeg print while DECODING a broken
+# H.264 feed. A camera that emits these (e.g. the Skyworth .26 with damaged
+# slices) also confuses MediaMTX's POC-based DTS extractor on the cloud —
+# «too many reordered frames» — killing its HLS muxer even though pts==dts.
+_CORRUPT_MARKERS = (b"error while decoding", b"corrupt decoded frame", b"concealing")
+
+
+def _probe_stream_corrupt(ffmpeg: str, lan_rtsp: str) -> bool:
+    """Decode ~6s of the source; True when the decoder reports broken slices.
+    False on a clean stream OR when probing is impossible (missing ffprobe,
+    timeout) — this is a widen-the-net heuristic on top of the B-frame probe,
+    so an unprobeable camera keeps the cheap `-c copy` default."""
+    probe = Path(ffmpeg).with_name(Path(ffmpeg).name.replace("ffmpeg", "ffprobe"))
+    if not probe.exists():
+        which = shutil.which("ffprobe")
+        if which is None:
+            return False
+        probe = Path(which)
+    try:
+        out = subprocess.run(
+            [
+                str(probe),
+                "-v",
+                "error",
+                "-rtsp_transport",
+                "tcp",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "frame=pict_type",
+                "-of",
+                "csv=p=0",
+                "-read_intervals",
+                "%+6",
+                "-i",
+                lan_rtsp,
+            ],
+            capture_output=True,
+            timeout=25,
+            check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        err = out.stderr.lower()
+        return any(m in err for m in _CORRUPT_MARKERS)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+
+
 def build_relay_cmd(ffmpeg: str, target: PushTarget, dest: str) -> list[str]:
     """ffmpeg argv for one camera relay: LAN source → cloud publish.
 
@@ -295,11 +343,18 @@ class StreamPusher:
             self.push_base, st.target.mediamtx_path, self.publish_user, self.publish_pass
         )
         ffmpeg = resolve_ffmpeg_exe(get_settings().ffmpeg_path)
-        # B-frame probe: only worth it when we would otherwise `-c copy` — a
-        # copied stream with B-frames kills the cloud HLS muxer for this camera.
-        if not st.target.needs_transcode and _probe_has_bframes(ffmpeg, st.target.lan_rtsp):
-            st.target = replace(st.target, force_transcode=True)
-            log.info("pusher.bframes_transcode", path=st.target.mediamtx_path)
+        # Source-quality probes: only worth it when we would otherwise `-c copy`.
+        # Either condition kills the cloud HLS muxer for this camera when copied
+        # verbatim; a zerolatency re-encode cleans both (no B-frames, fresh POC).
+        if not st.target.needs_transcode:
+            if _probe_has_bframes(ffmpeg, st.target.lan_rtsp):
+                st.target = replace(st.target, force_transcode=True)
+                log.info("pusher.bframes_transcode", path=st.target.mediamtx_path)
+            elif _probe_stream_corrupt(ffmpeg, st.target.lan_rtsp):
+                # Broken slices (e.g. Skyworth .26) → POC jumps → the cloud's
+                # «too many reordered frames» loop, even with pts==dts.
+                st.target = replace(st.target, force_transcode=True)
+                log.info("pusher.corrupt_transcode", path=st.target.mediamtx_path)
         cmd = build_relay_cmd(ffmpeg, st.target, dest)
         try:
             self._relay_loop(st, cmd)
