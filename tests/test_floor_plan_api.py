@@ -16,6 +16,7 @@ _PLAN = {"version": 1, "size": [1000, 800], "walls": [], "fixtures": [], "camera
 class _FakeBackend:
     def __init__(self) -> None:
         self.saved: dict | None = None
+        self.zone_calls: list[tuple[str, list]] = []
 
     def agent_get_floor_plan(self) -> dict:
         return _PLAN
@@ -23,6 +24,10 @@ class _FakeBackend:
     def agent_update_floor_plan(self, plan: dict) -> dict:
         self.saved = plan
         return plan
+
+    def agent_update_camera(self, uuid: str, zones: list) -> dict:
+        self.zone_calls.append((uuid, zones))
+        return {}
 
 
 def test_list_cameras_from_state(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -56,7 +61,62 @@ def test_save_plan_patches_backend(monkeypatch) -> None:  # type: ignore[no-unty
     monkeypatch.setattr("sentry_agent_pc.backend_client.BackendClient", lambda: fake)
     plan = {**_PLAN, "fixtures": [{"type": "exit", "points": [[0, 0], [1, 0], [0.5, 1]]}]}
     out = FloorPlanApi().save_plan(plan)
-    assert fake.saved == plan and out == plan
+    # No calibrated cameras in the plan → nothing regenerated, save unchanged.
+    assert fake.saved == plan and out == {**plan, "zones_regen": []}
+
+
+def test_save_plan_regenerates_calibrated_zones(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # A plan camera with saved calib points → save_plan re-derives its zones
+    # from the EDITED fixtures and pushes them, so zones never go stale after a
+    # plan edit (owner backlog 2026-08).
+    fake = _FakeBackend()
+    monkeypatch.setattr("sentry_agent_pc.backend_client.BackendClient", lambda: fake)
+    state = AgentState(
+        cameras=[
+            CameraRecord(
+                name="Cam A", ip="1.1.1.1", rtsp_url="rtsp://a", mediamtx_path="cam_a", uuid="u-1"
+            )
+        ]
+    )
+    monkeypatch.setattr("sentry_agent_pc.state.load_state", lambda: state)
+    pairs = [
+        {"plan": [0, 0], "image": [0, 0]},
+        {"plan": [1000, 0], "image": [1, 0]},
+        {"plan": [1000, 800], "image": [1, 1]},
+        {"plan": [0, 800], "image": [0, 1]},
+    ]
+    plan = {
+        **_PLAN,
+        "fixtures": [
+            {"type": "shelf", "points": [[250, 200], [750, 200], [750, 600], [250, 600]]}
+        ],
+        "cameras": [{"camera_id": "cam_a", "calib_points": pairs}],
+    }
+    out = FloorPlanApi().save_plan(plan)
+    assert out["zones_regen"] == [{"camera_id": "cam_a", "zones": 1}]
+    assert len(fake.zone_calls) == 1
+    uuid, zones = fake.zone_calls[0]
+    assert uuid == "u-1" and zones[0]["type"] == "shelf"
+
+
+def test_save_plan_regen_failure_does_not_fail_save(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # Degenerate calib points (all collinear) make the regen raise — the plan
+    # save itself must still succeed, with that camera simply skipped.
+    fake = _FakeBackend()
+    monkeypatch.setattr("sentry_agent_pc.backend_client.BackendClient", lambda: fake)
+    state = AgentState(
+        cameras=[
+            CameraRecord(
+                name="Cam A", ip="1.1.1.1", rtsp_url="rtsp://a", mediamtx_path="cam_a", uuid="u-1"
+            )
+        ]
+    )
+    monkeypatch.setattr("sentry_agent_pc.state.load_state", lambda: state)
+    bad_pairs = [{"plan": [i * 10, 0], "image": [i * 0.1, 0]} for i in range(4)]
+    plan = {**_PLAN, "cameras": [{"camera_id": "cam_a", "calib_points": bad_pairs}]}
+    out = FloorPlanApi().save_plan(plan)
+    assert fake.saved == plan  # PATCH went through
+    assert out["zones_regen"] == [] and fake.zone_calls == []
 
 
 def test_save_plan_propagates_error(monkeypatch) -> None:  # type: ignore[no-untyped-def]

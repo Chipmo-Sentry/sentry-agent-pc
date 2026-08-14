@@ -2117,7 +2117,7 @@ async function save() {
   setStatus("Хадгалж байна…");
   const saved = snapshot(); // what actually went to the backend
   try {
-    await window.pywebview.api.save_plan(PLAN);
+    const res = await window.pywebview.api.save_plan(PLAN);
     // Only stand the dirty flag down if nothing changed DURING the await —
     // an edit made mid-save must survive as unsaved.
     if (snapshot() === saved) setDirty(false);
@@ -2125,9 +2125,12 @@ async function save() {
     // Save always succeeds (WIP is fine), but flag a not-yet-protected setup.
     const cams = PLAN.cameras;
     const uncal = cams.filter((c) => !c.homography).length;
+    const regen = res && Array.isArray(res.zones_regen) ? res.zones_regen.length : 0;
     setStatus(uncal
       ? `✅ Хадгалагдлаа — ⚠ ${uncal} камер калибровкгүй (зон үүсэхгүй)`
-      : "✅ Хадгалагдлаа");
+      : regen
+        ? `✅ Хадгалагдлаа — ${regen} камерын зон шинэчлэгдлээ`
+        : "✅ Хадгалагдлаа");
   } catch (err) {
     setStatus("❌ " + err);
   }

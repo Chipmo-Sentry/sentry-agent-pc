@@ -717,7 +717,58 @@ class FloorPlanApi:
             raise ValueError("План хэт том байна — элемент тоог багасгана уу")
         result = BackendClient().agent_update_floor_plan(plan)
         self.dirty = False  # saved — the close guard can stand down
-        return result
+        # Re-derive calibrated cameras' zones against the EDITED plan. The saved
+        # calib pairs still map plan→image as long as the physical camera didn't
+        # move, so a fixture edit only needs a re-derive + push — without this,
+        # zones silently kept matching the OLD plan until someone recalibrated.
+        regen = self._regen_calibrated_zones(plan)
+        if isinstance(result, dict):
+            return {**result, "zones_regen": regen}
+        return {"zones_regen": regen}
+
+    def _regen_calibrated_zones(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
+        """Recompute + push Camera.zones for every plan camera with saved calib
+        points. Per-camera best-effort: one degenerate regen (e.g. the operator
+        deleted the fixtures its points were clicked on) logs and skips — it must
+        never fail the plan save itself. Returns [{camera_id, zones}] for the UI."""
+        from sentry_agent_pc.backend_client import BackendClient
+        from sentry_agent_pc.state import load_state
+
+        out: list[dict[str, Any]] = []
+        entries = [
+            e
+            for e in (plan.get("cameras") or [])
+            if isinstance(e, dict) and e.get("calib_points")
+        ]
+        if not entries:
+            return out
+        cams = {c.mediamtx_path: c for c in load_state().cameras if c.mediamtx_path and c.uuid}
+        client = BackendClient()
+        for entry in entries:
+            camera_id = entry.get("camera_id")
+            if not isinstance(camera_id, str):
+                continue
+            cam = cams.get(camera_id)
+            if cam is None or not cam.uuid:
+                continue
+            try:
+                _h, _err, zones, _k1, _cam_h = _compute_calibration(
+                    entry["calib_points"],
+                    plan.get("fixtures") or [],
+                    walls=plan.get("walls"),
+                    cam_pos=_plan_cam_pos(plan, camera_id),
+                    # Persisted by save_calibration since 0.7.115; None for older
+                    # calibrations just skips the 3D pose (zones still derive).
+                    img_aspect=entry.get("img_aspect"),
+                )
+                client.agent_update_camera(cam.uuid, zones=zones)
+                out.append({"camera_id": camera_id, "zones": len(zones)})
+                log.info("floor_plan.zones_regen", camera_id=camera_id, zones=len(zones))
+            except Exception as e:  # noqa: BLE001 — per-camera best-effort
+                log.warning(
+                    "floor_plan.zones_regen_failed", camera_id=camera_id, error=str(e)[:200]
+                )
+        return out
 
     def get_camera_frame(self, camera_id: str) -> dict[str, Any]:
         """Grab a still from the camera (matched by mediamtx_path) for Phase B
@@ -814,6 +865,9 @@ class FloorPlanApi:
         entry["reproj_err"] = reproj_err
         entry["k1"] = cal_k1
         entry["calib_points"] = pairs
+        # Snapshot aspect persisted so save_plan's zone regen can re-run the 3D
+        # pose with the same intrinsics assumption as this calibration did.
+        entry["img_aspect"] = img_aspect
         # solvePnP mount height (m) — the 3D plan views (editor + dashboard)
         # hang the camera at its measured height; None = pose not solved.
         entry["cam_h_m"] = cal_cam_h
