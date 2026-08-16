@@ -290,3 +290,22 @@ def test_probe_stream_corrupt_clean_and_failed_probe(tmp_path, monkeypatch) -> N
     monkeypatch.setattr(p.subprocess, "run", boom_run)
     # Unprobeable → keep the cheap copy default, never block the relay.
     assert p._probe_stream_corrupt(str(ffmpeg), "rtsp://cam") is False
+
+
+def test_probe_stream_corrupt_timeout_with_errors_is_corrupt(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # The .26 stalls ffprobe past its timeout — but the decode errors printed
+    # BEFORE the hang are in TimeoutExpired.stderr, and must still force the
+    # re-encode (v0.7.115 treated the timeout as inconclusive and kept copy).
+    from sentry_agent_pc.streaming import pusher as p
+
+    ffmpeg = tmp_path / "ffmpeg.exe"
+    ffmpeg.write_bytes(b"")
+    (tmp_path / "ffprobe.exe").write_bytes(b"")
+
+    def hang_run(cmd, **kw):  # type: ignore[no-untyped-def]
+        raise subprocess.TimeoutExpired(
+            cmd, 25, stderr=b"[h264 @ 0x1] error while decoding MB 3 1\n"
+        )
+
+    monkeypatch.setattr(p.subprocess, "run", hang_run)
+    assert p._probe_stream_corrupt(str(ffmpeg), "rtsp://cam") is True

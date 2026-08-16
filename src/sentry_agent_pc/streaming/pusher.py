@@ -189,7 +189,14 @@ def _probe_stream_corrupt(ffmpeg: str, lan_rtsp: str) -> bool:
         )
         err = out.stderr.lower()
         return any(m in err for m in _CORRUPT_MARKERS)
-    except (OSError, subprocess.TimeoutExpired, ValueError):
+    except subprocess.TimeoutExpired as e:
+        # A corrupt feed can stall ffprobe's demuxer PAST the timeout (the .26
+        # does) — but the decode errors it printed before hanging are already in
+        # the captured stderr, so judge on those instead of shrugging the probe
+        # off as inconclusive (which shipped v0.7.115 still `-c copy`-ing it).
+        err = (e.stderr or b"").lower() if isinstance(e.stderr, bytes) else b""
+        return any(m in err for m in _CORRUPT_MARKERS)
+    except (OSError, ValueError):
         return False
 
 
