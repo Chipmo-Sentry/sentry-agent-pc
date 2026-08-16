@@ -107,3 +107,17 @@ def test_relays_use_direct_when_no_hub(monkeypatch) -> None:
     controller.refresh()
 
     assert captured["t"][0].lan_rtsp == "rtsp://u:p@10.0.0.1/1"
+
+
+def test_named_tunnel_requires_both_token_and_hostname() -> None:
+    # A token without its hostname (or vice-versa) must NOT half-enter named
+    # mode — the URL would be unreportable / the process unrunnable. Either
+    # incomplete pair degrades to the quick-tunnel default.
+    from sentry_agent_pc.streaming.tunnel import CloudflaredTunnel
+
+    kw = {"exe_path": "cloudflared.exe", "target_url": "http://127.0.0.1:18888"}
+    assert CloudflaredTunnel(**kw).named_key == (None, None)
+    assert CloudflaredTunnel(**kw, token="tok", hostname=None).named_key == (None, None)
+    assert CloudflaredTunnel(**kw, token=None, hostname="s1.chipmo.mn").named_key == (None, None)
+    named = CloudflaredTunnel(**kw, token="tok", hostname="s1.chipmo.mn")
+    assert named.named_key == ("tok", "s1.chipmo.mn")

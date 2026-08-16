@@ -9,6 +9,7 @@ this is a no-op and no ffmpeg runs.
 from __future__ import annotations
 
 import threading
+from typing import Any
 
 from sentry_agent_pc.backend_client import BackendClient
 from sentry_agent_pc.logging_setup import get_logger
@@ -39,6 +40,8 @@ class StreamController:
         s = get_settings()
         self._local: LocalMediaMTX | None = None
         self._tunnel: CloudflaredTunnel | None = None
+        self._tunnel_exe: str | None = None
+        self._tunnel_target = f"http://127.0.0.1:{s.local_mediamtx_hls_port}"
         if s.local_fanout_enabled:
             self._local = LocalMediaMTX(
                 exe_path=resolve_mediamtx_exe(s.mediamtx_path),
@@ -49,10 +52,13 @@ class StreamController:
             )
             # The tunnel exposes that loopback HLS to the cloud frontend. Target a
             # fixed port so the public URL stays stable until cloudflared restarts.
+            # Starts in quick mode; the first stream-config poll upgrades it to the
+            # store's NAMED tunnel (stable hostname) when one is configured.
             if s.agent_hls_tunnel_enabled:
+                self._tunnel_exe = resolve_cloudflared_exe(s.cloudflared_path)
                 self._tunnel = CloudflaredTunnel(
-                    exe_path=resolve_cloudflared_exe(s.cloudflared_path),
-                    target_url=f"http://127.0.0.1:{s.local_mediamtx_hls_port}",
+                    exe_path=self._tunnel_exe,
+                    target_url=self._tunnel_target,
                 )
 
     @property
@@ -97,6 +103,16 @@ class StreamController:
             self._teardown()
             return
 
+        # Stream-config drives BOTH the node push and the tunnel mode. Fetch it
+        # first but tolerate failure (flaky uplink): the hub + tunnel must keep
+        # serving agent-direct video on the last-known config regardless.
+        cfg: dict[str, Any] | None
+        try:
+            cfg = BackendClient().agent_stream_config()
+        except Exception as e:  # noqa: BLE001 — offline backend must not stop local video
+            log.warning("stream_controller.config_fetch_failed", error=str(e))
+            cfg = None
+
         # The local fan-out hub + cloud HLS tunnel run whenever there are cameras —
         # they feed the edge engine, the offline view, AND agent-direct cloud video.
         # This is INDEPENDENT of pushing to the GPU node (the node is optional, may
@@ -108,6 +124,8 @@ class StreamController:
         if self._local is not None:
             self._local.sync(cams)
             if self._tunnel is not None:
+                if cfg is not None:
+                    self._reconcile_tunnel_mode(cfg)
                 # Idempotent: start() no-ops if already running; the public URL is
                 # reported via the heartbeat. Stop when there's nothing to serve.
                 if cams:
@@ -116,7 +134,10 @@ class StreamController:
                     self._tunnel.stop()
 
         # Push to the GPU node — a SEPARATE concern, gated on the backend config.
-        cfg = BackendClient().agent_stream_config()
+        if cfg is None:
+            # Config unknown → leave the pusher exactly as it was (same behavior
+            # as the old fetch-raised path); the next refresh retries.
+            return
         self._push_enabled = bool(cfg.get("push_enabled"))
         if not self._push_enabled or not cfg.get("push_rtsp_base"):
             # No node push (disabled, or node offline with no base) — stop ONLY the
@@ -163,15 +184,40 @@ class StreamController:
             )
         self._pusher.sync(targets)
 
+    def _reconcile_tunnel_mode(self, cfg: dict[str, Any]) -> None:
+        """Swap the tunnel between quick and named mode when stream-config says so.
+
+        The named token/hostname pair is superadmin-set per store; comparing
+        against the running tunnel's build key makes this idempotent — the 30s
+        refresh only ever restarts cloudflared on an actual config change."""
+        assert self._tunnel is not None
+        tok = cfg.get("tunnel_token") or None
+        host = cfg.get("tunnel_hostname") or None
+        want: tuple[str | None, str | None] = (
+            (str(tok), str(host).strip().lower()) if tok and host else (None, None)
+        )
+        if self._tunnel.named_key == want:
+            return
+        log.info("stream_controller.tunnel_mode", named=bool(want[0]), hostname=want[1])
+        self._tunnel.stop()
+        self._tunnel = CloudflaredTunnel(
+            exe_path=self._tunnel_exe,
+            target_url=self._tunnel_target,
+            token=want[0],
+            hostname=want[1],
+        )
+
     def status(self) -> list[dict[str, object]]:
         with self._lock:
             return self._pusher.status() if self._pusher else []
 
     def tunnel_url(self) -> str | None:
-        """Public ``*.trycloudflare.com`` HLS base for this agent, or None when no
-        tunnel is up. Reported via the heartbeat so ``/live`` proxies straight from
-        the agent. Lock-free: `_tunnel` is set once in __init__ + has its own lock."""
-        return self._tunnel.url if self._tunnel else None
+        """Public HLS base for this agent (named ``https://<hostname>`` or quick
+        ``*.trycloudflare.com``), or None when no tunnel is up. Reported via the
+        heartbeat so ``/live`` proxies straight from the agent. Lock-free reads:
+        `_tunnel` swaps atomically and the object has its own lock."""
+        tunnel = self._tunnel
+        return tunnel.url if tunnel else None
 
     def stop(self) -> None:
         with self._lock:

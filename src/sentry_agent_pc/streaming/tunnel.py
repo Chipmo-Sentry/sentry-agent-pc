@@ -36,17 +36,40 @@ _RESTART_MAX_SEC = 60.0
 
 
 class CloudflaredTunnel:
-    """Supervises a cloudflared quick tunnel to a loopback URL; exposes the public
-    ``*.trycloudflare.com`` base. Thread-safe."""
+    """Supervises a cloudflared tunnel to a loopback URL; exposes the public base.
 
-    def __init__(self, *, exe_path: str | None, target_url: str) -> None:
+    Two modes (chosen at construction):
+      * quick (default): ``cloudflared tunnel --url …`` → ephemeral
+        ``*.trycloudflare.com`` base parsed from the process output.
+      * named: ``token`` + ``hostname`` set → ``cloudflared tunnel run --token …``
+        with a PERMANENT ``https://<hostname>`` base (ingress lives in the
+        Cloudflare-side tunnel config), so restarts don't change the URL and
+        the frontend never waits on a heartbeat re-report. Thread-safe."""
+
+    def __init__(
+        self,
+        *,
+        exe_path: str | None,
+        target_url: str,
+        token: str | None = None,
+        hostname: str | None = None,
+    ) -> None:
         self._exe = exe_path
         self._target = target_url
+        # Named mode needs BOTH: the token to run, the hostname to report.
+        self._token = token if (token and hostname) else None
+        self._hostname = hostname if (token and hostname) else None
         self._proc: subprocess.Popen[str] | None = None
         self._url: str | None = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+
+    @property
+    def named_key(self) -> tuple[str | None, str | None]:
+        """(token, hostname) this tunnel was built with — the controller compares
+        it against fresh stream-config to decide whether a rebuild is needed."""
+        return (self._token, self._hostname)
 
     @property
     def url(self) -> str | None:
@@ -102,14 +125,14 @@ class CloudflaredTunnel:
         # --no-autoupdate: never let cloudflared swap its own binary at runtime.
         # Quick tunnel prints the assigned URL to stderr; merge stderr→stdout so
         # one reader catches it regardless of cloudflared's logging target.
+        if self._token:
+            # Named tunnel: identity + ingress live in the Cloudflare config;
+            # the public base is the configured hostname, known statically.
+            argv = [self._exe, "tunnel", "--no-autoupdate", "run", "--token", self._token]
+        else:
+            argv = [self._exe, "tunnel", "--no-autoupdate", "--url", self._target]
         proc = subprocess.Popen(  # noqa: S603 — fixed args, bundled binary
-            [
-                self._exe,
-                "tunnel",
-                "--no-autoupdate",
-                "--url",
-                self._target,
-            ],
+            argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -119,14 +142,16 @@ class CloudflaredTunnel:
         )
         with self._lock:
             self._proc = proc
-        log.info("tunnel.started", target=self._target)
+            if self._hostname:
+                self._url = f"https://{self._hostname}"
+        log.info("tunnel.started", target=self._target, named=bool(self._token))
         try:
             assert proc.stdout is not None
             for line in proc.stdout:
                 if self._stop.is_set():
                     break
                 m = _URL_RE.search(line)
-                if m:
+                if m and not self._hostname:
                     url = m.group(0)
                     with self._lock:
                         self._url = url
